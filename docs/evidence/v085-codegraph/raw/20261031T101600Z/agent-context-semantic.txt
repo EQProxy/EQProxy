@@ -1,0 +1,22 @@
+Single-flight coalescing lives in the proxy's cache layer: `Cache::lookup` in `./eqproxy-net/src/cache.rs:333-373` is the gate that turns concurrent identical requests into one owner plus N waiters, and the request path that honours it is `plan_cache` / `resolve_cache_wait` in `./eqproxy-net/src/http1.rs`. (Assumption: "clients" means concurrent HTTP requests through EQProxy, not separate client processes.)
+
+**The dedup mechanism, in `./eqproxy-net/src/cache.rs`:**
+- `Lookup` enum (`cache.rs:207-218`) has four outcomes: `Hit`, `Fetch` (this caller owns the origin fetch), `Revalidate` (owner of a conditional revalidation), and `Wait(Arc<SharedFetch>)` — "Another task owns the fetch: wait on the shared slot."
+- `lookup` (`cache.rs:333-373`) holds the cache lock, looks for a matching variant in the store, and on a miss checks `inner.inflight.get(key)`. If a fetch is already running it returns `Lookup::Wait(Arc::clone(shared))`; otherwise it creates a `SharedFetch` (`cache.rs:221-224`: a `tokio::sync::Notify` plus a `Mutex<Option<FetchResult>>`), inserts it into `inflight`, and returns `Fetch`. The same check guards the revalidation path, so a stale-with-validators entry also gets coalesced into `Revalidate` vs `Wait`.
+- `FetchResult` (`cache.rs:228-234`) is what the owner publishes: `Ready` (store is fresh again — waiters re-run `lookup`, since their Vary variant may differ) or `Gone` (fetch failed / unstorable — waiters fetch directly).
+- `Cache::take_inflight` (`cache.rs:653-655`) removes the slot; it is called by `complete` (node `nodes:`4f1203b8-...``) and by `refresh`, i.e. both the client-driven completion and the background revalidation clear the in-flight marker.
+
+**Who calls it, i.e. what a change has to account for:**
+- `plan_cache` (`./eqproxy-net/src/http1.rs:1790-1847`) — the initial decision. It builds `CacheFetch` (key from `cache::base_key` over method/scheme/forwarded host+target, `http1.rs:1757-1767`) and dispatches on `cache.lookup`: `Hit` → `CacheAction::Serve`, `Fetch` → `Origin`, `Revalidate` → `Origin` with the stale entry attached, and it is also the caller of `Cache::wait` for the `Wait` arm.
+- `resolve_cache_wait` (`./eqproxy-net/src/http1.rs:1851-1887`) — the waiter's continuation: `cache.wait(shared).await`, then on `Ready` re-runs `cache.lookup` and serves the hit; on `Gone`/`None` falls back to `CacheAction::Direct(fetch)` ("exactly one extra origin load, never a wrong byte"), and on a fresh `Lookup::Wait` after waking it fetches alone rather than queuing behind another owner.
+- Both are called from `serve_http` (`./eqproxy-net/src/http1.rs`, node `nodes:`56f8d77a-...``), which is the single entry point you would re-read when changing the protocol of `SharedFetch`/`FetchResult`/`Lookup`.
+- Unit test pinning the contract: `miss_then_hit` (`cache.rs:1456-1469`) asserts `Fetch` then `Wait` for the same key before `complete`.
+
+**Neighbouring behaviour that decides whether coalescing applies at all:**
+- Session-carrying requests bypass the cache entirely, so they never coalesce: `sessions_never_share_an_entry` (`./eqproxy-net/tests/e2e_cache.rs:427-458`) expects 11 origin hits for 11 concurrent requests.
+- Bodies above `max_entry_bytes` stream through uncached, so identical concurrent requests each hit the origin: `oversized_bodies_stream_through_uncached` (`./eqproxy-net/tests/e2e_cache.rs:644-662`) asserts 2 origin hits.
+- Vary variants are keyed separately — `./eqproxy-net/tests/e2e_cache.rs:487` asserts "one fetch per variant".
+
+**End-to-end proof of the burst case:** `concurrent_requests_share_one_origin_fetch` (`./eqproxy-net/tests/e2e_cache.rs:557-579`) fires 10 concurrent `/slow` requests and asserts `origin.hits("/slow") == 1` ("the lock coalesced the burst"), one dial, and 9 responses marked `x-cache: HIT`.
+
+Gap: the bodies (and exact line ranges) of `Cache::wait` and `Cache::complete` were not returned; only their node IDs, the `take_inflight` callers edge, and the callers listed above. Read `./eqproxy-net/src/cache.rs` around lines 620-660 and the `wait` definition for the notify/resolve details before editing them.

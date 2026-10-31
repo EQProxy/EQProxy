@@ -1,0 +1,105 @@
+[2m2026-10-31T10:16:39.252270Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m 🗄️ Connecting to SurrealDB: surrealkv:///Volumes/Lexar/Cursor/EQProxy/.codegraph/db namespace=codegraph database=codegraph
+[2m2026-10-31T10:16:39.252355Z[0m [32m INFO[0m [2mcodegraph_graph::surrealdb_storage[0m[2m:[0m Initializing SurrealDB storage with connection: surrealkv:///Volumes/Lexar/Cursor/EQProxy/.codegraph/db
+[2m2026-10-31T10:16:39.255396Z[0m [32m INFO[0m [2msurrealdb::core::kvs::ds[0m[2m:[0m Starting kvs store at absolute path surrealkv:/Volumes/Lexar/Cursor/EQProxy/.codegraph/db
+[2m2026-10-31T10:16:39.258289Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Enabling value log separation: true
+[2m2026-10-31T10:16:39.258306Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting value log max file size: 268435456
+[2m2026-10-31T10:16:39.258308Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting value log threshold: 4096
+[2m2026-10-31T10:16:39.258321Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Versioning enabled: false with retention period: 0ns
+[2m2026-10-31T10:16:39.258324Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Versioning with versioned_index: false
+[2m2026-10-31T10:16:39.258326Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting max memtable size: 1073741824
+[2m2026-10-31T10:16:39.258328Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting block cache capacity: 16106127360
+[2m2026-10-31T10:16:39.258424Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Setting block size: 65536
+[2m2026-10-31T10:16:39.286361Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Sync mode: every transaction commit
+[2m2026-10-31T10:16:39.286371Z[0m [32m INFO[0m [2msurrealdb::core::kvs::surrealkv[0m[2m:[0m Grouped commit: enabled (timeout=5000000ns, wait_threshold=12, max_batch_size=4096)
+[2m2026-10-31T10:16:39.286397Z[0m [32m INFO[0m [2msurrealdb::core::kvs::ds[0m[2m:[0m Started surrealkv kvs store
+[2m2026-10-31T10:16:39.341506Z[0m [32m INFO[0m [2msurrealdb::core::kvs::migration[0m[2m:[0m Datastore version recorded [3mversion[0m[2m=[0m3.3.0
+[2m2026-10-31T10:16:39.373295Z[0m [32m INFO[0m [2mcodegraph_graph::surrealdb_storage[0m[2m:[0m Applying bundled v2 schema to new embedded database
+[2m2026-10-31T10:16:41.984656Z[0m [32m INFO[0m [2mcodegraph_graph::surrealdb_storage[0m[2m:[0m SurrealDB storage initialized successfully
+[2m2026-10-31T10:16:41.984674Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m 🗄️ SurrealDB connection established: surrealkv:///Volumes/Lexar/Cursor/EQProxy/.codegraph/db namespace=codegraph database=codegraph
+[2m2026-10-31T10:16:42.214956Z[0m [32m INFO[0m [2mcodegraph_vector::embedding[0m[2m:[0m 🔍 EmbeddingGenerator::with_config called with provider='ollama', model=Some("qwen3-embedding:0.6b"), dimension=1024
+[2m2026-10-31T10:16:42.215533Z[0m [32m INFO[0m [2mcodegraph_vector::embedding[0m[2m:[0m 🎯 Provider matches 'ollama', attempting to initialize...
+[2m2026-10-31T10:16:42.215670Z[0m [32m INFO[0m [2mcodegraph_vector::embedding[0m[2m:[0m ✅ 'ollama' feature is ENABLED
+[2m2026-10-31T10:16:42.215678Z[0m [32m INFO[0m [2mcodegraph_vector::embedding[0m[2m:[0m 🔧 Created OllamaEmbeddingConfig: model='qwen3-embedding:0.6b', url='http://localhost:11434'
+[2m2026-10-31T10:16:42.235132Z[0m [32m INFO[0m [2mcodegraph_vector::embedding[0m[2m:[0m 🔍 Checking Ollama availability...
+[2m2026-10-31T10:16:42.331446Z[0m [32m INFO[0m [2mcodegraph_vector::ollama_embedding_provider[0m[2m:[0m qwen3-embedding:0.6b availability: true
+[2m2026-10-31T10:16:42.331462Z[0m [32m INFO[0m [2mcodegraph_vector::embedding[0m[2m:[0m ✅ Ollama qwen3-embedding:0.6b available for embeddings (from config)
+[2m2026-10-31T10:16:42.331466Z[0m [32m INFO[0m [2mcodegraph_vector::embedding[0m[2m:[0m ✅ ollama_provider successfully set!
+[2m2026-10-31T10:16:42.340725Z[0m [32m INFO[0m [2mcodegraph_vector::ollama_embedding_provider[0m[2m:[0m Loading embedding tokenizer Qwen/Qwen3-Embedding-0.6B@main from the tokenizer cache (downloads tokenizer.json if absent)
+[2m2026-10-31T10:16:42.778105Z[0m [32m INFO[0m [2mcodegraph_vector::ollama_embedding_provider[0m[2m:[0m Embedding input policy: model=qwen3-embedding:0.6b model_limit=32768 serving_context=32768 tokenizer=d30fb6c3184c0084dcb30a400c8dc284552a155e3b3186b2c1d5320bd71a02ee document_prefix="" query_prefix="Instruct: Given a code search query, retrieve relevant code that answers the query\nQuery: "; truncation disabled
+[2m2026-10-31T10:16:42.785976Z[0m [32m INFO[0m [2mcodegraph_vector::embedding[0m[2m:[0m Chunk input limit: 32768 tokens including prefixes/special tokens | skip_chunking=false | AST splitting=true | overlap=64 tokens
+[2m2026-10-31T10:16:42.786388Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m Active embeddings: ollama (batch_size: 64, max_concurrent: 10)
+[2m2026-10-31T10:16:42.786606Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m 🧭 Embedding dimension resolved from provider (ollama): 1024 → Surreal column embedding_1024
+[2m2026-10-31T10:16:42.868026Z[0m [32m INFO[0m [2mcodegraph_vector::submitted_cache[0m[2m:[0m Embedding inference limits: 64 rows, 32768 tokens, 1048576 bytes per request; 1 concurrent requests
+[2m2026-10-31T10:16:42.982192Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m Starting project indexing: "."
+[2m2026-10-31T10:16:42.982501Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m 🗄️ SurrealDB (pre-parse): target=surrealkv:///Volumes/Lexar/Cursor/EQProxy/.codegraph/db namespace=codegraph database=codegraph auth=no auth
+[2m2026-10-31T10:16:42.982525Z[0m [32m INFO[0m [2mcodegraph_parser::file_collect[0m[2m:[0m Collecting source files from: "."
+[2m2026-10-31T10:16:43.073908Z[0m [32m INFO[0m [2mcodegraph_parser::file_collect[0m[2m:[0m File collection complete: 2366 files found, 79 passed filters
+[2m2026-10-31T10:16:43.951148Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m 🧭 Indexing tier: Fast | analyzers: build_context=false lsp=off enrichment=false module_linking=false dataflow=false docs_contracts=false architecture=false
+[2m2026-10-31T10:16:44.073447Z[0m [32m INFO[0m [2mcodegraph_mcp::estimation[0m[2m:[0m 🌳 UNIFIED AST EXTRACTION COMPLETE:
+[2m2026-10-31T10:16:44.073460Z[0m [32m INFO[0m [2mcodegraph_mcp::estimation[0m[2m:[0m    📊 Files processed: 79/79 (100.0% success rate)
+[2m2026-10-31T10:16:44.073465Z[0m [32m INFO[0m [2mcodegraph_mcp::estimation[0m[2m:[0m    🌳 Semantic nodes extracted: 8406 (functions, structs, classes, imports, etc.)
+[2m2026-10-31T10:16:44.073467Z[0m [32m INFO[0m [2mcodegraph_mcp::estimation[0m[2m:[0m    🔗 Code relationships found: 27643 (function calls, imports, dependencies)
+[2m2026-10-31T10:16:44.073468Z[0m [32m INFO[0m [2mcodegraph_mcp::estimation[0m[2m:[0m    ⚡ Processing performance: 646.8 files/s | 629545 lines/s
+[2m2026-10-31T10:16:44.073470Z[0m [32m INFO[0m [2mcodegraph_mcp::estimation[0m[2m:[0m    🎯 Extraction efficiency: 106.4 nodes/file | 349.9 edges/file
+[2m2026-10-31T10:16:44.469444Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m 🌳 TreeSitter AST parsing results:
+[2m2026-10-31T10:16:44.469455Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m    📊 Semantic nodes extracted: 8406 (functions, structs, classes, etc.)
+[2m2026-10-31T10:16:44.469457Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m    🔗 Code relationships extracted: 27643 (calls, imports, dependencies)
+[2m2026-10-31T10:16:44.469459Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m    📈 Extraction efficiency: 106.4 nodes/file | 349.9 edges/file
+[2m2026-10-31T10:16:44.469460Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m    🎯 Sample nodes: [SharedStr("assert_eq"), SharedStr("in_flight"), SharedStr("assert")]
+[2m2026-10-31T10:16:44.469652Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m 🗄️ SurrealDB (post-parse): target=surrealkv:///Volumes/Lexar/Cursor/EQProxy/.codegraph/db namespace=codegraph database=codegraph auth=no auth
+[2m2026-10-31T10:16:53.057536Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m 🗄️ SurrealDB nodes persisted: 8406 (expected ≈ 8406)
+[2m2026-10-31T10:16:53.057573Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m    ⚙️ Embedding batch row limit: 64 | Chunk DB write row limit: 32 (inference token/byte and provider limits may split requests)
+[2m2026-10-31T10:16:53.057575Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m 💾 Starting semantic embedding generation:
+[2m2026-10-31T10:16:53.057794Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m    🤖 Provider: ollama (1024-dimensional embeddings)
+[2m2026-10-31T10:16:53.057798Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m    🗄️ SurrealDB column: embedding_1024
+[2m2026-10-31T10:16:53.057799Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m    📊 Nodes to embed: 8406 semantic entities
+[2m2026-10-31T10:16:53.065217Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m    ⚡ Embedding row limit: 64 (estimated system memory: 32GB)
+[2m2026-10-31T10:16:53.065227Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m    🎯 Target: Enable similarity search and AI-powered analysis
+[2m2026-10-31T10:17:15.938691Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m 🧩 SurrealDB chunks persisted: 8406 (expected ≈ 8406)
+[2m2026-10-31T10:17:15.938708Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m 💾 Semantic embedding generation results:
+[2m2026-10-31T10:17:15.938710Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m    🎯 Vector search enabled: 8406 nodes embedded for similarity matching
+[2m2026-10-31T10:17:15.938712Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m    📐 Embedding dimensions: 1024
+[2m2026-10-31T10:17:15.938713Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m    🤖 Provider performance: ollama with batch optimization
+[2m2026-10-31T10:17:15.938715Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m    🔍 Capabilities unlocked: Vector search, semantic analysis, AI-powered tools
+[2m2026-10-31T10:17:15.938716Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m 🔧 Preserving working ONNX embedder session for AI semantic matching
+[2m2026-10-31T10:17:15.938718Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m Vector indexing handled by SurrealDB; local FAISS generation removed
+[2m2026-10-31T10:17:18.605490Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m 🧠 Relationship symbol embeddings starting: 3819 candidate names, 740 unresolved names
+[2m2026-10-31T10:17:29.240211Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m 🧠 Relationship symbol embeddings complete in 10.634782125s
+[2m2026-10-31T10:17:29.240235Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m 🔎 Semantic scoring starting: 740 unresolved names, 3819 candidate vectors, 8 workers
+[2m2026-10-31T10:17:29.306630Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m 🔎 Semantic scoring complete: 445 matches, 14187 comparisons, 4559 cached vector norms in 66.385417ms
+[2m2026-10-31T10:17:33.702099Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m Resolved 14816 of 27643 relationships (exact/contextual=9442, lexical=1816, semantic=3558) in 17.763511916s
+[2m2026-10-31T10:17:33.746447Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m 🗄️ SurrealDB edges persisted: 14816 (expected ≈ 14816)
+[2m2026-10-31T10:17:33.746464Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m 💾 Updating file metadata for change tracking
+[2m2026-10-31T10:17:33.753906Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m 💾 Updated metadata for 79 of 79 files
+[2m2026-10-31T10:17:33.775483Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m 🎉 INDEXING COMPLETE
+[2m2026-10-31T10:17:33.775494Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m 📂 Files 79 (79 skipped) | Lines 76889 | Time 50.9s
+[2m2026-10-31T10:17:33.775497Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m 🌳 Graph coverage: nodes 8406 | edges 14816 | nodes/file 106.4 | edges/file 349.9 | resolved 53.6%
+[2m2026-10-31T10:17:33.775499Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m 🧠 Embeddings: chunks 8406 | dim 1024 | provider ollama | per-node 1.0
+[2m2026-10-31T10:17:33.775507Z[0m [32m INFO[0m [2mcodegraph_mcp::indexer[0m[2m:[0m ⚡ Throughput: 1.6 files/s | 165.1 nodes/s | 291.0 edges/s
+[2m2026-10-31T10:18:17.057229Z[0m [32m INFO[0m [2mcodegraph_parser::file_collect[0m[2m:[0m Collecting source files from: "."
+[2m2026-10-31T10:18:17.078040Z[0m [32m INFO[0m [2mcodegraph_parser::file_collect[0m[2m:[0m File collection complete: 2366 files found, 79 passed filters
+Stages: graph=true, embeddings=ready, semantic=ready
+
+🎉 INDEXING COMPLETE!
+
+📊 Performance Summary
+┌───────────────────────────────────────────────────────┐
+│ ⏱️  Total time: 98.55s                                  │
+│ ⚡ Throughput: 0.8 files/s, 85 nodes/s                 │
+├───────────────────────────────────────────────────────┤
+│ 📄 Files:          79 indexed,   79 skipped           │
+│ 📝 Lines:       76889 processed                        │
+│ 🌳 Nodes:        8406 extracted                        │
+│ 🔗 Edges:       14816 relationships                    │
+│ 🎯 Resolution:   53.6% (14816 resolved, 12827 unresolved)      │
+│ 💾 Embeddings:   8406 chunks (1024-dim)                  │
+├──────────────────────────────────────────────────────┤
+│ 📈 Averages: 106.4 nodes/file, 187.5 edges/file          │
+└───────────────────────────────────────────────────────┘
+
+⚙️  Configuration Summary
+Workers: 8 | Embedding batch row limit: 64 | Languages: 
+Embeddings: ollama (1024-dim)
+
+🚀 Ready for CodeGraph Agentic MCP Intelligence!
+Next: Start MCP server with 'codegraph start http' or 'codegraph start stdio'

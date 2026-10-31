@@ -1,0 +1,42 @@
+## Direct answer
+
+Nothing outside `eqproxy-net` compiles against the cache module's internals: the module's only direct importers are `eqproxy-net/src/lib.rs` (the re-export surface) and `eqproxy-net/tests/e2e_cache.rs`, plus `eqproxy-net/src/http1.rs`, which is the single in-crate consumer. So a change to the cache is mostly felt along one path: `cache` → `http1::serve_cached` → `http1::serve_http` → the HTTP/2, HTTP/3, WebSocket and generic connection front ends, and by the public re-export list in `lib.rs` (which external/test code depends on).
+
+## Direct dependents (depth 1)
+
+- **`pub mod cache;`** — `eqproxy-net/src/lib.rs:15` (node `b6f55b0f…`). Afferent coupling 2, efferent 0, instability 0.0 ("stable") — almost nothing can be changed here without touching a dependent.
+- **Public re-export block** — `eqproxy-net/src/lib.rs:47-50`: `pub use cache::{Bypass, Cache, CacheKey, CacheSettings, Decision, FetchOutcome, Lookup, SharedFetch, StoredParts};`. Every one of these names is public API; changing any of their shapes is a breaking change for crate consumers.
+- **`use crate::cache;`** — `eqproxy-net/src/http1.rs:42`, the only in-crate module using it.
+- **`eqproxy-net/tests/e2e_cache.rs:21-24`** — imports `eqproxy_net::{BoundProxy, Cache, CacheSettings, …, cache}`, so it binds both the `Cache` type and the `cache` module path directly.
+
+## Transitive dependents
+
+`serve_cached` (`eqproxy-net/src/http1.rs:1970-2110`, node `b2fbc8fe…`) is the sole caller of `cache::render_head` (`eqproxy-net/src/cache.rs`, node `09b23fb3…`) and also uses `cache::client_fresh` and `StoredEntry::age_secs` (`eqproxy-net/src/cache.rs:169`, a high-degree hub with 375 callers). It is called from `serve_http` (`eqproxy-net/src/http1.rs:2187`), and `serve_http` is in turn called by:
+
+- `http2::exchange` — `eqproxy-net/src/http2.rs` (`nodes:05c3f9ff…`)
+- `http3::exchange` — `eqproxy-net/src/http3.rs` (`nodes:673080a5…`)
+- `ws::serve` — `eqproxy-net/src/ws.rs` (`nodes:e1c9adfc…`)
+- `proxy::handle_connection` — `eqproxy-net/src/proxy.rs` (`nodes:bebf5149…`)
+
+So any change to the hit/serve path (head rendering, headers, age, `x-cache` marker, compression of cached bodies) reaches all four protocol front ends at runtime, not just HTTP/1.
+
+Configuration side: the per-listener wiring is `ResolvedListener` (`eqproxy-net/src/proxy.rs:831-881`) with its `cache: Option<…>` field, defaulted to `None` in `ResolvedListener::new` (`eqproxy-net/src/proxy.rs:883` onward). Changing `CacheSettings`/`Cache`'s constructor (`Cache::load(settings, metrics)`, `eqproxy-net/src/cache.rs:295+`) therefore ripples through listener construction, not just the cache module.
+
+## Tests that pin the current behaviour
+
+- In-module unit tests: `eqproxy-net/src/cache.rs:1423+` (`miss_then_hit`, `failure_drops_the_stale_entry`, plus helpers `base_key`, `parts`, using `Lookup::{Fetch, Wait, Hit}` and `FetchOutcome::Stored(StoredParts { … })`).
+- End-to-end: `eqproxy-net/tests/e2e_cache.rs` — `miss_then_hit_serves_identical_bytes` (:403), `set_cookie_responses_are_never_stored` (:461), `entries_expire_after_their_ttl` (:532), `cookie_affinity_disables_the_cache_at_runtime` (:665). These assert the `x-cache: HIT/MISS/REVALIDATED` markers, `age` header, origin hit counts, and the `Metrics` counters `cache_hits`, `cache_misses`, `cache_stores`, `cache_bypasses`.
+
+## Cycles
+
+`detect_circular_dependencies` on `Imports` reports no cycle involving `eqproxy-net/src/cache.rs`; the only import cycle returned is an unrelated `tokio::io` import pair between `eqproxy-net/src/http1.rs:35` and `eqproxy-net/src/access.rs:22`.
+
+## Gaps
+
+- Reverse `Calls` lookup on the `impl Cache` block (`nodes:238d1a5b…`) returned zero edges, so I could not enumerate every individual caller of `lookup` / `complete` / `reload_disk` by method node; the consumer set above is established through the module import, `render_head`, and `serve_cached`.
+- The `Calls` cycle scan was truncated (10 items dropped), so I cannot state that no *call* cycle exists involving the cache — only that no import cycle does.
+- Whether the CLI (`eqproxy-cli/src/main.rs`, e.g. `resolve_with` at :2526) constructs `CacheSettings` directly is not confirmed by any edge I retrieved; only `tests/e2e_cache.rs` shows as an external importer of the `cache` module.
+
+## Recommendation
+
+Treat the cache as a stable, low-fan-out module with one hot consumer: keep changes internal to `eqproxy-net/src/cache.rs` where possible, and if the public names in `eqproxy-net/src/lib.rs:47-50` or the `Lookup`/`FetchOutcome`/`StoredParts`/`CacheSettings` shapes must change, update `serve_cached` (`eqproxy-net/src/http1.rs:1970`) and the assertions in `eqproxy-net/tests/e2e_cache.rs` in the same commit, since the four protocol front ends all funnel through that path.

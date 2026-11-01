@@ -5,12 +5,11 @@ Language: **English**.
 **What this page answers:** what must be true before the `v0.9.1` tag is
 pushed, what the pipeline does with it, and how the published artifacts are
 verified afterwards. This is the procedure for the 0.9.1 cut; it is **not a
-claim that the cut or the publication has happened**. The version and
-CHANGELOG are prepared in the working tree, but the tree is not committed,
-no tag exists, no image has been promoted and the gates below that are marked
-**NOT EXECUTED** have not run on a cut commit. The local source gates were run
-on the uncommitted working tree on 2026-11-01 and are recorded in §2.1; the cut
-commit must repeat them.
+claim that the publication has happened**. The cut commit exists
+(`ff89879ce24c9554a0d7b6862b22d24dc5b500c5`, 2026-11-01) and the local source
+gates and all four audit legs were run on it; the results are recorded in §2.1
+and §2.2. No tag exists, no image has been promoted, and every gate below that
+is marked **NOT EXECUTED** has not run.
 
 - Version: **0.9.1** (`Cargo.toml` `[workspace.package] version`).
 - Release notes: [CHANGELOG.md](../CHANGELOG.md) section
@@ -19,9 +18,9 @@ commit must repeat them.
 
 ## 1. The release commit
 
-The release commit must contain the complete 0.9.1 tree, not only the version
-bump: the working tree currently carries the new code, tests, ADRs, evidence
-and roadmap pages uncommitted. The version-only part is:
+The release commit contains the complete 0.9.1 tree, not only the version
+bump: the new code, tests, ADRs and evidence are part of it, not a later
+follow-up commit. The version-only part is:
 
 | File | Change | Why |
 |---|---|---|
@@ -86,38 +85,44 @@ $ grep -n '^## \[v0.9.1\]' CHANGELOG.md                            # the release
 `ci.yml` fails on a toolchain/`ARG RUST_VERSION` mismatch, and the `guard` job
 fails on `v$VER != $GITHUB_REF_NAME`.
 
-### 2.1 Working-tree result (2026-11-01, not a cut-commit result)
+### 2.1 Cut-commit result (`ff89879`, 2026-11-01)
 
 | Command | Result |
 |---|---|
-| `cargo fmt --all -- --check` | exit **0** |
-| `cargo clippy --workspace --all-targets -- -D warnings` | exit **0** |
-| `cargo test --workspace` | exit **0** — **36 targets, 715 passed, 0 failed, 2 ignored** |
+| `cargo fmt --all -- --check` | exit **0** (Veyra `rustfmt`) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | exit **0** (Veyra `clippy`) |
+| `cargo test --workspace` | exit **0** — **36 targets, 715 passed, 0 failed, 2 ignored** (Veyra `cargo-test` logs); `cargo-nextest` on the same commit: 715 run, **715 passed**, 2 skipped |
 | `cargo build --workspace --release` | exit **0**; `target/release/eqproxy --version` → `eqproxy 0.9.1` |
 | `python3 .github/scripts/check-evidence-test-citations.py` | exit **0** (101 documents, 229 cited identifiers, 700 `#[test]` functions) |
-| `python3 .github/scripts/check-short-health-probes.py --self-test` | exit **0** |
-| Local Markdown link check over the release tree's Markdown (165 files) | 1,144 links, **0 broken**, 0 local-only; 121 defects repaired |
+| `python3 .github/scripts/check-short-health-probes.py` | exit **0** (18 probes found, 2 declared); `--self-test` exit **0** |
+| `python3 .github/scripts/check-uid-skips.py --self-test` | exit **0** |
+| Local Markdown link check over the release tree's Markdown (165 files) | **1,145 links, 0 broken, 0 local-only**, 11 anchors, exit **0** (the cut commit itself checked 1,144; §2.2's triage link is the one this page adds) |
 | CHANGELOG extraction regex for `0.9.1` | section found at line 6, date `2026-11-01` |
 
 The link sweep's method, repair breakdown and limits are recorded in
-[v091-link-sweep.md](evidence/v091-link-sweep.md).
+[v091-link-sweep.md](evidence/v091-link-sweep.md). It was re-run on the
+commit, not on the working tree that preceded it.
 
-These results are **working-tree evidence only**. The tree is uncommitted
-(98 modified and 38 untracked paths when this page was written), so they do
-not prove the cut commit. The `root`/unprivileged
-`--nocapture` pair and the two `uid-skips` verdicts are CI-only until those
-transcripts exist.
+Every row was produced on commit `ff89879ce24c9554a0d7b6862b22d24dc5b500c5`
+with a clean working tree (`git status --porcelain` empty), except the link
+row's 1,145: that is the re-run after this page's audit table added its one
+link, on a tree whose only change is documentation. The
+`root`/unprivileged `--nocapture` pair and the two `uid-skips` verdicts remain
+CI-only until the tag run produces those transcripts.
 
-### 2.2 Audits on the final tree
+### 2.2 Audits on the cut commit
 
 | Leg | Result |
 |---|---|
-| Veyra Proof | **ACCEPTED**, exit **0** on this uncommitted tree (`20261101T055442Z`): rustfmt, check, clippy, test, nextest, llvm-cov, audit, deny, machete, veyra-e2e and anti-theater OK. `cargo-geiger` INCONCLUSIVE (coverage warnings, reported not counted as a pass); dylint and semver-checks skipped with their reasons. Evidence: `.veyra/evidence/20261101T055442Z/report.md` (local-only). |
-| Rust Audit | exit **1** by rule: **0 critical / 7 high / 417 medium / 111 low**. The seven high are the previously triaged cache/fuzz set, identical to the scan before this delta; no finding in `date.rs` or the new header lines. Evidence: `report/rust-audit-20261101-072304.md` (local-only). |
-| CodeGraph Rust | index exit **0** over the final tree: 85 files, 81,432 lines, 8,924 nodes, 15,744 edges, `graph_complete: true`, `vector_index_ready: true`, `errors: 0`, `index_ms 79 558`. `agent impact` on `current_http_date` reports 9 direct dependents; source-checked: the five h1 writers plus h2 `refuse` (`http2.rs:329`), h3 `refuse` (`http3.rs:946`), ws `refuse` (`ws.rs:314`) and gRPC `local_answer` (`grpc.rs:626`). The agent's suggestion to validate the value is not a defect: the formatter can only emit fixed ASCII (weekday/month tables, zero-padded numbers), so the guarded `HeaderValue::from_str` callers cannot fail. `agent context` omitted `http3.rs` from its first list; the source has it at `http3.rs:953` and the check above is the authority. Stats: `/tmp/cg-v091-date2.json`. |
-| Hindsight | **Stored** for this delta: `v0.9.1 Date header on generated responses`, bank `eqproxy`, first id `99d880e9-53d7-47c8-903f-4561322e46c2`; correction note `2ade9b38-50a1-4692-ac05-862f123fd255` records the final Rust Audit path. |
+| Veyra Proof | **ACCEPTED**, exit **0** on `ff89879` (`20261101T070732Z`): rustfmt, check, clippy, cargo test, nextest, llvm-cov, audit, deny, machete, veyra-e2e and anti-theater OK. `cargo-geiger` INCONCLUSIVE (coverage warnings in 4 runs, reported and not counted as a pass); dylint and semver-checks skipped with their reasons. Evidence: `.veyra/evidence/20261101T070732Z/report.md` (local-only). A duplicate launch overlapped this leg once; that contended run (`20261101T065643Z`) was **REJECTED** because its E2E binary was SIGKILLed mid-scenario. It stays on disk, and the accepted rerun above is the one cited. |
+| Rust Audit | exit **1** by rule: **0 critical / 7 high / 417 medium / 111 low**. The seven high are the `cache.rs`/fuzz set triaged in [v085-rust-audit-triage](evidence/v085-rust-audit-triage.md); no new high on the commit. Evidence: `report/rust-audit-20261101-075704.md` and `report/not-executed-2026-11-01.md` (local-only). |
+| CodeGraph Rust | index exit **0** over `ff89879`: 84 files, 81,576 lines, 8,940 nodes, 15,784 edges, `graph_complete: true`, `vector_index_ready: true`, `errors: 0`, `index_ms 993 238`. `agent impact` on `current_http_date` reports 9 direct dependents; source-checked: `http1.rs:1117/1141/1241/1288/1329`, `http2.rs:336`, `http3.rs:953`, `ws.rs:321` and `grpc.rs:647` (the agent's ranges are a few lines off; the set is right). `agent context` locates the pages in `error_pages.rs:49-83` and the writers in `http1.rs`; it flags `get_reverse_dependencies` returning nothing, so the grep above is the authority. Stats: `/tmp/cg-index-v091.json`. |
+| Hindsight | **Stored** for this cut, bank `eqproxy`: first id `6a6eb5dc-30f2-4096-b065-86166016a866` (the CLI returned a list of memory ids for the note). |
 
-Run all four on the cut commit, not on this working tree, before the tag.
+All four legs ran on the cut commit, not on an earlier working tree. A
+docs-only commit on top of it records these results and updates the Date
+evidence page; the tagged tree therefore differs from the audited one only in
+those Markdown files.
 
 ### 2.3 `Date` on locally generated responses
 
@@ -177,6 +182,11 @@ Both must return nothing. Inspect the outgoing diff for maintainer-local files
 as well; a build context or an archive that absorbed one is not fixed by a
 later commit. The source tarball is exported with `git archive`, so untracked
 local material does not enter it by construction; verify the file list anyway.
+
+The cut commit `ff89879` was checked locally against both criteria and against
+the maintainer-local path list: no path in `git show --name-only HEAD` matched
+a local-only entry, `git log -1 --format=%b` carried no attribution trailer and
+`git status --porcelain` was empty.
 
 ## 4. Tag and push
 

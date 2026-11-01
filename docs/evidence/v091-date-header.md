@@ -125,13 +125,18 @@ committed). All commands ran on 2026-11-01.
 The suite grew from 698 to 711 because the date module, its five unit tests and
 the shared test helpers (`mod common`, two socket helpers) are compiled into
 the suites that now assert the header; no test was removed, ignored or
-weakened.
+weakened. The cut commit `ff89879` was gated again afterwards and reports
+**715 passed, 0 failed, 2 ignored** across the same 36 targets (checklist
+§2.1).
 
 ## Audits
 
-These ran on the final working tree on 2026-11-01; they still have to be
-repeated on the cut commit before the tag, as
-[release-0.9.1.md](../release-0.9.1.md) §2.2 requires.
+These ran on the delta tree before the commit. The four legs were repeated on
+the cut commit `ff89879` and are recorded in
+[release-0.9.1.md](../release-0.9.1.md) §2.2: Veyra **ACCEPTED**
+(`20261101T070732Z`), Rust Audit 0 critical / 7 triaged high / 417 medium /
+111 low, a fresh CodeGraph index over the commit (84 files, 8,940 nodes) and a
+new Hindsight note.
 
 | Leg | Command | Result | Evidence |
 |---|---|---|---|

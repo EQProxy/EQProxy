@@ -56,7 +56,7 @@ together with `SHA256SUMS.txt` (four binaries plus the sources,
 
 The musl binary was measured against **genuinely built glibc binaries** on
 arm64 and amd64, same scenario and same hosts, every response a real `200`
-([TLS parity report](https://github.com/ExyonQ/EQProxy/blob/v{{version}}/docs/evidence/v0.6.2-tls-parity/README.md)):
+([TLS parity report](https://github.com/EQProxy/EQProxy/blob/v{{version}}/docs/evidence/v0.6.2-tls-parity/README.md)):
 arm64 is at parity (−2.4 %, p 0.28); on amd64 musl is 20 % behind under TLS
 (p 0.001) and 11 % behind with no TLS at all (p 0.0001), so the gap is
 libc-general rather than handshake cost. An earlier version of this page
@@ -65,12 +65,14 @@ asset inside a Debian image; that comparison is withdrawn.
 
 ## Quick reference
 
-- **Maintained by:** [ExyonQ](https://github.com/ExyonQ/EQProxy)
-- **Where to get help:** [GitHub issues](https://github.com/ExyonQ/EQProxy/issues) or contact@exyonq.org
+- **Project site:** https://eqproxy.org
+- **Documentation:** https://eqproxy.dev
+- **Maintained by:** [ExyonQ](https://github.com/ExyonQ)
+- **Where to get help:** [GitHub issues](https://github.com/EQProxy/EQProxy/issues) or contact@exyonq.org
 - **Security:** security@exyonq.org
 - **Supported architectures:** `linux/amd64`, `linux/arm64`
-- **Source of this image:** https://github.com/ExyonQ/EQProxy/blob/v{{version}}/docker/Dockerfile
-- **Release:** https://github.com/ExyonQ/EQProxy/releases/tag/v{{version}}
+- **Source of this image:** https://github.com/EQProxy/EQProxy/blob/v{{version}}/docker/Dockerfile
+- **Release:** https://github.com/EQProxy/EQProxy/releases/tag/v{{version}}
 
 ## Supported tags
 
@@ -163,13 +165,15 @@ docker kill --signal=HUP eqproxy
 
 ## Documentation
 
-- [README](https://github.com/ExyonQ/EQProxy#readme) — status, install, quick start
-- [SPEC.md](https://github.com/ExyonQ/EQProxy/blob/v{{version}}/SPEC.md) — specified behaviour
-- [eqproxy.toml.example](https://github.com/ExyonQ/EQProxy/blob/v{{version}}/eqproxy.toml.example) — every option documented
-- [THREAT_MODEL.md](https://github.com/ExyonQ/EQProxy/blob/v{{version}}/THREAT_MODEL.md) — threat model and non-protections
+- [eqproxy.org](https://eqproxy.org) — the project page
+- [eqproxy.dev](https://eqproxy.dev) — configuration reference and examples
+- [README](https://github.com/EQProxy/EQProxy#readme) — status, install, quick start
+- [SPEC.md](https://github.com/EQProxy/EQProxy/blob/v{{version}}/SPEC.md) — specified behaviour
+- [eqproxy.toml.example](https://github.com/EQProxy/EQProxy/blob/v{{version}}/eqproxy.toml.example) — every option documented
+- [THREAT_MODEL.md](https://github.com/EQProxy/EQProxy/blob/v{{version}}/THREAT_MODEL.md) — threat model and non-protections
 
 ## License
 
 Dual: MIT OR Apache-2.0, at the recipient's choice.
 
-https://github.com/ExyonQ/EQProxy/blob/v{{version}}/LICENSE-MIT
+https://github.com/EQProxy/EQProxy/blob/v{{version}}/LICENSE-MIT

@@ -180,34 +180,34 @@ path = "/"
 [listener.web.rules.direct_response]
 status = 200
 content_type = "text/plain"
-body = "Welcome to EQProxy (ExyonQ)!\n"
+body = "Welcome to EQProxy by ExyonQ\n"
 
 [backend.api]
 server = "127.0.0.1:9"
 ```
 
 ```console
-$ docker run -d --name eqv091-date -p 18091:8080 \
-    -v /tmp/eqv091-date/eqproxy.toml:/etc/eqproxy/eqproxy.toml:ro \
-    ghcr.io/exyonq/eqproxy:0.9.1 run --config /etc/eqproxy/eqproxy.toml
+$ docker run -d --name eqv091-h1 -p 18091:8080 \
+    -v /tmp/eqv091-h1:/tmp/eqv091-h1:ro \
+    ghcr.io/exyonq/eqproxy:0.9.1 run --config /tmp/eqv091-h1/eqproxy.toml
 $ curl -sS -i http://127.0.0.1:18091/
 HTTP/1.1 200 ok
 Server: eqproxy
-date: Sun, 01 Nov 2026 16:41:18 GMT
+date: Sun, 01 Nov 2026 17:13:18 GMT
 connection: keep-alive
 content-type: text/plain
 content-length: 29
 
-Welcome to EQProxy (ExyonQ)!
+Welcome to EQProxy by ExyonQ
 
 $ sleep 2; curl -sS -I http://127.0.0.1:18091/
 HTTP/1.1 200 ok
 Server: eqproxy
-date: Sun, 01 Nov 2026 16:41:20 GMT
+date: Sun, 01 Nov 2026 17:13:20 GMT
 …
 
 $ date -u
-Sun, 01 Nov 2026 16:41:20 GMT
+Sun, 01 Nov 2026 17:13:20 GMT
 ```
 
 The header advances with the clock and equals `date -u` at request time, so it
@@ -219,7 +219,7 @@ too:
 $ curl -sS -i http://127.0.0.1:18091/nope
 HTTP/1.1 502 bad gateway
 Server: eqproxy
-date: Sun, 01 Nov 2026 16:41:29 GMT
+date: Sun, 01 Nov 2026 17:13:20 GMT
 connection: close
 content-length: 0
 ```
@@ -256,7 +256,7 @@ path = "/"
 [listener.web.rules.direct_response]
 status = 200
 content_type = "text/plain"
-body = "Welcome to EQProxy (ExyonQ)!\n"
+body = "Welcome to EQProxy by ExyonQ\n"
 ```
 
 `docker run -d -p 18453:8443/tcp -p 18453:8443/udp … ghcr.io/exyonq/eqproxy:0.9.1`
@@ -269,31 +269,31 @@ verification is off only because the certificate is self-signed.
 $ curl -sk --http2 -i https://127.0.0.1:18453/
 HTTP/2 200
 server: eqproxy
-date: Sun, 01 Nov 2026 16:55:01 GMT
+date: Sun, 01 Nov 2026 17:12:40 GMT
 content-type: text/plain
 content-length: 29
 
-Welcome to EQProxy (ExyonQ)!
+Welcome to EQProxy by ExyonQ
 
 $ date -u
-Sun, 01 Nov 2026 16:55:01 GMT
+Sun, 01 Nov 2026 17:12:40 GMT
 
 $ python client.py            # aioquic GET /
 :status: 200
 server: eqproxy
-date: Sun, 01 Nov 2026 16:55:43 GMT
+date: Sun, 01 Nov 2026 17:12:53 GMT
 content-type: text/plain
 content-length: 29
 
-Welcome to EQProxy (ExyonQ)!
+Welcome to EQProxy by ExyonQ
 
 $ date -u
-Sun, 01 Nov 2026 16:55:43 GMT
+Sun, 01 Nov 2026 17:12:53 GMT
 
 $ python client.py            # a second connection, two seconds later
 :status: 200
 server: eqproxy
-date: Sun, 01 Nov 2026 16:55:46 GMT
+date: Sun, 01 Nov 2026 17:12:56 GMT
 ```
 
 Both values equal the clock at request time and the body is the rule's: no
@@ -304,13 +304,13 @@ both transports too:
 $ curl -sk --http2 -i https://127.0.0.1:18453/nope
 HTTP/2 502
 server: eqproxy
-date: Sun, 01 Nov 2026 16:55:56 GMT
+date: Sun, 01 Nov 2026 17:12:56 GMT
 content-length: 0
 
 $ python client.py /nope
 :status: 502
 server: eqproxy
-date: Sun, 01 Nov 2026 16:56:13 GMT
+date: Sun, 01 Nov 2026 17:12:56 GMT
 content-length: 0
 ```
 

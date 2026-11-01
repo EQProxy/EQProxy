@@ -6,8 +6,9 @@
 
 # EQProxy
 
-EQProxy is a reverse proxy and load balancer written in Rust. It terminates
-HTTP/2 (ALPN `h2` over TLS, or h2c with the connection preface on a
+**Reverse proxy and load balancer that imports HAProxy/nginx/ingress-nginx/Envoy
+configs. 65/65 routing-equivalence checks.** It is written in Rust and
+terminates HTTP/2 (ALPN `h2` over TLS, or h2c with the connection preface on a
 plaintext listener) and HTTP/1.1 with strict framing (including interim 1xx
 and `Expect: 100-continue`), and speaks HTTP/2 to a backend that negotiates
 `h2` (opt-in with `[backend.NAME.tls] alpn = ["h2"]`; HTTP/1.1 otherwise),

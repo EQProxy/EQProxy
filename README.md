@@ -1,7 +1,7 @@
 # EQProxy
 
-**A reverse proxy and load balancer in Rust that imports your HAProxy, nginx,
-ingress-nginx or Envoy config — and proves the translation routes identically.**
+**The reverse proxy and load balancer that imports your HAProxy and nginx
+config, and proves the translation routes the same.**
 
 [![Latest release](https://img.shields.io/github/v/release/ExyonQ/EQProxy)](https://github.com/ExyonQ/EQProxy/releases)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](LICENSE-MIT)

@@ -1,4 +1,4 @@
-# SPEC.md — ExyonQ Proxy (EQProxy) Specification
+# SPEC.md — EQProxy Specification
 
 Language: **English**.
 

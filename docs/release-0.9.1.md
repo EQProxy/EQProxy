@@ -292,9 +292,9 @@ the two Scout reports and `SHA256SUMS.txt` itself.
   `docker run --rm … --version` answered `eqproxy 0.9.1`.
 - A hand-run journey with the pulled image used a `direct_response` rule, so
   no origin existed on the path: `HTTP/1.1 200 ok`, `Server: eqproxy`,
-  `date: Sun, 01 Nov 2026 16:41:18 GMT` (the local clock at request time) and
-  the configured body `Welcome to EQProxy (ExyonQ)!`. Two seconds later the
-  same request carried `16:41:20`, and a route with an unreachable backend
+  `date: Sun, 01 Nov 2026 17:13:18 GMT` (the local clock at request time) and
+  the configured body `Welcome to EQProxy by ExyonQ`. Two seconds later the
+  same request carried `17:13:20`, and a route with an unreachable backend
   answered `HTTP/1.1 502 bad gateway` with its own `date`. The same rule over
   TLS with `h2` (`HTTP/2 200`, `date` equal to the clock) and over QUIC with
   `h3` (`:status: 200`, `date` equal to the clock and advancing between

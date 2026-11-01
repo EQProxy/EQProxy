@@ -295,8 +295,12 @@ the two Scout reports and `SHA256SUMS.txt` itself.
   `date: Sun, 01 Nov 2026 16:41:18 GMT` (the local clock at request time) and
   the configured body `Welcome to EQProxy (ExyonQ)!`. Two seconds later the
   same request carried `16:41:20`, and a route with an unreachable backend
-  answered `HTTP/1.1 502 bad gateway` with its own `date`. Transcript in
-  [v091-date-header](evidence/v091-date-header.md#published-image-2026-11-01-after-the-release).
+  answered `HTTP/1.1 502 bad gateway` with its own `date`. The same rule over
+  TLS with `h2` (`HTTP/2 200`, `date` equal to the clock) and over QUIC with
+  `h3` (`:status: 200`, `date` equal to the clock and advancing between
+  connections) returned the same body, and the 502 on both transports.
+  Transcripts in
+  [v091-date-header](evidence/v091-date-header.md#http2-over-tls-and-http3-over-quic).
 - Correction to an earlier probe: it proxied to an `nginx:alpine` origin and
   printed the `Date` of that response, which was nginx's own header relayed by
   the proxy, not a generated one. It is not evidence for this feature; the

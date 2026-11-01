@@ -232,3 +232,89 @@ was removed afterwards (`docker ps -a --filter name=eqv091` returned 0).
 origin and printed that response's `Date`; the value was nginx's own header
 relayed by the proxy, which the contract preserves, so it did not demonstrate
 the generated header. The transcript above replaces it.
+
+### HTTP/2 over TLS and HTTP/3 over QUIC
+
+The same local rule on a TLS listener with `quic = true`, so TCP (ALPN `h2`)
+and QUIC (ALPN `h3`, offered by the endpoint itself) share one port:
+
+```toml
+[listener.web]
+listen = "0.0.0.0:8443"
+mode = "http"
+quic = true
+
+[listener.web.tls]
+cert = "/certs/cert.pem"        # self-signed, SAN localhost/127.0.0.1, 2 days
+key = "/certs/key.pem"
+min_version = "1.3"
+alpn = ["h2", "http/1.1"]
+
+[[listener.web.rules]]
+name = "root"
+path = "/"
+[listener.web.rules.direct_response]
+status = 200
+content_type = "text/plain"
+body = "Welcome to EQProxy (ExyonQ)!\n"
+```
+
+`docker run -d -p 18453:8443/tcp -p 18453:8443/udp … ghcr.io/exyonq/eqproxy:0.9.1`
+with the config and certificates mounted read-only. Clients: `curl 8.7.1`
+(nghttp2 1.68.1) for h2, and a `aioquic 1.2.0` client (Python 3.9.6) with
+`QuicConfiguration(alpn_protocols=["h3"], verify_mode=ssl.CERT_NONE)` for h3;
+verification is off only because the certificate is self-signed.
+
+```console
+$ curl -sk --http2 -i https://127.0.0.1:18453/
+HTTP/2 200
+server: eqproxy
+date: Sun, 01 Nov 2026 16:55:01 GMT
+content-type: text/plain
+content-length: 29
+
+Welcome to EQProxy (ExyonQ)!
+
+$ date -u
+Sun, 01 Nov 2026 16:55:01 GMT
+
+$ python client.py            # aioquic GET /
+:status: 200
+server: eqproxy
+date: Sun, 01 Nov 2026 16:55:43 GMT
+content-type: text/plain
+content-length: 29
+
+Welcome to EQProxy (ExyonQ)!
+
+$ date -u
+Sun, 01 Nov 2026 16:55:43 GMT
+
+$ python client.py            # a second connection, two seconds later
+:status: 200
+server: eqproxy
+date: Sun, 01 Nov 2026 16:55:46 GMT
+```
+
+Both values equal the clock at request time and the body is the rule's: no
+origin answered on either path. The local error path carries the header on
+both transports too:
+
+```console
+$ curl -sk --http2 -i https://127.0.0.1:18453/nope
+HTTP/2 502
+server: eqproxy
+date: Sun, 01 Nov 2026 16:55:56 GMT
+content-length: 0
+
+$ python client.py /nope
+:status: 502
+server: eqproxy
+date: Sun, 01 Nov 2026 16:56:13 GMT
+content-length: 0
+```
+
+The h3 client marks the stream ended from `HeadersReceived` as well as
+`DataReceived`, because a zero-length body ends it on the headers; it is kept
+at `scripts/evidence/v091-date-header/h3-client.py` (local-only, like the rest
+of the harnesses). The container was removed afterwards (0 left).

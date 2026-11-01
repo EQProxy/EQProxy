@@ -311,13 +311,14 @@ the two Scout reports and `SHA256SUMS.txt` itself.
 - The linux binaries were not executed on a linux host; the `linux` job's E2E
   journeys are their evidence.
 
-### 5.3 Pending description update
+### 5.3 Description update
 
 `README.md` (status line, install URLs, image tags), `repo.md` and
-`docs/docker-hub-readme.md` are not part of the cut commit; the gate above asks
-for them to be updated after publication, and that follow-up commit is
-**pending**. Until it lands, this page and the release assets are the record of
-the published state.
+`docs/docker-hub-readme.md` were updated after publication in `25cb494`. The
+README was then restructured into a landing page, with the detailed record in
+[parity-and-evidence](parity-and-evidence.md) and the gaps in
+[KNOWN_GAPS.md](../KNOWN_GAPS.md); the Docker Hub page picks its text up on the
+next stable release.
 
 ## 6. If the tag run fails
 

@@ -12,10 +12,11 @@ use eqproxy_core::rules::{Rule, validate_header_value, validate_location};
 use crate::error::{ConfigError, Location};
 use crate::find_line;
 use crate::schema::{
-    Config, ForwardedHeaders, HealthCheckKind, ListenerMode, MAX_ADMIN_ACL_UIDS, MAX_AUTH_USERS,
-    MAX_LOCAL_RESPONSE_BYTES, MAX_MAP_RELOAD_INTERVAL, MAX_METRICS_SERIES, MAX_QUEUE, MAX_RETRIES,
-    MAX_RULES, MAX_SECTIONS, MAX_SERVER_MAXCONN, MAX_SERVER_PRIORITY, MAX_SERVER_WEIGHT,
-    MAX_SPLIT_TARGETS, MIN_ADMIN_TOKEN_BYTES, MIN_MAP_RELOAD_INTERVAL, SCHEMA_VERSION,
+    Config, ErrorPageFormat, ForwardedHeaders, HealthCheckKind, ListenerMode, MAX_ADMIN_ACL_UIDS,
+    MAX_AUTH_USERS, MAX_ERROR_PAGE_BYTES, MAX_ERROR_PAGES, MAX_LOCAL_RESPONSE_BYTES,
+    MAX_MAP_RELOAD_INTERVAL, MAX_METRICS_SERIES, MAX_QUEUE, MAX_RETRIES, MAX_RULES, MAX_SECTIONS,
+    MAX_SERVER_MAXCONN, MAX_SERVER_PRIORITY, MAX_SERVER_WEIGHT, MAX_SPLIT_TARGETS,
+    MIN_ADMIN_TOKEN_BYTES, MIN_MAP_RELOAD_INTERVAL, SCHEMA_VERSION, TlsVersion,
 };
 
 /// Result of validating a full configuration.
@@ -849,6 +850,19 @@ pub fn check(config: &Config, source: &str, file: &Path) -> CheckResult {
                     &section,
                 );
             }
+            if listener
+                .tls
+                .as_ref()
+                .is_some_and(|tls| tls.max_version == Some(TlsVersion::V1_2))
+            {
+                err(
+                    field("tls.max_version"),
+                    "quic = true needs TLS 1.3, but tls.max_version = \"1.2\" caps the listener at 1.2"
+                        .to_owned(),
+                    "tls.max_version = \"1.3\" (or remove it), or quic = false".to_owned(),
+                    &section,
+                );
+            }
         }
         if let Some(tls) = &listener.tls
             && tls
@@ -914,6 +928,197 @@ pub fn check(config: &Config, source: &str, file: &Path) -> CheckResult {
                     "mode = \"http\" or remove local_response".to_owned(),
                     &section,
                 );
+            }
+        }
+
+        // Custom error pages (B-H15/B-E18/B-N14): the structural rules are
+        // checked here; file existence and the `raw` syntax are checked when
+        // the snapshot is resolved (the same place certificates are read).
+        if !listener.error_pages.is_empty() {
+            if listener.mode != ListenerMode::Http {
+                err(
+                    field("error_pages"),
+                    "error_pages is only meaningful in mode = \"http\"".to_owned(),
+                    "mode = \"http\" or remove [[listener.<name>.error_pages]]".to_owned(),
+                    &section,
+                );
+            }
+            if listener.error_pages.len() > MAX_ERROR_PAGES {
+                err(
+                    field("error_pages"),
+                    format!(
+                        "{} error pages declared (rule: maximum {MAX_ERROR_PAGES})",
+                        listener.error_pages.len()
+                    ),
+                    "group the codes into fewer pages".to_owned(),
+                    &section,
+                );
+            }
+            let mut seen: Vec<(u16, usize)> = Vec::new();
+            for (index, page) in listener.error_pages.iter().enumerate() {
+                let at = format!("error_pages[{index}]");
+                if page.codes.is_empty() {
+                    err(
+                        field(&format!("{at}.codes")),
+                        "codes is empty: an error page must name at least one status".to_owned(),
+                        "codes = [502, 503, 504]".to_owned(),
+                        &section,
+                    );
+                }
+                for code in &page.codes {
+                    if !(400..=599).contains(code) {
+                        err(
+                            field(&format!("{at}.codes")),
+                            format!("code {code} out of range (rule: error pages cover 400-599)"),
+                            "codes = [502, 503, 504]".to_owned(),
+                            &section,
+                        );
+                    }
+                    if let Some((_, other)) = seen.iter().find(|(seen, _)| seen == code) {
+                        err(
+                            field(&format!("{at}.codes")),
+                            format!(
+                                "code {code} is already covered by error_pages[{other}]: one page per code"
+                            ),
+                            "remove the duplicate code".to_owned(),
+                            &section,
+                        );
+                    } else {
+                        seen.push((*code, index));
+                    }
+                }
+                match (&page.file, &page.body, &page.location) {
+                    (Some(file), None, None) => {
+                        if file.trim().is_empty() {
+                            err(
+                                field(&format!("{at}.file")),
+                                "file is empty".to_owned(),
+                                "file = \"errors/50x.html\"".to_owned(),
+                                &section,
+                            );
+                        }
+                    }
+                    (None, Some(body), None) => {
+                        if page.format == ErrorPageFormat::Raw {
+                            err(
+                                field(&format!("{at}.format")),
+                                "format = \"raw\" needs a file: the status line lives in it"
+                                    .to_owned(),
+                                "format = \"body\" or add the file".to_owned(),
+                                &section,
+                            );
+                        }
+                        if body.len() > MAX_ERROR_PAGE_BYTES {
+                            err(
+                                field(&format!("{at}.body")),
+                                format!(
+                                    "body is {} bytes (rule: maximum {MAX_ERROR_PAGE_BYTES})",
+                                    body.len()
+                                ),
+                                "shorten the body or use a file".to_owned(),
+                                &section,
+                            );
+                        }
+                        if body.trim().is_empty() {
+                            err(
+                                field(&format!("{at}.body")),
+                                "body is empty: it would serve a blank page".to_owned(),
+                                "a short HTML body or a file".to_owned(),
+                                &section,
+                            );
+                        }
+                    }
+                    (None, None, Some(location)) => {
+                        if page.format == ErrorPageFormat::Raw {
+                            err(
+                                field(&format!("{at}.format")),
+                                "format = \"raw\" cannot be a redirect: the file carries a status line"
+                                    .to_owned(),
+                                "format = \"body\" with location, or a file".to_owned(),
+                                &section,
+                            );
+                        }
+                        if let Some(cause) = error_location_problem(location) {
+                            err(
+                                field(&format!("{at}.location")),
+                                cause,
+                                "location = \"/maintenance\" or \"https://status.example.com/\""
+                                    .to_owned(),
+                                &section,
+                            );
+                        }
+                    }
+                    (Some(_), Some(_), None) => err(
+                        field(&at),
+                        "file and body are mutually exclusive".to_owned(),
+                        "keep one of the two".to_owned(),
+                        &section,
+                    ),
+                    (_, _, Some(_)) => err(
+                        field(&at),
+                        "location, file and body are mutually exclusive".to_owned(),
+                        "keep only location".to_owned(),
+                        &section,
+                    ),
+                    (None, None, None) => err(
+                        field(&at),
+                        "an error page needs a file, a body or a location".to_owned(),
+                        "file = \"errors/50x.html\", body = \"<h1>down</h1>\" or location = \"/maintenance\""
+                            .to_owned(),
+                        &section,
+                    ),
+                }
+                if page.location.is_some()
+                    && let Some(status) = page.status
+                    && (!(300..=399).contains(&status) || status == 304)
+                {
+                    err(
+                        field(&format!("{at}.status")),
+                        format!(
+                            "status = {status} cannot carry a redirect (rule: 300-399, without 304)"
+                        ),
+                        "status = 302 (or remove it)".to_owned(),
+                        &section,
+                    );
+                }
+                if let Some(status) = page.status
+                    && (!(200..=599).contains(&status) || status == 204 || status == 304)
+                {
+                    err(
+                        field(&format!("{at}.status")),
+                        format!(
+                            "status = {status} cannot carry a page (rule: 200-599, without 204/304)"
+                        ),
+                        "status = 503".to_owned(),
+                        &section,
+                    );
+                }
+                if page.content_type.trim().is_empty() {
+                    err(
+                        field(&format!("{at}.content_type")),
+                        "content_type must not be empty".to_owned(),
+                        "content_type = \"text/html; charset=utf-8\"".to_owned(),
+                        &section,
+                    );
+                }
+                if page.status.is_some() && page.format == ErrorPageFormat::Raw {
+                    err(
+                        field(&format!("{at}.status")),
+                        "a raw page carries its own status line: `status` would contradict it"
+                            .to_owned(),
+                        "remove status, or use format = \"body\"".to_owned(),
+                        &section,
+                    );
+                }
+                if page.intercept && page.format == ErrorPageFormat::Raw {
+                    err(
+                        field(&format!("{at}.intercept")),
+                        "intercept is not allowed on a raw page: its status line is fixed"
+                            .to_owned(),
+                        "remove intercept, or use format = \"body\"".to_owned(),
+                        &section,
+                    );
+                }
             }
         }
 
@@ -1602,11 +1807,56 @@ pub fn check(config: &Config, source: &str, file: &Path) -> CheckResult {
             } else {
                 format!("servers[{idx}].addr")
             };
-            if let Err(why) = crate::schema::parse_server_target(addr) {
+            let target = crate::schema::parse_server_target(addr);
+            if let Err(why) = &target {
                 err(
                     field(&suffix),
-                    format!("{why} (expected IP:PORT or HOSTNAME:PORT)"),
-                    "addr = \"127.0.0.1:9000\" (or \"api.internal:9000\")".to_owned(),
+                    format!("{why} (expected IP:PORT, HOSTNAME:PORT or unix:/absolute/path)"),
+                    "addr = \"127.0.0.1:9000\" (or \"api.internal:9000\", or \"unix:/run/app.sock\")"
+                        .to_owned(),
+                    &section,
+                );
+            }
+            let is_unix = matches!(&target, Ok(crate::schema::ServerTarget::Unix(_)));
+            // ADR-0043: a Unix target is local and has no transport address,
+            // so the three knobs that need one cannot be silently ignored.
+            if is_unix {
+                if backend.proxy_protocol != crate::schema::ProxyProtocolMode::None {
+                    err(
+                        field("proxy_protocol"),
+                        "proxy_protocol cannot be sent to a Unix socket backend: there is no peer address to announce"
+                            .to_owned(),
+                        "drop `proxy_protocol` from this backend (ADR-0043)".to_owned(),
+                        &section,
+                    );
+                }
+                if backend.tls.is_some() {
+                    err(
+                        field("tls"),
+                        "TLS does not apply to a Unix socket backend: the connection never leaves the host"
+                            .to_owned(),
+                        "drop `tls` from this backend (ADR-0043)".to_owned(),
+                        &section,
+                    );
+                }
+                if entry.source.is_some() {
+                    err(
+                        field(&format!("servers[{idx}].source")),
+                        "source binds a TCP socket and cannot apply to a Unix target".to_owned(),
+                        "drop `source` from this server, or use a TCP `addr`".to_owned(),
+                        &section,
+                    );
+                }
+            }
+            if let Some(source) = entry.source
+                && source.parse::<std::net::IpAddr>().is_err()
+            {
+                err(
+                    field(&format!("servers[{idx}].source")),
+                    format!(
+                        "source = \"{source}\" is not an IP address (hostnames are not resolved here)"
+                    ),
+                    "source = \"10.0.0.5\" (a literal IPv4 or IPv6 address)".to_owned(),
                     &section,
                 );
             }
@@ -1659,7 +1909,16 @@ pub fn check(config: &Config, source: &str, file: &Path) -> CheckResult {
                     &section,
                 );
             }
-            if !seen_addrs.insert(addr.to_ascii_lowercase()) {
+            // Hostnames are case-insensitive, Unix paths are not: lowercasing
+            // every address would reject `/run/App.sock` and `/run/app.sock`
+            // as duplicates of one another.
+            let duplicate_key = match &target {
+                Ok(crate::schema::ServerTarget::Unix(path)) => {
+                    format!("unix:{}", path.display())
+                }
+                _ => addr.to_ascii_lowercase(),
+            };
+            if !seen_addrs.insert(duplicate_key) {
                 err(
                     field(&suffix),
                     format!("duplicate server: \"{addr}\" appears more than once"),
@@ -1843,6 +2102,24 @@ pub fn check(config: &Config, source: &str, file: &Path) -> CheckResult {
     for (name, listener) in &config.listener {
         if let Some(tls) = &listener.tls {
             let section = format!("[listener.{name}]");
+            if let Some(max) = tls.max_version
+                && max < tls.min_version
+            {
+                let label = |version: TlsVersion| match version {
+                    TlsVersion::V1_2 => "1.2",
+                    TlsVersion::V1_3 => "1.3",
+                };
+                err(
+                    format!("listener.{name}.tls.max_version"),
+                    format!(
+                        "max_version = \"{}\" is lower than min_version = \"{}\": no TLS version could be negotiated",
+                        label(max),
+                        label(tls.min_version)
+                    ),
+                    "max_version = \"1.3\" (or remove it)".to_owned(),
+                    &section,
+                );
+            }
             for (cause, example) in alpn_problems(&tls.alpn) {
                 err(
                     format!("listener.{name}.tls.alpn"),
@@ -1900,6 +2177,34 @@ pub fn check(config: &Config, source: &str, file: &Path) -> CheckResult {
     }
 
     result
+}
+
+/// Problems of an error-page redirect target (`errorloc`, B-H16).
+///
+/// A static target only: HAProxy's `errorloc` has no request template, and
+/// an unresolved `$…` in a `Location` header would reach the client. Spaces
+/// and control bytes are refused because they cannot be written to a header
+/// verbatim.
+fn error_location_problem(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Some("location is empty".to_owned());
+    }
+    if value.bytes().any(|b| b <= 0x20 || b == 0x7f) {
+        return Some("location contains spaces or control characters".to_owned());
+    }
+    if value.contains('$') {
+        return Some(
+            "location is static: request placeholders ($host, $uri) are not rendered here"
+                .to_owned(),
+        );
+    }
+    if !(value.starts_with('/') || value.starts_with("http://") || value.starts_with("https://")) {
+        return Some(
+            "location must start with / or be an absolute http:// or https:// URL".to_owned(),
+        );
+    }
+    None
 }
 
 /// Problems of a `hash_policy.key` (B-H3): `source`, `path`, `host`,
@@ -2138,6 +2443,7 @@ mod tests {
                     plugin: None,
                     cache: None,
                     rules: Vec::new(),
+                    error_pages: Vec::new(),
                 },
             );
         }
@@ -2525,6 +2831,70 @@ mod tests {
     }
 
     #[test]
+    fn tls_max_version_must_not_be_lower_than_min_and_quic_needs_13() {
+        let base = |max: &str, quic: bool| {
+            format!(
+                "schema_version = 1\n[listener.web]\nlisten = \"127.0.0.1:8080\"\nmode = \"http\"\nquic = {quic}\nbackend = \"api\"\n[listener.web.tls]\ncert = \"c.pem\"\nkey = \"k.pem\"\nmin_version = \"1.3\"\nmax_version = \"{max}\"\n[backend.api]\nserver = \"127.0.0.1:9000\"\n"
+            )
+        };
+        let capped = check_source(&base("1.2", false));
+        assert!(
+            capped.errors.iter().any(|error| {
+                error.field.as_deref() == Some("listener.web.tls.max_version")
+                    && error.cause.contains("lower than min_version")
+            }),
+            "max 1.2 with min 1.3 has no version to negotiate: {:?}",
+            capped.errors
+        );
+        let valid_cap = check_source(&base("1.3", false));
+        assert!(
+            valid_cap.is_valid(),
+            "min=max=1.3 is a valid range: {:?}",
+            valid_cap.errors
+        );
+        let quic_cap = check_source(&base("1.2", true));
+        assert!(
+            quic_cap.errors.iter().any(|error| {
+                error.field.as_deref() == Some("listener.web.tls.max_version")
+                    && error.cause.contains("needs TLS 1.3")
+            }),
+            "QUIC cannot run with max_version 1.2: {:?}",
+            quic_cap.errors
+        );
+    }
+
+    #[test]
+    fn error_page_location_is_static_and_3xx_only() {
+        let base = "schema_version = 1\n[backend.api]\nserver = \"127.0.0.1:9000\"\n[listener.web]\nlisten = \"127.0.0.1:8080\"\nbackend = \"api\"\nmode = \"http\"\n";
+        let valid = check_source(&format!(
+            "{base}[[listener.web.error_pages]]\ncodes = [503]\nlocation = \"https://status.example.test/maintenance\"\nstatus = 303\n"
+        ));
+        assert!(valid.is_valid(), "errors: {:?}", valid.errors);
+
+        for (body, expected) in [
+            ("location = \"/x\"\nbody = \"a\"\n", "mutually exclusive"),
+            (
+                "location = \"/x\"\nstatus = 200\n",
+                "cannot carry a redirect",
+            ),
+            ("location = \"/$host\"\n", "static"),
+            ("location = \"relative/x\"\n", "must start with /"),
+        ] {
+            let result = check_source(&format!(
+                "{base}[[listener.web.error_pages]]\ncodes = [503]\n{body}"
+            ));
+            assert!(
+                result
+                    .errors
+                    .iter()
+                    .any(|error| error.cause.contains(expected)),
+                "{body:?} must fail with {expected:?}: {:?}",
+                result.errors
+            );
+        }
+    }
+
+    #[test]
     fn metrics_series_budget_is_validated_not_clamped() {
         let base = |budget: &str| {
             format!(
@@ -2852,6 +3222,167 @@ server = "127.0.0.1:9000"
             bad.field.as_deref(),
             Some("backend.api.servers[0].backup"),
             "the error names the offending key: {bad:?}"
+        );
+    }
+
+    #[test]
+    fn unix_targets_and_source_bind_choose_their_valid_combinations() {
+        use crate::schema::{ServerTarget, parse_server_target};
+
+        // Parser: both reference spellings name the same local socket, and a
+        // path that cannot work is refused with its cause (ADR-0043).
+        assert_eq!(
+            parse_server_target("unix:/run/app.sock").expect("nginx spelling"),
+            ServerTarget::Unix(std::path::PathBuf::from("/run/app.sock"))
+        );
+        assert_eq!(
+            parse_server_target("unix@/run/app.sock").expect("haproxy spelling"),
+            ServerTarget::Unix(std::path::PathBuf::from("/run/app.sock")),
+            "both spellings normalise to one target"
+        );
+        let relative = parse_server_target("unix:run/app.sock").expect_err("relative");
+        assert!(relative.contains("absolute"), "{relative}");
+        let empty = parse_server_target("unix:").expect_err("empty path");
+        assert!(empty.contains("empty"), "{empty}");
+
+        // A Unix target is local: TLS, PROXY and `source` are refused rather
+        // than silently ignored.
+        let bad = check_source(
+            "schema_version = 1\n[backend.api]\ntls = { verify = false }\nproxy_protocol = \"v1\"\nservers = [{ addr = \"unix:/run/app.sock\", source = \"10.0.0.5\" }]\n",
+        );
+        let fields: Vec<_> = bad.errors.iter().filter_map(|e| e.field.clone()).collect();
+        assert_eq!(
+            fields,
+            vec![
+                "backend.api.proxy_protocol",
+                "backend.api.tls",
+                "backend.api.servers[0].source"
+            ],
+            "errors: {:?}",
+            bad.errors
+        );
+
+        let unix_ok = check_source(
+            "schema_version = 1\n[backend.api]\nservers = [{ addr = \"unix:/run/app.sock\" }]\n",
+        );
+        assert!(unix_ok.is_valid(), "errors: {:?}", unix_ok.errors);
+
+        // `source` is a literal IP on a TCP server, and it is usable there.
+        let source_ok = check_source(
+            "schema_version = 1\n[backend.api]\nservers = [{ addr = \"127.0.0.1:9000\", source = \"10.0.0.5\" }]\n",
+        );
+        assert!(source_ok.is_valid(), "errors: {:?}", source_ok.errors);
+
+        let source_bad = check_source(
+            "schema_version = 1\n[backend.api]\nservers = [{ addr = \"127.0.0.1:9000\", source = \"app.local\" }]\n",
+        );
+        let error = &source_bad.errors[0];
+        assert_eq!(
+            error.field.as_deref(),
+            Some("backend.api.servers[0].source")
+        );
+        assert!(error.cause.contains("is not an IP address"), "{error:?}");
+        assert!(
+            error.example.contains("source = \"10.0.0.5\""),
+            "the example shows the accepted shape: {error:?}"
+        );
+    }
+
+    #[test]
+    fn error_pages_are_bounded_and_their_contradictions_are_refused() {
+        let base = "schema_version = 1\n[backend.api]\nserver = \"127.0.0.1:9000\"\n[listener.web]\nlisten = \"127.0.0.1:8080\"\nbackend = \"api\"\nmode = \"http\"\n";
+
+        let both_kinds = check_source(&format!(
+            "{base}[[listener.web.error_pages]]\ncodes = [502, 503]\nbody = \"<h1>sin servicio</h1>\"\n\n[[listener.web.error_pages]]\ncodes = [429]\nstatus = 503\nbody = \"calma\"\nfile = \"\"\n"
+        ));
+        assert!(
+            !both_kinds.is_valid(),
+            "file and body together must be refused, even with an empty path"
+        );
+
+        let duplicate = check_source(&format!(
+            "{base}[[listener.web.error_pages]]\ncodes = [502, 503]\nbody = \"a\"\n\n[[listener.web.error_pages]]\ncodes = [503]\nbody = \"b\"\n"
+        ));
+        let error = &duplicate.errors[0];
+        assert_eq!(
+            error.field.as_deref(),
+            Some("listener.web.error_pages[1].codes")
+        );
+        assert!(
+            error.cause.contains("already covered by error_pages[0]"),
+            "{error:?}"
+        );
+
+        let out_of_range = check_source(&format!(
+            "{base}[[listener.web.error_pages]]\ncodes = [200]\nbody = \"a\"\n"
+        ));
+        assert!(
+            out_of_range
+                .errors
+                .iter()
+                .any(|error| error.cause.contains("400-599")),
+            "an error page cannot cover a success: {:?}",
+            out_of_range.errors
+        );
+
+        let raw_with_body = check_source(&format!(
+            "{base}[[listener.web.error_pages]]\ncodes = [502]\nformat = \"raw\"\nbody = \"a\"\n"
+        ));
+        assert!(
+            raw_with_body
+                .errors
+                .iter()
+                .any(|error| error.cause.contains("needs a file")),
+            "a raw page carries its status line in a file: {:?}",
+            raw_with_body.errors
+        );
+
+        let raw_intercept = check_source(&format!(
+            "{base}[[listener.web.error_pages]]\ncodes = [502]\nformat = \"raw\"\nfile = \"502.http\"\nintercept = true\n"
+        ));
+        assert!(
+            raw_intercept.errors.iter().any(|error| error
+                .cause
+                .contains("intercept is not allowed on a raw page")),
+            "a raw page's status line cannot be combined with intercept: {:?}",
+            raw_intercept.errors
+        );
+
+        let no_body = check_source(&format!(
+            "{base}[[listener.web.error_pages]]\ncodes = [502]\nstatus = 204\n"
+        ));
+        let fields: Vec<_> = no_body
+            .errors
+            .iter()
+            .filter_map(|error| error.field.clone())
+            .collect();
+        assert!(
+            fields.contains(&"listener.web.error_pages[0]".to_owned()),
+            "a page without file or body is refused: {fields:?}"
+        );
+        assert!(
+            no_body
+                .errors
+                .iter()
+                .any(|error| error.cause.contains("cannot carry a page")),
+            "204 cannot carry a page: {:?}",
+            no_body.errors
+        );
+
+        // Pages are an HTTP feature; a TCP listener rejects them instead of
+        // carrying dead configuration.
+        let tcp = check_source(
+            "schema_version = 1\n[backend.api]\nserver = \"127.0.0.1:9000\"\n[listener.web]\nlisten = \"127.0.0.1:8080\"\nbackend = \"api\"\nmode = \"tcp\"\n[[listener.web.error_pages]]\ncodes = [502]\nbody = \"a\"\n",
+        );
+        assert_eq!(
+            tcp.errors[0].field.as_deref(),
+            Some("listener.web.error_pages"),
+            "{:?}",
+            tcp.errors
+        );
+        assert!(
+            tcp.errors[0].cause.contains("only meaningful in mode"),
+            "{tcp:?}"
         );
     }
 

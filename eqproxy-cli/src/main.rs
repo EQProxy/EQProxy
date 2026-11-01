@@ -1112,7 +1112,7 @@ fn import(from: Option<&str>, input: &Path, output: &Path, report_path: Option<&
     }
     let counts = outcome.counts;
     println!(
-        "import: {} ({}) → {}: {} converted, {} to review, {} rejected",
+        "import: {} ({}) → {}: {} converted, {} with notes, {} rejected",
         input.display(),
         source.as_str(),
         output.display(),
@@ -1679,90 +1679,90 @@ fn explain_report(
         }
         None => Some(Arc::clone(&listener.backend)),
     };
-    let sim_pick: Option<(eqproxy_net::Balancer, Option<std::net::SocketAddr>)> = match &sim_backend
-    {
-        None => {
-            let _ = writeln!(out, "action: local response (no backend contacted)");
-            None
-        }
-        Some(backend) => {
-            let backend_cfg = config.backend.get(&backend.name);
-            let (fall, rise) = backend_cfg
-                .and_then(|b| b.health_check.as_ref())
-                .map(|hc| (hc.fall, hc.rise))
-                .unwrap_or((3, 2));
-            let (algorithm, slow_start, all_backups) = backend_cfg.map_or(
-                (
-                    eqproxy_config::schema::BalanceAlgorithm::RoundRobin,
-                    std::time::Duration::ZERO,
-                    false,
-                ),
-                |b| (b.balance, b.slow_start, b.all_backups),
-            );
-            // Throwaway balancer: the simulated pick advances no shared state.
-            let sim = eqproxy_net::Balancer::with_options(
-                backend.servers.clone(),
-                fall,
-                rise,
-                balance_algorithm(algorithm),
-                slow_start,
-            )
-            .with_all_backups(all_backups);
-            let pick = sim.pick();
-            let affinity = match &backend.affinity {
-                Some(affinity) => match affinity.mode {
-                    eqproxy_net::AffinityMode::Cookie => format!("cookie({})", affinity.cookie),
-                    eqproxy_net::AffinityMode::Source => "source".to_owned(),
-                },
-                None => "none".to_owned(),
-            };
-            let proxy_protocol = match backend.proxy_protocol {
-                ProxyProtocolMode::None => "none",
-                ProxyProtocolMode::V1 => "v1",
-                ProxyProtocolMode::V2 => "v2",
-            };
-            let health = backend
-                .health_check
-                .as_ref()
-                .map(|hc| {
-                    format!(
-                        "interval={:?} timeout={:?} fall={} rise={}",
-                        hc.interval, hc.timeout, fall, rise
-                    )
-                })
-                .unwrap_or_else(|| "none".to_owned());
-            let balance_name = match algorithm {
-                eqproxy_config::schema::BalanceAlgorithm::RoundRobin => "roundrobin",
-                eqproxy_config::schema::BalanceAlgorithm::LeastConn => "leastconn",
-            };
-            let slow = if slow_start.is_zero() {
-                String::new()
-            } else {
-                format!(" slow_start={slow_start:?}")
-            };
-            // `option allbackups` (B8) changes which server the simulated
-            // pick reaches, so `explain` names it when it is on.
-            let backups_pool = if all_backups {
-                " all_backups=true".to_owned()
-            } else {
-                String::new()
-            };
-            let _ = writeln!(
-                out,
-                "backend \"{}\": balance={} servers={} tls={} proxy_protocol={} health_check={} affinity={}{}{}",
-                backend.name,
-                balance_name,
-                backend.servers.len(),
-                if backend.tls.is_some() { "yes" } else { "no" },
-                proxy_protocol,
-                health,
-                affinity,
-                backups_pool,
-                slow
-            );
-            Some((sim, pick))
-        }
-    };
+    let sim_pick: Option<(eqproxy_net::Balancer, Option<eqproxy_net::Endpoint>)> =
+        match &sim_backend {
+            None => {
+                let _ = writeln!(out, "action: local response (no backend contacted)");
+                None
+            }
+            Some(backend) => {
+                let backend_cfg = config.backend.get(&backend.name);
+                let (fall, rise) = backend_cfg
+                    .and_then(|b| b.health_check.as_ref())
+                    .map(|hc| (hc.fall, hc.rise))
+                    .unwrap_or((3, 2));
+                let (algorithm, slow_start, all_backups) = backend_cfg.map_or(
+                    (
+                        eqproxy_config::schema::BalanceAlgorithm::RoundRobin,
+                        std::time::Duration::ZERO,
+                        false,
+                    ),
+                    |b| (b.balance, b.slow_start, b.all_backups),
+                );
+                // Throwaway balancer: the simulated pick advances no shared state.
+                let sim = eqproxy_net::Balancer::with_options(
+                    backend.servers.clone(),
+                    fall,
+                    rise,
+                    balance_algorithm(algorithm),
+                    slow_start,
+                )
+                .with_all_backups(all_backups);
+                let pick = sim.pick();
+                let affinity = match &backend.affinity {
+                    Some(affinity) => match affinity.mode {
+                        eqproxy_net::AffinityMode::Cookie => format!("cookie({})", affinity.cookie),
+                        eqproxy_net::AffinityMode::Source => "source".to_owned(),
+                    },
+                    None => "none".to_owned(),
+                };
+                let proxy_protocol = match backend.proxy_protocol {
+                    ProxyProtocolMode::None => "none",
+                    ProxyProtocolMode::V1 => "v1",
+                    ProxyProtocolMode::V2 => "v2",
+                };
+                let health = backend
+                    .health_check
+                    .as_ref()
+                    .map(|hc| {
+                        format!(
+                            "interval={:?} timeout={:?} fall={} rise={}",
+                            hc.interval, hc.timeout, fall, rise
+                        )
+                    })
+                    .unwrap_or_else(|| "none".to_owned());
+                let balance_name = match algorithm {
+                    eqproxy_config::schema::BalanceAlgorithm::RoundRobin => "roundrobin",
+                    eqproxy_config::schema::BalanceAlgorithm::LeastConn => "leastconn",
+                };
+                let slow = if slow_start.is_zero() {
+                    String::new()
+                } else {
+                    format!(" slow_start={slow_start:?}")
+                };
+                // `option allbackups` (B8) changes which server the simulated
+                // pick reaches, so `explain` names it when it is on.
+                let backups_pool = if all_backups {
+                    " all_backups=true".to_owned()
+                } else {
+                    String::new()
+                };
+                let _ = writeln!(
+                    out,
+                    "backend \"{}\": balance={} servers={} tls={} proxy_protocol={} health_check={} affinity={}{}{}",
+                    backend.name,
+                    balance_name,
+                    backend.servers.len(),
+                    if backend.tls.is_some() { "yes" } else { "no" },
+                    proxy_protocol,
+                    health,
+                    affinity,
+                    backups_pool,
+                    slow
+                );
+                Some((sim, pick))
+            }
+        };
     // Phase timeouts and their observable outcome when they fire (Q4/H5:
     // no surprises — `explain` documents what each timeout does BEFORE it
     // can fire, including the response the client receives).
@@ -1863,9 +1863,9 @@ fn explain_report(
         };
         let _ = writeln!(out, "retries: {retries}");
         for server in &backend.servers {
-            let state = match &server.addr {
-                eqproxy_net::ServerAddr::Ip(ip) => {
-                    if sim.is_up(*ip) {
+            let state = match server.addr.endpoint() {
+                Some(endpoint) => {
+                    if sim.is_up(&endpoint) {
                         "UP(initial)"
                     } else {
                         "DOWN(initial)"
@@ -1873,7 +1873,7 @@ fn explain_report(
                 }
                 // Names are resolved in the background (B-H13): the
                 // simulation never blocks on DNS.
-                eqproxy_net::ServerAddr::Name { .. } => "UNRESOLVED(dns)",
+                None => "UNRESOLVED(dns)",
             };
             let _ = writeln!(
                 out,
@@ -2554,7 +2554,19 @@ fn resolve_with(
                     eqproxy_config::schema::ServerTarget::Name { host, port } => {
                         eqproxy_net::ServerAddr::Name { host, port }
                     }
+                    // ADR-0043: a local Unix-domain socket backend.
+                    eqproxy_config::schema::ServerTarget::Unix(path) => {
+                        eqproxy_net::ServerAddr::Unix(path)
+                    }
                 };
+                // ADR-0043: `source` is a literal IP, already validated;
+                // parsing it here cannot change behaviour behind the
+                // validator's back.
+                let source = entry
+                    .source
+                    .map(str::parse::<std::net::IpAddr>)
+                    .transpose()
+                    .map_err(|why| format!("backend.{name} invalid server source: {why}"))?;
                 Ok(ResolvedServer {
                     addr,
                     weight: entry.weight,
@@ -2562,6 +2574,7 @@ fn resolve_with(
                     priority: entry.priority,
                     // B-H16 (`server … maxconn`): 0 = only the listener cap.
                     maxconn: entry.maxconn,
+                    source,
                 })
             })
             .collect::<Result<_, String>>()?;
@@ -2966,6 +2979,12 @@ fn resolve_with(
                     body: local.body.clone(),
                 });
             }
+            // Custom error pages (B-H15/B-E18/B-N14): loaded here so a bad
+            // file rejects the snapshot instead of failing per request.
+            if !listener.error_pages.is_empty() {
+                let pages = load_error_pages(&listener.error_pages, base_dir, name)?;
+                resolved = resolved.with_error_pages(pages);
+            }
             if let Some(server_tls) = &listener.tls {
                 let cert = read_pem(
                     base_dir,
@@ -3003,13 +3022,14 @@ fn resolve_with(
                         key_pem,
                     });
                 }
-                let acceptor = tls::server_config_with_sni(
+                let acceptor = tls::server_config_with_sni_and_max(
                     &cert,
                     &key,
                     &sni,
                     client_ca.as_deref(),
                     &server_tls.alpn,
                     tls_version(server_tls.min_version),
+                    server_tls.max_version.map(tls_version),
                 )
                 .map_err(|e| format!("listener.{name}.tls: {e}"))?;
                 resolved = resolved.with_server_tls(acceptor);
@@ -3043,6 +3063,107 @@ fn read_pem(base_dir: &Path, field: &str, path: &str) -> Result<Vec<u8>, String>
             full.display()
         )
     })
+}
+
+/// Loads and resolves the custom error pages of one listener (ADR-0045).
+///
+/// Every failure becomes a configuration error here — a missing file, a
+/// payload over the bound, a `raw` file that is not a complete response —
+/// so the snapshot is rejected at load instead of failing per request.
+fn load_error_pages(
+    pages: &[eqproxy_config::schema::ErrorPageConfig],
+    base_dir: &Path,
+    listener: &str,
+) -> Result<eqproxy_net::ErrorPages, String> {
+    use eqproxy_config::schema::{ErrorPageFormat, MAX_ERROR_PAGE_BYTES};
+
+    let mut resolved = Vec::with_capacity(pages.len());
+    for (index, page) in pages.iter().enumerate() {
+        let at = format!("listener.{listener}.error_pages[{index}]");
+        let (status, content_type, body, location) = match (&page.file, &page.body, &page.location)
+        {
+            (None, None, Some(location)) => {
+                if page.format == ErrorPageFormat::Raw {
+                    return Err(format!(
+                        "{at}: format = \"raw\" cannot be a redirect (the file carries a status line)"
+                    ));
+                }
+                (
+                    Some(page.status.unwrap_or(302)),
+                    page.content_type.clone(),
+                    Vec::new(),
+                    Some(location.clone()),
+                )
+            }
+            (Some(file), None, None) => {
+                let full = base_dir.join(file);
+                let bytes = std::fs::read(&full).map_err(|err| {
+                    format!(
+                        "{at}.file \"{file}\": could not read {} — {err}",
+                        full.display()
+                    )
+                })?;
+                // The bound applies to both formats: a raw file carries a head
+                // plus body, and reading an unbounded file here would defeat
+                // the limit validation enforces for an inline `body`.
+                if bytes.len() > MAX_ERROR_PAGE_BYTES {
+                    return Err(format!(
+                        "{at}.file \"{file}\": {} bytes (maximum {MAX_ERROR_PAGE_BYTES})",
+                        bytes.len()
+                    ));
+                }
+                if bytes.is_empty() {
+                    return Err(format!(
+                        "{at}.file \"{file}\": the file is empty and would serve a blank page"
+                    ));
+                }
+                if page.format == ErrorPageFormat::Raw {
+                    let raw = eqproxy_config::error_page::parse_raw_error_page(&bytes)
+                        .map_err(|why| format!("{at}.file \"{file}\": {why}"))?;
+                    if !page.codes.contains(&raw.status) {
+                        return Err(format!(
+                            "{at}.file \"{file}\": the status line answers {}, but codes = {:?} does not include it",
+                            raw.status, page.codes
+                        ));
+                    }
+                    (
+                        Some(raw.status),
+                        raw.content_type
+                            .unwrap_or_else(|| page.content_type.clone()),
+                        raw.body,
+                        None,
+                    )
+                } else {
+                    (page.status, page.content_type.clone(), bytes, None)
+                }
+            }
+            (None, Some(body), None) => (
+                page.status,
+                page.content_type.clone(),
+                body.clone().into_bytes(),
+                None,
+            ),
+            (None, None, None) => {
+                return Err(format!(
+                    "{at}: an error page needs a file, a body or a location"
+                ));
+            }
+            _ => {
+                return Err(format!(
+                    "{at}: location, file and body are mutually exclusive"
+                ));
+            }
+        };
+        resolved.push(eqproxy_net::ErrorPage {
+            codes: page.codes.clone(),
+            status,
+            content_type,
+            body: body.into(),
+            location,
+            intercept: page.intercept,
+        });
+    }
+    Ok(eqproxy_net::ErrorPages::from_pages(resolved))
 }
 
 async fn run(path: PathBuf, metrics_interval: String) -> u8 {
@@ -3345,6 +3466,7 @@ mod tests {
                         backup: false,
                         priority: 0,
                         maxconn: 0,
+                        source: None,
                     },
                     eqproxy_config::schema::ServerConfig {
                         addr: "127.0.0.1:9001".to_owned(),
@@ -3352,6 +3474,7 @@ mod tests {
                         backup: false,
                         priority: 0,
                         maxconn: 0,
+                        source: None,
                     },
                 ]),
                 ..eqproxy_config::schema::BackendConfig::default()
@@ -3372,6 +3495,7 @@ mod tests {
             vec![
                 ResolvedServer {
                     addr: eqproxy_net::ServerAddr::Ip("127.0.0.1:9000".parse().expect("addr")),
+                    source: None,
                     weight: 3,
                     backup: false,
                     priority: 0,
@@ -3379,6 +3503,7 @@ mod tests {
                 },
                 ResolvedServer {
                     addr: eqproxy_net::ServerAddr::Ip("127.0.0.1:9001".parse().expect("addr")),
+                    source: None,
                     weight: 1,
                     backup: false,
                     priority: 0,

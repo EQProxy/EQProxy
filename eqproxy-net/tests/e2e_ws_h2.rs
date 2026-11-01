@@ -23,6 +23,8 @@ use eqproxy_core::rules::RuleSpec;
 use eqproxy_core::{Metrics, shutdown};
 use eqproxy_net::{BoundProxy, ProxyMode, ResolvedListener, ResolvedRoute, RouteAction, bind};
 
+mod common;
+
 const WAIT: Duration = Duration::from_secs(10);
 
 fn http_listener(server: SocketAddr) -> ResolvedListener {
@@ -388,6 +390,21 @@ async fn ws_unknown_protocol_is_refused_with_501() {
     let (response, _stream) =
         open_ws(&mut send, "http://ws.test/chat", "not-a-protocol", &[]).await;
     assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(
+        response
+            .headers()
+            .get("server")
+            .map(|value| value.as_bytes()),
+        Some(&b"eqproxy"[..]),
+        "a refused extended CONNECT carries the product banner"
+    );
+    let date = response
+        .headers()
+        .get("date")
+        .expect("a refused extended CONNECT carries Date")
+        .to_str()
+        .expect("Date is ASCII");
+    common::assert_http_date(date);
     assert_eq!(seen.connections.load(Ordering::Relaxed), 0);
 
     stop_proxy(handle, serve).await;
@@ -414,6 +431,21 @@ async fn ws_classic_connect_keeps_its_501() {
         .expect("response in time")
         .expect("response");
     assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(
+        response
+            .headers()
+            .get("server")
+            .map(|value| value.as_bytes()),
+        Some(&b"eqproxy"[..]),
+        "a refused classic h2 CONNECT carries the product banner"
+    );
+    let date = response
+        .headers()
+        .get("date")
+        .expect("a refused classic h2 CONNECT carries Date")
+        .to_str()
+        .expect("Date is ASCII");
+    common::assert_http_date(date);
     assert_eq!(
         seen.connections.load(Ordering::Relaxed),
         0,

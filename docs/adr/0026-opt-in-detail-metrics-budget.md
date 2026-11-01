@@ -7,7 +7,7 @@ Language: **English**.
 - Related: [ADR-0017](0017-read-only-admin-plane.md) (the read plane),
   [ADR-0020](0020-structured-access-log.md) (bounded sinks that count their
   own loss), [ADR-0024](0024-drain-observability.md) (the last label-free
-  series this plane added), [SPEC §9](../SPEC.md), [THREAT_MODEL.md](../../THREAT_MODEL.md)
+  series this plane added), [SPEC §9](../../SPEC.md), [THREAT_MODEL.md](../../THREAT_MODEL.md)
 
 ## Context
 

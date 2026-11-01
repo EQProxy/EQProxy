@@ -20,6 +20,8 @@ use eqproxy_net::{
     ResolvedServer, RouteAction, bind,
 };
 
+mod common;
+
 const WAIT: Duration = Duration::from_secs(5);
 
 /// Real HTTP backend that identifies itself with a fixed body.
@@ -489,6 +491,7 @@ async fn affinity_cookie_and_source_pin_clients_to_a_server() {
             vec![
                 ResolvedServer {
                     addr: a.into(),
+                    source: None,
                     weight: 1,
                     backup: false,
                     priority: 0,
@@ -496,6 +499,7 @@ async fn affinity_cookie_and_source_pin_clients_to_a_server() {
                 },
                 ResolvedServer {
                     addr: b.into(),
+                    source: None,
                     weight: 1,
                     backup: false,
                     priority: 0,
@@ -968,6 +972,12 @@ async fn redirect_action_answers_locally_with_rendered_location() {
         response.contains("location: https://www.example.com/old/x?a=1"),
         "{response}"
     );
+    let date = response
+        .lines()
+        .skip(1)
+        .find_map(|line| line.strip_prefix("date: "))
+        .expect("a local redirect carries Date");
+    common::assert_http_date(date);
     // No backend involved: empty body and the counters tell the truth.
     assert!(response.ends_with("\r\n\r\n"), "{response}");
     let snapshot = metrics.snapshot();
@@ -1033,6 +1043,14 @@ async fn direct_response_answers_locally_and_keeps_keep_alive() {
     let text = String::from_utf8_lossy(&response);
     assert_eq!(text.matches("HTTP/1.1 200").count(), 2, "{text}");
     assert_eq!(text.matches("{\"shed\":true}").count(), 2, "{text}");
+    let dates: Vec<_> = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("date: "))
+        .collect();
+    assert_eq!(dates.len(), 2, "one Date per local response: {text}");
+    for date in dates {
+        common::assert_http_date(date);
+    }
     let snapshot = metrics.snapshot();
     assert_eq!(snapshot.direct_responses_served, 2);
     assert_eq!(snapshot.http_requests_proxied, 0);

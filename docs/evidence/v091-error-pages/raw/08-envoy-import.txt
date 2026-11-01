@@ -1,0 +1,85 @@
+
+===== envoy: import exit 0 =====
+import: /tmp/eqproxy-v091-errors.YkzOCD/envoy.yaml (envoy) → /tmp/eqproxy-v091-errors.YkzOCD/envoy.eqproxy.toml: 4 converted, 4 with notes, 0 rejected
+
+===== generated TOML =====
+# Generado por `eqproxy config import`.
+# Revise el informe de conversión antes de usarlo en producción.
+schema_version = 1
+
+[backend.web]
+server = "127.0.0.1:9000"
+
+[listener.edge]
+listen = "0.0.0.0:18083"
+mode = "http"
+backend = "web"
+
+[[listener.edge.error_pages]]
+codes = [503]
+body = "mantenimiento\n"
+
+[[listener.edge.rules]]
+name = "-/"
+use_backend = "web"
+path_prefix = "/"
+
+===== conversion report =====
+# Informe de conversión Envoy → EQProxy
+
+- Entrada: `/tmp/eqproxy-v091-errors.YkzOCD/envoy.yaml`
+- Salida: `/tmp/eqproxy-v091-errors.YkzOCD/envoy.eqproxy.toml`
+- Listeners generados: **1** · Backends generados: **1**
+- Directivas leídas: **8** · clasificadas: **8** — convertidas **4** · con aviso **4** · rechazadas **0**
+
+«Nunca se descarta en silencio»: cada directiva del origen aparece abajo. El fichero generado se ha parseado y validado con el propio parser de EQProxy (`schema_version = 1`) antes de escribirlo. La conversión es estática: no se ha ejecutado nada de la configuración de origen ni se ha medido tráfico.
+
+## Conversión generada
+
+| listener | escucha | modo | backend | TLS |
+|---|---|---|---|---|
+| `edge` | 0.0.0.0:18083 | http | `web` | no |
+
+| backend | servidores (peso) | balance | health check | PROXY | TLS backend |
+|---|---|---|---|---|---|
+| `web` | 127.0.0.1:9000 (1) | roundrobin | — | none | no |
+
+## Detalle de la clasificación
+
+### ❌ no traducible (0)
+
+
+### ⛔ rechazado (sin equivalente en EQProxy) (0)
+
+
+### ⚠️ revisar (2)
+
+- `domain *` — *listener edge*: dominio universal: la regla no lleva condición de host
+- `stat_prefix: edge` — *listener edge*: ajuste del HCM sin equivalente directo
+
+### ℹ️ informativo (2)
+
+- `name: web` — *cluster web*: nombre del cluster → nombre del backend
+- `static_resources: {2 claves}` — *bootstrap*: contenedores de clusters/listeners ya traducidos arriba
+
+### ✅ convertido (4)
+
+- `endpoint 127.0.0.1:9000` — *cluster web*: servidor con peso 1
+- `local_reply_config mapper 503` — *listener edge*: [[listener.*.error_pages]] codes = [503]
+- `envoy.filters.network.http_connection_manager` — *listener edge*: listener en mode = "http"
+- `listener edge` — *listener edge*: listener «edge» (http)
+
+## Qué no se ha traducido
+
+Ninguna: todas las directivas del origen tienen destino o son informativas.
+
+## Siguiente paso
+
+1. `eqproxy config validate --config <salida>` — el mismo gate que usa el binario.
+2. Leer las secciones «revisar» y «rechazado» de arriba y corregir a mano lo que falte.
+3. `eqproxy config diff --help` para comparar con la configuración actual antes de `config apply`.
+
+===== config validate =====
+warning: listener "edge" listens on 0.0.0.0:18083 without TLS: expose it only on trusted networks or enable [listener.edge.tls]
+config OK: 1 listener(s), 1 backend(s) in /tmp/eqproxy-v091-errors.YkzOCD/envoy.eqproxy.toml
+validate exit: 0

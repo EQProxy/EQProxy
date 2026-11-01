@@ -1,0 +1,19 @@
+
+===== anonymous: 401 =====
+{"error":"unauthorized"}
+
+
+===== read role: 403 =====
+{"error":"forbidden"}
+
+
+===== body: 400 =====
+{"error":"body_not_allowed"}
+
+
+===== browser Origin: 403 =====
+{"error":"origin_forbidden"}
+
+
+===== write role, no body: 200 =====
+{"certificates":[{"changed":false,"fingerprint":"sha256:764aa4dbc7f8d7b4adcd8146a49978ddd8967e6f2a36309aba9d52d41f70002c","listen":"127.0.0.1:50154","listener":"web","quic":false}],"elapsed_ms":0,"listeners":[{"listen":"127.0.0.1:50154","name":"web"}],"revision":"v5","summary":"listeners kept=1 added=0 removed=0"}

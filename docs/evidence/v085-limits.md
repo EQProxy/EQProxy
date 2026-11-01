@@ -1,7 +1,7 @@
 # v0.8.5 — buffers y límites configurables (B-N19 · B-I17 · B-E19 · CE3)
 
 **Fecha:** 2026-10-29 · **Casilla:** §1 «Buffers y límites configurables» y §2
-CE3 del [roadmap 0.8.5](../../ROADMAP%20EQPROXY/ROADMAP/Roadmap%200.8.5.md).
+CE3 del roadmap 0.8.5 (local-only: `../../ROADMAP%20EQPROXY/ROADMAP/Roadmap%200.8.5.md`).
 **Estado:** implementada y verificada E2E; la memoria por A/B **no medida**
 (§6).
 
@@ -175,8 +175,8 @@ No se cambió ninguna aserción del test; el arreglo está en el servidor.
 
 | Pata | Comando | Resultado | Evidencia |
 |---|---|---|---|
-| Veyra Proof | `veyra audit . --profile standard` | **ACCEPTED**, exit 0 | [`.veyra/evidence/20261029T165444Z/report.md`](../../.veyra/evidence/20261029T165444Z/report.md) |
-| Rust Audit | `python3.13 <rust-ai-audit>/scripts/rust_audit.py scan . --format md --out report --fail-on high` | exit 0; **0 critical / 0 high** (242 medium, 84 low; ninguno en el código nuevo) | [`report/rust-audit-20261029-175443.md`](../../report/rust-audit-20261029-175443.md) |
+| Veyra Proof | `veyra audit . --profile standard` | **ACCEPTED**, exit 0 | `.veyra/evidence/20261029T165444Z/report.md` (local-only: `../../.veyra/evidence/20261029T165444Z/report.md`) |
+| Rust Audit | `python3.13 <rust-ai-audit>/scripts/rust_audit.py scan . --format md --out report --fail-on high` | exit 0; **0 critical / 0 high** (242 medium, 84 low; ninguno en el código nuevo) | `report/rust-audit-20261029-175443.md` (local-only: `../../report/rust-audit-20261029-175443.md`) |
 | CodeGraph Rust | `codegraph-rust index . --stats-json /tmp/cg-index.json --batch-size 16` | **NOT EXECUTED**: el indexado murió en `Ollama embedding request failed` sin escribir `--stats-json`; sin índice fresco no se ejecutó `agent impact/context` | log local `/tmp/cg-index.log` (parse: 7 159 nodos, 23 000 edges; el fallo es del índice vectorial, `entry point element 1946 has no vector` y después el embedder) |
 | Hindsight | `hindsight-note --title "v0.8.5 limits: buffers y límites configurables + carrera h3" --project EQProxy --tags v085,limits,buffers,http3` | guardada: 6 ids (`092daf78…`, `f3738d90…`, `d24325bd…`, …) | banco `eqproxy` |
 

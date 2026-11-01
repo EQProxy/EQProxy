@@ -89,7 +89,7 @@ impl MirrorCopy {
                 pipe_buffer: None,
             },
             &backend,
-            addr,
+            addr.clone(),
             self.peer,
             self.local,
             &self.metrics,

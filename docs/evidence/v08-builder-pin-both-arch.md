@@ -13,7 +13,7 @@ publication: nothing was pushed, tagged or released, and both images are local.
 |---|---|
 | Image definition | [docker/Dockerfile](../../docker/Dockerfile) — `ARG RUST_VERSION=1.99.1`, Wolfi runtime pinned by index digest |
 | Tree under test | `c93cdb6` (main after v0.8.0; the workspace version is still `0.8.0`) |
-| Container E2E harness (local-only) | [`scripts/evidence/v08-release/container-e2e.sh`](../../scripts/evidence/v08-release/container-e2e.sh) |
+| Container E2E harness (local-only) | `scripts/evidence/v08-release/container-e2e.sh` (local-only: `../../scripts/evidence/v08-release/container-e2e.sh`) |
 | Transcripts and Scout reports | [raw/20261027T225140Z-builder-pin/](v08-release/raw/20261027T225140Z-builder-pin/) |
 
 ## The two images
@@ -209,7 +209,7 @@ What produced the empty body is observable:
    [`http1.rs:2005`](../../eqproxy-net/src/http1.rs#L2005) — i.e. *no eligible
    server*: the product's fail-closed answer, not a wrong pool member.
 2. **How the pool can be empty while the survivor's dataplane is fine.** The
-   local-only harness [`all-backups-probe.py`](../../scripts/evidence/v08-builder-pin/all-backups-probe.py)
+   local-only harness `all-backups-probe.py` (local-only: `../../scripts/evidence/v08-builder-pin/all-backups-probe.py`)
    replays the journey against the real binary: primary down, `h` down, `l`
    healthy but answering `/healthz` 300 ms late — past the `timeout = "100ms"`
    of its probe, with `fall = 1`. Deterministic result

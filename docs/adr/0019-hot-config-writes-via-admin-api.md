@@ -6,7 +6,7 @@ Language: **English**.
 - Date: 2026-10-25
 - Related: [ADR-0017](0017-read-only-admin-plane.md) (read plane and its
   reserved write path), [ADR-0018](0018-first-write-path-server-state.md)
-  (first write: per-server state), [SPEC §9](../SPEC.md) (administration and
+  (first write: per-server state), [SPEC §9](../../SPEC.md) (administration and
   web panel), [ADR-0002](0002-configuration-format.md) (TOML)
 
 ## Context

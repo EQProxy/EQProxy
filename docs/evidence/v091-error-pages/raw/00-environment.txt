@@ -1,0 +1,8 @@
+date: 2026-11-01T00:52:21Z
+host: Darwin 25.5.0 arm64
+rustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)
+cargo: cargo 1.99.1 (5f94df478 2026-08-27)
+binary: /Volumes/Lexar/Cursor/EQProxy/target/release/eqproxy
+sha256: dc3b1f4f3a4d50e052abf1b6885f3293b1469444de4a622208169cd9d792c161
+commit: 04859afee80db9f8107fe205dd1f9621cef83e50
+tree: 77 modified/untracked paths

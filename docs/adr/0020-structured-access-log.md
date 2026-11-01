@@ -6,7 +6,7 @@ Language: **English**.
 - Date: 2026-10-25
 - Related: [ADR-0002](0002-configuration-format.md) (TOML configuration),
   [ADR-0017](0017-read-only-admin-plane.md) (admin plane and cardinality),
-  [SPEC §9](../SPEC.md) (observability), roadmap v0.8 CE4
+  [SPEC §9](../../SPEC.md) (observability), roadmap v0.8 CE4
 
 ## Context
 

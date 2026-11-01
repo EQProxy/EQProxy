@@ -25,7 +25,9 @@
 //! configured they stay operational forever.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::fmt;
+use std::net::{IpAddr, SocketAddr};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -128,8 +130,8 @@ impl ServerModes {
 pub struct ServerView {
     /// Configured target, exactly as written (`HOSTNAME:PORT` or `IP:PORT`).
     pub target: String,
-    /// Address currently in use (`None` while a name is unresolved).
-    pub addr: Option<SocketAddr>,
+    /// Endpoint currently in use (`None` while a name is unresolved).
+    pub addr: Option<Endpoint>,
     pub weight: u32,
     /// Backup class (B8): selected only when no primary is eligible.
     pub backup: bool,
@@ -185,6 +187,68 @@ pub enum ServerAddr {
     Ip(SocketAddr),
     /// `HOSTNAME:PORT`: resolved non-blockingly, re-resolved periodically.
     Name { host: String, port: u16 },
+    /// `unix:/absolute/path` (ADR-0043): a local Unix-domain socket. No
+    /// DNS, TLS, SNI or PROXY header applies; it is usable immediately.
+    Unix(PathBuf),
+}
+
+impl ServerAddr {
+    /// Runtime endpoint of a local server, if it has one already.
+    #[must_use]
+    pub fn endpoint(&self) -> Option<Endpoint> {
+        match self {
+            Self::Ip(ip) => Some(Endpoint::Tcp(*ip)),
+            Self::Name { .. } => None,
+            Self::Unix(path) => Some(Endpoint::Unix(Arc::new(path.clone()))),
+        }
+    }
+}
+
+/// Transport endpoint a backend server is reached over: a TCP address or a
+/// local Unix-domain socket (ADR-0043). This is what the dataplane dials, the
+/// keep-alive pool keys on and the health checker probes; a name that has not
+/// resolved yet has no endpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Endpoint {
+    /// TCP address (literal or a resolved name).
+    Tcp(SocketAddr),
+    /// Filesystem Unix-domain socket path.
+    Unix(Arc<PathBuf>),
+}
+
+impl Endpoint {
+    /// The TCP address, when this endpoint is TCP.
+    #[must_use]
+    pub fn tcp_addr(&self) -> Option<SocketAddr> {
+        match self {
+            Self::Tcp(addr) => Some(*addr),
+            Self::Unix(_) => None,
+        }
+    }
+
+    /// Is this a Unix-domain socket?
+    #[must_use]
+    pub fn is_unix(&self) -> bool {
+        matches!(self, Self::Unix(_))
+    }
+
+    /// Filesystem path of a Unix endpoint.
+    #[must_use]
+    pub fn unix_path(&self) -> Option<&Path> {
+        match self {
+            Self::Unix(path) => Some(path.as_path()),
+            Self::Tcp(_) => None,
+        }
+    }
+}
+
+impl fmt::Display for Endpoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Tcp(addr) => write!(f, "{addr}"),
+            Self::Unix(path) => write!(f, "unix:{}", path.display()),
+        }
+    }
 }
 
 impl From<SocketAddr> for ServerAddr {
@@ -193,11 +257,12 @@ impl From<SocketAddr> for ServerAddr {
     }
 }
 
-impl std::fmt::Display for ServerAddr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for ServerAddr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Ip(addr) => write!(f, "{addr}"),
             Self::Name { host, port } => write!(f, "{host}:{port}"),
+            Self::Unix(path) => write!(f, "unix:{}", path.display()),
         }
     }
 }
@@ -219,6 +284,10 @@ pub struct ResolvedServer {
     /// (`no_available_server`), or waits in the backend's bounded queue when
     /// one is configured (`maxqueue > 0`, B-H7).
     pub maxconn: u32,
+    /// Local address the outbound socket is bound to before connecting
+    /// (ADR-0043, `source`); `None` = the kernel picks. Validated to be a
+    /// TCP server only.
+    pub source: Option<IpAddr>,
 }
 
 #[derive(Debug, Clone)]
@@ -226,10 +295,12 @@ struct ServerState {
     /// Target as configured: the key of the administration state, stable
     /// across DNS re-resolutions (ADR-0018).
     target: String,
-    /// Current resolved address. `None` = name still unresolved (B-H13):
-    /// the slot is never selected and the caller answers 503 with the
+    /// Current endpoint. `None` = name still unresolved (B-H13): the slot
+    /// is never selected and the caller answers 503 with the
     /// `no_available_server` metric until DNS lands.
-    addr: Option<SocketAddr>,
+    addr: Option<Endpoint>,
+    /// Source address to bind before connecting (ADR-0043).
+    source: Option<IpAddr>,
     weight: u32,
     /// Backup class (B8), copied from [`ResolvedServer`] at construction.
     backup: bool,
@@ -378,10 +449,8 @@ impl Balancer {
                 target: s.addr.to_string(),
                 // Names start unresolved (B-H13): the resolver task fills
                 // them in; a literal is usable immediately.
-                addr: match &s.addr {
-                    ServerAddr::Ip(ip) => Some(*ip),
-                    ServerAddr::Name { .. } => None,
-                },
+                addr: s.addr.endpoint(),
+                source: s.source,
                 weight: s.weight,
                 backup: s.backup,
                 priority: s.priority,
@@ -466,7 +535,7 @@ impl Balancer {
                 let mode = self.mode_of(server);
                 ServerView {
                     target: server.target.clone(),
-                    addr: server.addr,
+                    addr: server.addr.clone(),
                     weight: server.weight,
                     backup: server.backup,
                     priority: server.priority,
@@ -487,11 +556,20 @@ impl Balancer {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Resolved server addresses (configuration order). Unresolved name
+    /// Resolved server endpoints (configuration order). Unresolved name
     /// slots are not included: they cannot be connected to (B-H13).
     #[must_use]
-    pub fn resolved_servers(&self) -> Vec<SocketAddr> {
-        self.state().iter().filter_map(|s| s.addr).collect()
+    pub fn resolved_servers(&self) -> Vec<Endpoint> {
+        self.state().iter().filter_map(|s| s.addr.clone()).collect()
+    }
+
+    /// Source address configured for the server at `addr` (ADR-0043).
+    #[must_use]
+    pub fn source_of(&self, addr: &Endpoint) -> Option<IpAddr> {
+        self.state()
+            .iter()
+            .find(|s| s.addr.as_ref() == Some(addr))
+            .and_then(|s| s.source)
     }
 
     /// Number of server slots (resolved or not). Slot indexes are stable
@@ -503,14 +581,16 @@ impl Balancer {
 
     /// Stable slot index of the server currently at `addr`.
     #[must_use]
-    pub fn slot_of(&self, addr: SocketAddr) -> Option<usize> {
-        self.state().iter().position(|s| s.addr == Some(addr))
+    pub fn slot_of(&self, addr: &Endpoint) -> Option<usize> {
+        self.state()
+            .iter()
+            .position(|s| s.addr.as_ref() == Some(addr))
     }
 
-    /// Current address of a stable slot index (`None` = unresolved).
+    /// Current endpoint of a stable slot index (`None` = unresolved).
     #[must_use]
-    pub fn addr_of_slot(&self, idx: usize) -> Option<SocketAddr> {
-        self.state().get(idx).and_then(|s| s.addr)
+    pub fn addr_of_slot(&self, idx: usize) -> Option<Endpoint> {
+        self.state().get(idx).and_then(|s| s.addr.clone())
     }
 
     /// Unique `HOSTNAME:PORT` targets to resolve (B-H13/B-N18/B-E15).
@@ -548,8 +628,8 @@ impl Balancer {
             let Some(server) = state.get_mut(idx) else {
                 continue;
             };
-            if server.addr != Some(new) {
-                server.addr = Some(new);
+            if server.addr.as_ref() != Some(&Endpoint::Tcp(new)) {
+                server.addr = Some(Endpoint::Tcp(new));
                 server.consecutive_fails = 0;
                 server.consecutive_rises = 0;
                 server.up = true;
@@ -576,22 +656,22 @@ impl Balancer {
     /// Effective weight of `addr` at this instant, in milli-units
     /// (B14: configured weight × slow-start ramp; 0 = not selectable).
     #[must_use]
-    pub fn effective_weight(&self, addr: SocketAddr) -> i64 {
+    pub fn effective_weight(&self, addr: &Endpoint) -> i64 {
         let state = self.state();
         state
             .iter()
-            .position(|s| s.addr == Some(addr))
+            .position(|s| s.addr.as_ref() == Some(addr))
             .and_then(|idx| state.get(idx))
             .map_or(0, |server| self.eff_weight(server, Instant::now()))
     }
 
     /// Exchanges currently in flight on `addr` (B-H5 leastconn metric).
     #[must_use]
-    pub fn active_count(&self, addr: SocketAddr) -> u32 {
+    pub fn active_count(&self, addr: &Endpoint) -> u32 {
         let state = self.state();
         state
             .iter()
-            .position(|s| s.addr == Some(addr))
+            .position(|s| s.addr.as_ref() == Some(addr))
             .and_then(|idx| state.get(idx))
             .map_or(0, |server| server.active)
     }
@@ -599,7 +679,7 @@ impl Balancer {
     /// Selects the next operational server, or `None` when all are down
     /// (or all with `weight = 0`). Pure selection: no in-flight slot.
     #[must_use]
-    pub fn pick(&self) -> Option<SocketAddr> {
+    pub fn pick(&self) -> Option<Endpoint> {
         self.pick_except(&[])
     }
 
@@ -607,21 +687,21 @@ impl Balancer {
     /// retry picks another server than the one that just failed (B-H7).
     /// Pure selection: no in-flight slot.
     #[must_use]
-    pub fn pick_except(&self, exclude: &[SocketAddr]) -> Option<SocketAddr> {
+    pub fn pick_except(&self, exclude: &[Endpoint]) -> Option<Endpoint> {
         let mut state = self.state();
         let idx = self.select(&mut state, None, exclude)?;
-        state[idx].addr
+        state[idx].addr.clone()
     }
 
     /// [`pick`](Self::pick) holding one in-flight slot on the chosen
     /// server. The slot is taken under the same lock as the pick (no
     /// pick/lease race) and released when the guard drops (B-H5).
     #[must_use]
-    pub fn pick_tracked(&self, exclude: &[SocketAddr]) -> Option<(SocketAddr, ActiveGuard<'_>)> {
+    pub fn pick_tracked(&self, exclude: &[Endpoint]) -> Option<(Endpoint, ActiveGuard<'_>)> {
         let mut state = self.state();
         let idx = self.select(&mut state, None, exclude)?;
         state[idx].active = state[idx].active.saturating_add(1);
-        let addr = state[idx].addr?;
+        let addr = state[idx].addr.clone()?;
         Some((
             addr,
             ActiveGuard {
@@ -638,12 +718,12 @@ impl Balancer {
     #[must_use]
     pub fn pick_pinned(
         &self,
-        preferred: Option<SocketAddr>,
-        exclude: &[SocketAddr],
-    ) -> Option<SocketAddr> {
+        preferred: Option<Endpoint>,
+        exclude: &[Endpoint],
+    ) -> Option<Endpoint> {
         let mut state = self.state();
-        let idx = self.select(&mut state, preferred, exclude)?;
-        state[idx].addr
+        let idx = self.select(&mut state, preferred.as_ref(), exclude)?;
+        state[idx].addr.clone()
     }
 
     /// [`pick_pinned`](Self::pick_pinned) holding one in-flight slot on the
@@ -651,13 +731,13 @@ impl Balancer {
     #[must_use]
     pub fn pick_pinned_tracked(
         &self,
-        preferred: Option<SocketAddr>,
-        exclude: &[SocketAddr],
-    ) -> Option<(SocketAddr, ActiveGuard<'_>)> {
+        preferred: Option<Endpoint>,
+        exclude: &[Endpoint],
+    ) -> Option<(Endpoint, ActiveGuard<'_>)> {
         let mut state = self.state();
-        let idx = self.select(&mut state, preferred, exclude)?;
+        let idx = self.select(&mut state, preferred.as_ref(), exclude)?;
         state[idx].active = state[idx].active.saturating_add(1);
-        let addr = state[idx].addr?;
+        let addr = state[idx].addr.clone()?;
         Some((
             addr,
             ActiveGuard {
@@ -689,8 +769,8 @@ impl Balancer {
     fn select(
         &self,
         state: &mut [ServerState],
-        preferred: Option<SocketAddr>,
-        exclude: &[SocketAddr],
+        preferred: Option<&Endpoint>,
+        exclude: &[Endpoint],
     ) -> Option<usize> {
         let eligible = |idx: usize, state: &[ServerState]| {
             // Unresolved name slots (B-H13) are never selectable, a drained
@@ -702,7 +782,10 @@ impl Balancer {
                 // like a drained one, so the next sibling takes the load.
                 && (state[idx].maxconn == 0 || state[idx].active < state[idx].maxconn)
                 && self.mode_of(&state[idx]) == ServerMode::Ready
-                && !state[idx].addr.is_some_and(|a| exclude.contains(&a))
+                && !state[idx]
+                    .addr
+                    .as_ref()
+                    .is_some_and(|a| exclude.contains(a))
         };
         // B8: one tier at a time. Primaries are the top tier; when none is
         // eligible the backup tier serves. With `option allbackups` every
@@ -738,7 +821,7 @@ impl Balancer {
         // the next eligible in configuration order after it (ip_hash
         // fallback). Affinity never consults load or weights.
         if let Some(start) =
-            preferred.and_then(|addr| state.iter().position(|s| s.addr == Some(addr)))
+            preferred.and_then(|addr| state.iter().position(|s| s.addr.as_ref() == Some(addr)))
         {
             return (0..state.len()).find_map(|offset| {
                 let idx = (start + offset) % state.len();
@@ -812,18 +895,18 @@ impl Balancer {
     }
 
     /// Records a successful health check (`rise` machine).
-    pub fn report_ok(&self, addr: SocketAddr) {
+    pub fn report_ok(&self, addr: &Endpoint) {
         self.report(addr, true);
     }
 
     /// Records a failed health check (`fall` machine).
-    pub fn report_fail(&self, addr: SocketAddr) {
+    pub fn report_fail(&self, addr: &Endpoint) {
         self.report(addr, false);
     }
 
-    fn report(&self, addr: SocketAddr, ok: bool) {
+    fn report(&self, addr: &Endpoint, ok: bool) {
         let mut state = self.state();
-        if let Some(idx) = state.iter().position(|s| s.addr == Some(addr))
+        if let Some(idx) = state.iter().position(|s| s.addr.as_ref() == Some(addr))
             && let Some(server) = state.get_mut(idx)
         {
             if ok {
@@ -849,11 +932,11 @@ impl Balancer {
 
     /// Is the server operational?
     #[must_use]
-    pub fn is_up(&self, addr: SocketAddr) -> bool {
+    pub fn is_up(&self, addr: &Endpoint) -> bool {
         let state = self.state();
         state
             .iter()
-            .position(|s| s.addr == Some(addr))
+            .position(|s| s.addr.as_ref() == Some(addr))
             .and_then(|idx| state.get(idx))
             .is_some_and(|server| server.up)
     }
@@ -876,9 +959,14 @@ mod tests {
         SocketAddr::from(([127, 0, 0, 1], port))
     }
 
+    fn ep(port: u16) -> Endpoint {
+        Endpoint::Tcp(ip(port))
+    }
+
     fn server(port: u16, weight: u32) -> ResolvedServer {
         ResolvedServer {
             addr: ServerAddr::Ip(ip(port)),
+            source: None,
             weight,
             backup: false,
             priority: 0,
@@ -893,6 +981,7 @@ mod tests {
     fn backup_with(port: u16, weight: u32, priority: u32) -> ResolvedServer {
         ResolvedServer {
             addr: ServerAddr::Ip(ip(port)),
+            source: None,
             weight,
             backup: true,
             priority,
@@ -905,6 +994,7 @@ mod tests {
             backup: false,
             priority: 0,
             maxconn: 0,
+            source: None,
             addr: ServerAddr::Name {
                 host: host.to_owned(),
                 port,
@@ -918,7 +1008,7 @@ mod tests {
         let balancer = Balancer::new(vec![server(1, 1), server(2, 1), server(3, 1)], 3, 2);
         let picks: Vec<u16> = (0..6)
             .filter_map(|_| balancer.pick())
-            .map(|a| a.port())
+            .map(|a| a.tcp_addr().expect("tcp").port())
             .collect();
         assert_eq!(
             picks,
@@ -931,7 +1021,7 @@ mod tests {
         let balancer = Balancer::new(vec![server(1, 1), server(2, 3)], 3, 2);
         let picks: Vec<u16> = (0..8)
             .filter_map(|_| balancer.pick())
-            .map(|a| a.port())
+            .map(|a| a.tcp_addr().expect("tcp").port())
             .collect();
         assert_eq!(
             picks.len(),
@@ -947,7 +1037,10 @@ mod tests {
     fn drained_server_is_never_picked_but_others_are() {
         let balancer = Balancer::new(vec![server(1, 0), server(2, 1)], 3, 2);
         for _ in 0..4 {
-            assert_eq!(balancer.pick().map(|a| a.port()), Some(2));
+            assert_eq!(
+                balancer.pick().map(|a| a.tcp_addr().expect("tcp").port()),
+                Some(2)
+            );
         }
         assert_eq!(balancer.up_count(), 2, "weight=0 stays operational");
     }
@@ -960,6 +1053,7 @@ mod tests {
             vec![
                 ResolvedServer {
                     addr: a.into(),
+                    source: None,
                     weight: 1,
                     backup: false,
                     priority: 0,
@@ -967,6 +1061,7 @@ mod tests {
                 },
                 ResolvedServer {
                     addr: b.into(),
+                    source: None,
                     weight: 1,
                     backup: false,
                     priority: 0,
@@ -976,10 +1071,18 @@ mod tests {
             3,
             2,
         );
-        assert_eq!(balancer.pick_except(&[a]), Some(b), "a is excluded");
-        assert_eq!(balancer.pick_except(&[a]), Some(b), "still b");
         assert_eq!(
-            balancer.pick_except(&[a, b]),
+            balancer.pick_except(&[Endpoint::Tcp(a)]),
+            Some(Endpoint::Tcp(b)),
+            "a is excluded"
+        );
+        assert_eq!(
+            balancer.pick_except(&[Endpoint::Tcp(a)]),
+            Some(Endpoint::Tcp(b)),
+            "still b"
+        );
+        assert_eq!(
+            balancer.pick_except(&[Endpoint::Tcp(a), Endpoint::Tcp(b)]),
             None,
             "with every server excluded there is no candidate"
         );
@@ -989,8 +1092,8 @@ mod tests {
     #[test]
     fn pick_returns_none_when_all_servers_are_down_or_drained() {
         let balancer = Balancer::new(vec![server(1, 1)], 1, 1);
-        balancer.report_fail(ip(1));
-        assert!(!balancer.is_up(ip(1)));
+        balancer.report_fail(&ep(1));
+        assert!(!balancer.is_up(&ep(1)));
         assert!(balancer.pick().is_none());
 
         let drained = Balancer::new(vec![server(2, 0)], 1, 1);
@@ -999,33 +1102,33 @@ mod tests {
 
     #[test]
     fn fall_and_rise_thresholds_gate_transitions() {
-        let addr = ip(1);
+        let addr = ep(1);
         let balancer = Balancer::new(vec![server(1, 1)], 2, 2);
 
-        balancer.report_fail(addr);
-        assert!(balancer.is_up(addr), "1 failure with fall=2 does not drop");
-        balancer.report_fail(addr);
-        assert!(!balancer.is_up(addr), "2 failures with fall=2 drop");
+        balancer.report_fail(&addr);
+        assert!(balancer.is_up(&addr), "1 failure with fall=2 does not drop");
+        balancer.report_fail(&addr);
+        assert!(!balancer.is_up(&addr), "2 failures with fall=2 drop");
 
         // A success followed by a failure resets the rise count.
-        balancer.report_ok(addr);
+        balancer.report_ok(&addr);
         assert!(
-            !balancer.is_up(addr),
+            !balancer.is_up(&addr),
             "1 success with rise=2 does not raise"
         );
-        balancer.report_fail(addr);
-        assert!(!balancer.is_up(addr));
-        balancer.report_ok(addr);
-        balancer.report_ok(addr);
-        assert!(balancer.is_up(addr), "2 successes with rise=2 raise");
+        balancer.report_fail(&addr);
+        assert!(!balancer.is_up(&addr));
+        balancer.report_ok(&addr);
+        balancer.report_ok(&addr);
+        assert!(balancer.is_up(&addr), "2 successes with rise=2 raise");
     }
 
     // ------------------------------------------- B-H5: least-connections ---
 
     #[test]
     fn leastconn_prefers_the_server_with_the_fewest_active_exchanges() {
-        let a = ip(1);
-        let b = ip(2);
+        let a = ep(1);
+        let b = ep(2);
         let balancer = Balancer::with_options(
             vec![server(1, 1), server(2, 1)],
             3,
@@ -1034,13 +1137,13 @@ mod tests {
             Duration::ZERO,
         );
         let held = balancer.pick_tracked(&[]).expect("pick").1;
-        assert_eq!(balancer.active_count(a), 1, "the held exchange is on A");
+        assert_eq!(balancer.active_count(&a), 1, "the held exchange is on A");
         for _ in 0..5 {
             let (addr, _guard) = balancer.pick_tracked(&[]).expect("pick");
             assert_eq!(addr, b, "A is loaded; every new pick goes to B");
         }
         drop(held);
-        assert_eq!(balancer.active_count(a), 0, "the slot is released on drop");
+        assert_eq!(balancer.active_count(&a), 0, "the slot is released on drop");
     }
 
     #[test]
@@ -1058,8 +1161,8 @@ mod tests {
         for _ in 0..6 {
             held.push(balancer.pick_tracked(&[]).expect("pick"));
         }
-        let a = balancer.active_count(ip(1));
-        let b = balancer.active_count(ip(2));
+        let a = balancer.active_count(&ep(1));
+        let b = balancer.active_count(&ep(2));
         assert_eq!((a, b), (4, 2), "in-flight split follows the 2:1 weights");
         drop(held);
     }
@@ -1075,7 +1178,7 @@ mod tests {
         );
         let picks: Vec<u16> = (0..4)
             .filter_map(|_| balancer.pick())
-            .map(|a| a.port())
+            .map(|a| a.tcp_addr().expect("tcp").port())
             .collect();
         assert_eq!(picks, vec![1, 2, 1, 2], "zero load ties fall to SWRR");
     }
@@ -1084,8 +1187,8 @@ mod tests {
 
     #[test]
     fn slow_start_ramps_the_recovered_server_up() {
-        let a = ip(1);
-        let b = ip(2);
+        let a = ep(1);
+        let b = ep(2);
         let balancer = Balancer::with_options(
             vec![server(1, 1), server(2, 1)],
             3,
@@ -1099,18 +1202,20 @@ mod tests {
             let mut state = balancer.state();
             state[0].up_since = Instant::now() - Duration::from_secs(7200);
         }
-        balancer.report_fail(b);
-        balancer.report_ok(b);
-        assert!(balancer.is_up(b));
-        let eff_a = balancer.effective_weight(a);
-        let eff_b = balancer.effective_weight(b);
+        balancer.report_fail(&b);
+        balancer.report_ok(&b);
+        assert!(balancer.is_up(&b));
+        let eff_a = balancer.effective_weight(&a);
+        let eff_b = balancer.effective_weight(&b);
         assert!(
             eff_b < eff_a / 100,
             "the fresh ramp must be a tiny fraction: eff_a={eff_a} eff_b={eff_b}"
         );
         for _ in 0..10 {
             assert_eq!(
-                balancer.pick().map(|addr| addr.port()),
+                balancer
+                    .pick()
+                    .map(|addr| addr.tcp_addr().expect("tcp").port()),
                 Some(1),
                 "all early traffic goes to the fully ramped server"
             );
@@ -1120,10 +1225,10 @@ mod tests {
             let mut state = balancer.state();
             state[1].up_since = Instant::now() - Duration::from_secs(7200);
         }
-        assert_eq!(balancer.effective_weight(b), eff_a, "ramp complete");
+        assert_eq!(balancer.effective_weight(&b), eff_a, "ramp complete");
         let picks: Vec<u16> = (0..4)
             .filter_map(|_| balancer.pick())
-            .map(|a| a.port())
+            .map(|a| a.tcp_addr().expect("tcp").port())
             .collect();
         let a_picks = picks.iter().filter(|port| **port == 1).count();
         let b_picks = picks.iter().filter(|port| **port == 2).count();
@@ -1136,13 +1241,13 @@ mod tests {
 
     #[test]
     fn slow_start_zero_keeps_full_weights_after_recovery() {
-        let a = ip(1);
-        let b = ip(2);
+        let a = ep(1);
+        let b = ep(2);
         let balancer = Balancer::new(vec![server(1, 1), server(2, 1)], 1, 1);
-        balancer.report_fail(b);
-        balancer.report_ok(b);
+        balancer.report_fail(&b);
+        balancer.report_ok(&b);
         assert_eq!(
-            (balancer.effective_weight(a), balancer.effective_weight(b)),
+            (balancer.effective_weight(&a), balancer.effective_weight(&b)),
             (SCALE, SCALE),
             "without slow start a recovered server is immediately full"
         );
@@ -1150,13 +1255,76 @@ mod tests {
 
     #[test]
     fn tracked_picks_take_and_release_the_slot() {
-        let a = ip(1);
+        let a = ep(1);
         let balancer = Balancer::new(vec![server(1, 1)], 1, 1);
         let (addr, guard) = balancer.pick_tracked(&[]).expect("pick");
         assert_eq!(addr, a);
-        assert_eq!(balancer.active_count(a), 1);
+        assert_eq!(balancer.active_count(&a), 1);
         drop(guard);
-        assert_eq!(balancer.active_count(a), 0);
+        assert_eq!(balancer.active_count(&a), 0);
+    }
+
+    // ----------------------------- ADR-0043: Unix targets and source ---
+
+    #[test]
+    fn unix_slots_are_usable_immediately_and_render_their_path() {
+        let path = PathBuf::from("/run/app.sock");
+        let balancer = Balancer::new(
+            vec![ResolvedServer {
+                addr: ServerAddr::Unix(path.clone()),
+                source: None,
+                weight: 1,
+                backup: false,
+                priority: 0,
+                maxconn: 0,
+            }],
+            1,
+            1,
+        );
+        let picked = balancer
+            .pick()
+            .expect("a Unix target has no DNS to wait for");
+        assert_eq!(picked, Endpoint::Unix(Arc::new(path)));
+        assert_eq!(picked.to_string(), "unix:/run/app.sock");
+        assert_eq!(picked.unix_path(), Some(Path::new("/run/app.sock")));
+        assert_eq!(picked.tcp_addr(), None);
+        assert_eq!(balancer.resolved_servers(), vec![picked.clone()]);
+        assert_eq!(balancer.source_of(&picked), None);
+        assert!(
+            balancer.servers_view()[0].addr == Some(picked),
+            "the admin view reports the endpoint it dials"
+        );
+    }
+
+    #[test]
+    fn source_is_kept_per_server_and_returned_with_the_pick() {
+        let local: IpAddr = "10.0.0.5".parse().expect("source");
+        let balancer = Balancer::new(
+            vec![
+                ResolvedServer {
+                    addr: ServerAddr::Ip(ip(1)),
+                    source: Some(local),
+                    weight: 1,
+                    backup: false,
+                    priority: 0,
+                    maxconn: 0,
+                },
+                server(2, 1),
+            ],
+            1,
+            1,
+        );
+        assert_eq!(balancer.source_of(&ep(1)), Some(local));
+        assert_eq!(
+            balancer.source_of(&ep(2)),
+            None,
+            "a sibling without `source` keeps the kernel-chosen address"
+        );
+        assert_eq!(
+            balancer.source_of(&Endpoint::Unix(Arc::new(PathBuf::from("/run/x.sock")))),
+            None,
+            "an endpoint that is not a slot has no source"
+        );
     }
 
     // --------------------------------------- B-H13: dynamic DNS slots ---
@@ -1169,7 +1337,7 @@ mod tests {
             None,
             "an unresolved name is never selected (the caller answers 503)"
         );
-        assert_eq!(balancer.resolved_servers(), Vec::<SocketAddr>::new());
+        assert_eq!(balancer.resolved_servers(), Vec::<Endpoint>::new());
         assert_eq!(balancer.up_count(), 0, "unresolved is not operational");
         assert_eq!(
             balancer.name_targets(),
@@ -1182,8 +1350,12 @@ mod tests {
             1,
             "one slot resolved"
         );
-        assert_eq!(balancer.pick(), Some(addr), "the resolved name serves");
-        assert_eq!(balancer.resolved_servers(), vec![addr]);
+        assert_eq!(
+            balancer.pick(),
+            Some(Endpoint::Tcp(addr)),
+            "the resolved name serves"
+        );
+        assert_eq!(balancer.resolved_servers(), vec![Endpoint::Tcp(addr)]);
     }
 
     #[test]
@@ -1192,22 +1364,25 @@ mod tests {
         let old: SocketAddr = "10.0.0.1:9000".parse().expect("addr");
         let new: SocketAddr = "10.0.0.2:9000".parse().expect("addr");
         balancer.apply_resolution("api.internal", 9000, &[old]);
-        balancer.report_fail(old);
-        assert!(!balancer.is_up(old), "fall = 1 drops the old endpoint");
+        balancer.report_fail(&Endpoint::Tcp(old));
+        assert!(
+            !balancer.is_up(&Endpoint::Tcp(old)),
+            "fall = 1 drops the old endpoint"
+        );
         assert_eq!(balancer.pick(), None);
 
         assert_eq!(balancer.apply_resolution("api.internal", 9000, &[new]), 1);
         assert!(
-            balancer.is_up(new),
+            balancer.is_up(&Endpoint::Tcp(new)),
             "a changed address is a new endpoint: operational and cold"
         );
         assert_eq!(
             balancer.pick(),
-            Some(new),
+            Some(Endpoint::Tcp(new)),
             "traffic moves to the new address"
         );
         assert_eq!(
-            balancer.effective_weight(new),
+            balancer.effective_weight(&Endpoint::Tcp(new)),
             SCALE,
             "no slow start configured: full weight"
         );
@@ -1218,16 +1393,19 @@ mod tests {
         let balancer = Balancer::new(vec![named("api.internal", 9000, 1)], 1, 1);
         let addr: SocketAddr = "10.0.0.1:9000".parse().expect("addr");
         balancer.apply_resolution("api.internal", 9000, &[addr]);
-        balancer.report_fail(addr);
+        balancer.report_fail(&Endpoint::Tcp(addr));
 
         // Empty answer: keep the last-known address (and its health).
         assert_eq!(balancer.apply_resolution("api.internal", 9000, &[]), 0);
-        assert_eq!(balancer.resolved_servers(), vec![addr]);
-        assert!(!balancer.is_up(addr), "health state is untouched");
+        assert_eq!(balancer.resolved_servers(), vec![Endpoint::Tcp(addr)]);
+        assert!(
+            !balancer.is_up(&Endpoint::Tcp(addr)),
+            "health state is untouched"
+        );
 
         // Same answer again: no change, no reset.
         assert_eq!(balancer.apply_resolution("api.internal", 9000, &[addr]), 0);
-        assert!(!balancer.is_up(addr));
+        assert!(!balancer.is_up(&Endpoint::Tcp(addr)));
         assert_eq!(
             balancer.apply_resolution("other.internal", 9000, &[addr]),
             0,
@@ -1241,7 +1419,7 @@ mod tests {
         for _ in 0..4 {
             assert_eq!(
                 balancer.pick(),
-                Some(ip(1)),
+                Some(ep(1)),
                 "the literal server takes all the traffic while the name is unresolved"
             );
         }
@@ -1249,13 +1427,15 @@ mod tests {
 
     #[test]
     fn pinned_tracked_picks_honor_affinity_and_hold_a_slot() {
-        let b = ip(2);
+        let b = ep(2);
         let balancer = Balancer::new(vec![server(1, 1), server(2, 1)], 1, 1);
-        let (addr, guard) = balancer.pick_pinned_tracked(Some(b), &[]).expect("pick");
+        let (addr, guard) = balancer
+            .pick_pinned_tracked(Some(b.clone()), &[])
+            .expect("pick");
         assert_eq!(addr, b, "the pin wins over load");
-        assert_eq!(balancer.active_count(b), 1);
+        assert_eq!(balancer.active_count(&b), 1);
         drop(guard);
-        assert_eq!(balancer.active_count(b), 0);
+        assert_eq!(balancer.active_count(&b), 0);
     }
 
     // ------------------------------------ ADR-0018: admin server state ---
@@ -1268,13 +1448,15 @@ mod tests {
         modes.set("api", "127.0.0.1:1", ServerMode::Drain);
         for _ in 0..6 {
             assert_eq!(
-                balancer.pick().map(|addr| addr.port()),
+                balancer
+                    .pick()
+                    .map(|addr| addr.tcp_addr().expect("tcp").port()),
                 Some(2),
                 "the drained slot never wins a pick"
             );
         }
         assert!(
-            balancer.is_up(ip(1)),
+            balancer.is_up(&ep(1)),
             "drain is an admin decision, not a health failure"
         );
         assert_eq!(balancer.up_count(), 2, "both servers stay operational");
@@ -1290,7 +1472,7 @@ mod tests {
         );
         let picks: Vec<u16> = (0..4)
             .filter_map(|_| balancer.pick())
-            .map(|addr| addr.port())
+            .map(|addr| addr.tcp_addr().expect("tcp").port())
             .collect();
         assert_eq!(picks, vec![1, 2, 1, 2], "ready restores the rotation");
     }
@@ -1319,7 +1501,9 @@ mod tests {
         let rebuilt = Balancer::new(vec![server(1, 1), server(2, 1)], 1, 1)
             .with_modes("api", Arc::clone(&modes));
         assert_eq!(
-            rebuilt.pick().map(|addr| addr.port()),
+            rebuilt
+                .pick()
+                .map(|addr| addr.tcp_addr().expect("tcp").port()),
             Some(2),
             "state outlives the Balancer it was declared on"
         );
@@ -1344,6 +1528,7 @@ mod tests {
         // caller rejects explicitly with `no_available_server`).
         let capped = |port: u16, maxconn: u32| ResolvedServer {
             addr: ServerAddr::Ip(ip(port)),
+            source: None,
             weight: 1,
             backup: false,
             priority: 0,
@@ -1352,12 +1537,16 @@ mod tests {
         let balancer = Balancer::new(vec![capped(9000, 1), capped(9001, 1)], 1, 1);
 
         let (first, guard) = balancer.pick_tracked(&[]).expect("first pick");
-        assert_eq!(first.port(), 9000, "config order picks the first slot");
-        assert_eq!(balancer.active_count(first), 1);
+        assert_eq!(
+            first.tcp_addr().expect("tcp").port(),
+            9000,
+            "config order picks the first slot"
+        );
+        assert_eq!(balancer.active_count(&first), 1);
 
         let second_pick = balancer.pick().expect("sibling takes the load");
         assert_eq!(
-            second_pick.port(),
+            second_pick.tcp_addr().expect("tcp").port(),
             9001,
             "a saturated server must not take a second exchange"
         );
@@ -1372,7 +1561,9 @@ mod tests {
 
         drop(guard);
         assert_eq!(
-            balancer.pick().map(|addr| addr.port()),
+            balancer
+                .pick()
+                .map(|addr| addr.tcp_addr().expect("tcp").port()),
             Some(9000),
             "the frees slot rejoins rotation at exchange end"
         );
@@ -1388,7 +1579,7 @@ mod tests {
         let view = balancer.servers_view();
         assert_eq!(view.len(), 2);
         assert_eq!(view[0].target, "127.0.0.1:9000");
-        assert_eq!(view[0].addr, Some(ip(9000)));
+        assert_eq!(view[0].addr, Some(ep(9000)));
         assert_eq!(view[0].weight, 1);
         assert!(view[0].up);
         assert_eq!(view[0].mode, ServerMode::Ready);
@@ -1415,10 +1606,10 @@ mod tests {
         let balancer = Balancer::new(vec![server(1, 1), server(2, 1)], 1, 1)
             .with_modes("api", Arc::clone(&modes));
         let (_, first) = balancer
-            .pick_pinned_tracked(Some(ip(1)), &[])
+            .pick_pinned_tracked(Some(ep(1)), &[])
             .expect("first");
         let (_, second) = balancer
-            .pick_pinned_tracked(Some(ip(1)), &[])
+            .pick_pinned_tracked(Some(ep(1)), &[])
             .expect("second");
         // An exchange finishing on a ready slot is not a drain event.
         drop(first);
@@ -1476,7 +1667,9 @@ mod tests {
         modes.set("api", "127.0.0.1:1", ServerMode::Maintenance);
         for _ in 0..6 {
             assert_eq!(
-                balancer.pick().map(|addr| addr.port()),
+                balancer
+                    .pick()
+                    .map(|addr| addr.tcp_addr().expect("tcp").port()),
                 Some(2),
                 "a maintenance slot takes no new exchange"
             );
@@ -1491,7 +1684,10 @@ mod tests {
         // Restoring it puts it back in rotation.
         modes.set("api", "127.0.0.1:1", ServerMode::Ready);
         assert!(
-            (0..6).any(|_| balancer.pick().map(|addr| addr.port()) == Some(1)),
+            (0..6).any(|_| balancer
+                .pick()
+                .map(|addr| addr.tcp_addr().expect("tcp").port())
+                == Some(1)),
             "ready puts the slot back"
         );
     }
@@ -1502,7 +1698,7 @@ mod tests {
         let balancer = Balancer::new(vec![server(1, 1), server(2, 1)], 1, 1)
             .with_modes("api", Arc::clone(&modes));
         let (_, guard) = balancer
-            .pick_pinned_tracked(Some(ip(1)), &[])
+            .pick_pinned_tracked(Some(ep(1)), &[])
             .expect("pick");
         assert_eq!(guard.mode(), ServerMode::Ready, "a fresh slot is ready");
         modes.set("api", "127.0.0.1:2", ServerMode::Maintenance);
@@ -1525,7 +1721,7 @@ mod tests {
         let balancer =
             Balancer::new(vec![server(1, 1)], 1, 1).with_modes("api", Arc::clone(&modes));
         let (_, guard) = balancer
-            .pick_pinned_tracked(Some(ip(1)), &[])
+            .pick_pinned_tracked(Some(ep(1)), &[])
             .expect("pick");
         modes.set("api", "127.0.0.1:1", ServerMode::Maintenance);
         let view = balancer.servers_view().remove(0);
@@ -1547,7 +1743,7 @@ mod tests {
         for _ in 0..12 {
             assert_eq!(
                 balancer.pick(),
-                Some(ip(1)),
+                Some(ep(1)),
                 "a healthy primary owns every selection"
             );
         }
@@ -1565,27 +1761,34 @@ mod tests {
         let balancer = Balancer::new(vec![server(1, 1), server(2, 1), backup(3, 1)], 1, 1);
         let mut seen = std::collections::BTreeSet::new();
         for _ in 0..6 {
-            seen.insert(balancer.pick().expect("primary eligible").port());
+            seen.insert(
+                balancer
+                    .pick()
+                    .expect("primary eligible")
+                    .tcp_addr()
+                    .expect("tcp")
+                    .port(),
+            );
         }
         assert_eq!(seen, std::collections::BTreeSet::from([1, 2]));
 
-        balancer.report_fail(ip(1));
-        balancer.report_fail(ip(2));
+        balancer.report_fail(&ep(1));
+        balancer.report_fail(&ep(2));
         for _ in 0..4 {
             assert_eq!(
                 balancer.pick(),
-                Some(ip(3)),
+                Some(ep(3)),
                 "with no primary eligible the backup takes every selection"
             );
         }
 
-        balancer.report_ok(ip(2));
+        balancer.report_ok(&ep(2));
         assert_eq!(
             balancer.pick(),
-            Some(ip(2)),
+            Some(ep(2)),
             "the first recovered primary takes the tier back"
         );
-        assert_eq!(balancer.pick(), Some(ip(2)));
+        assert_eq!(balancer.pick(), Some(ep(2)));
     }
 
     #[test]
@@ -1593,24 +1796,24 @@ mod tests {
         let zero_weight = Balancer::new(vec![server(1, 0), backup(2, 1)], 1, 1);
         assert_eq!(
             zero_weight.pick(),
-            Some(ip(2)),
+            Some(ep(2)),
             "weight 0 is not an eligible primary"
         );
 
         let modes = Arc::new(ServerModes::new());
         let drained = Balancer::new(vec![server(1, 1), backup(2, 1)], 1, 1)
             .with_modes("api", Arc::clone(&modes));
-        assert_eq!(drained.pick(), Some(ip(1)));
+        assert_eq!(drained.pick(), Some(ep(1)));
         modes.set("api", "127.0.0.1:1", ServerMode::Drain);
         assert_eq!(
             drained.pick(),
-            Some(ip(2)),
+            Some(ep(2)),
             "a drained primary releases the tier to the backup"
         );
         modes.set("api", "127.0.0.1:1", ServerMode::Ready);
         assert_eq!(
             drained.pick(),
-            Some(ip(1)),
+            Some(ep(1)),
             "undrain puts the primary back in front of the backup"
         );
     }
@@ -1619,8 +1822,8 @@ mod tests {
     fn a_retry_that_excludes_the_primary_uses_the_backup() {
         let balancer = Balancer::new(vec![server(1, 1), backup(2, 1)], 1, 1);
         assert_eq!(
-            balancer.pick_except(&[ip(1)]),
-            Some(ip(2)),
+            balancer.pick_except(&[ep(1)]),
+            Some(ep(2)),
             "a retry that already tried the primary may reach the backup"
         );
     }
@@ -1629,14 +1832,14 @@ mod tests {
     fn affinity_never_pins_to_a_backup_while_a_primary_is_up() {
         let balancer = Balancer::new(vec![server(1, 1), backup(2, 1)], 1, 1);
         assert_eq!(
-            balancer.pick_pinned(Some(ip(2)), &[]),
-            Some(ip(1)),
+            balancer.pick_pinned(Some(ep(2)), &[]),
+            Some(ep(1)),
             "a sticky key aimed at a backup is served by the eligible primary"
         );
-        balancer.report_fail(ip(1));
+        balancer.report_fail(&ep(1));
         assert_eq!(
-            balancer.pick_pinned(Some(ip(2)), &[]),
-            Some(ip(2)),
+            balancer.pick_pinned(Some(ep(2)), &[]),
+            Some(ep(2)),
             "with the primary down the pinned backup serves"
         );
     }
@@ -1647,16 +1850,16 @@ mod tests {
         for _ in 0..6 {
             assert_eq!(
                 balancer.pick(),
-                Some(ip(1)),
+                Some(ep(1)),
                 "the reference uses only the first operational backup"
             );
         }
-        balancer.report_fail(ip(1));
-        assert_eq!(balancer.pick(), Some(ip(2)), "the next rung takes over");
-        balancer.report_ok(ip(1));
+        balancer.report_fail(&ep(1));
+        assert_eq!(balancer.pick(), Some(ep(2)), "the next rung takes over");
+        balancer.report_ok(&ep(1));
         assert_eq!(
             balancer.pick(),
-            Some(ip(1)),
+            Some(ep(1)),
             "the first rung takes the tier back when it recovers"
         );
     }
@@ -1673,32 +1876,32 @@ mod tests {
             1,
             1,
         );
-        balancer.report_fail(ip(1));
+        balancer.report_fail(&ep(1));
         for _ in 0..6 {
             assert_eq!(
                 balancer.pick(),
-                Some(ip(3)),
+                Some(ep(3)),
                 "the highest priority rung owns the backup tier"
             );
         }
-        balancer.report_fail(ip(3));
+        balancer.report_fail(&ep(3));
         for _ in 0..4 {
             assert_eq!(
                 balancer.pick(),
-                Some(ip(2)),
+                Some(ep(2)),
                 "ties follow configuration order and only the first rung serves"
             );
         }
-        balancer.report_ok(ip(3));
+        balancer.report_ok(&ep(3));
         assert_eq!(
             balancer.pick(),
-            Some(ip(3)),
+            Some(ep(3)),
             "a recovered higher rung takes the traffic back"
         );
-        balancer.report_ok(ip(1));
+        balancer.report_ok(&ep(1));
         assert_eq!(
             balancer.pick(),
-            Some(ip(1)),
+            Some(ep(1)),
             "a primary always outranks the whole backup ladder"
         );
     }
@@ -1710,14 +1913,14 @@ mod tests {
             1,
             1,
         );
-        balancer.report_fail(ip(1));
+        balancer.report_fail(&ep(1));
         assert_eq!(
-            balancer.pick_except(&[ip(3)]),
-            Some(ip(2)),
+            balancer.pick_except(&[ep(3)]),
+            Some(ep(2)),
             "a retry that already tried the top rung serves the next one"
         );
         assert_eq!(
-            balancer.pick_except(&[ip(3), ip(2)]),
+            balancer.pick_except(&[ep(3), ep(2)]),
             None,
             "no rung is reused after it was tried"
         );
@@ -1727,11 +1930,11 @@ mod tests {
     fn affinity_lands_on_the_active_backup_rung() {
         let balancer = Balancer::new(vec![backup_with(1, 1, 5), backup_with(2, 1, 10)], 1, 1);
         assert_eq!(
-            balancer.pick_pinned(Some(ip(1)), &[]),
-            Some(ip(2)),
+            balancer.pick_pinned(Some(ep(1)), &[]),
+            Some(ep(2)),
             "a sticky key aimed at a lower rung is served by the active one"
         );
-        assert_eq!(balancer.pick_pinned(Some(ip(2)), &[]), Some(ip(2)));
+        assert_eq!(balancer.pick_pinned(Some(ep(2)), &[]), Some(ep(2)));
     }
 
     #[test]
@@ -1743,11 +1946,11 @@ mod tests {
             Balance::LeastConn,
             Duration::ZERO,
         );
-        balancer.report_fail(ip(1));
+        balancer.report_fail(&ep(1));
         for _ in 0..6 {
             assert_eq!(
                 balancer.pick(),
-                Some(ip(3)),
+                Some(ep(3)),
                 "leastconn never reaches below the active rung"
             );
         }
@@ -1763,10 +1966,10 @@ mod tests {
             Duration::ZERO,
         );
         let (addr, guard) = balancer.pick_tracked(&[]).expect("primary");
-        assert_eq!(addr, ip(1));
+        assert_eq!(addr, ep(1));
         assert_eq!(
             balancer.pick(),
-            Some(ip(1)),
+            Some(ep(1)),
             "the backup stays out even when the primary carries load"
         );
         drop(guard);
@@ -1779,14 +1982,14 @@ mod tests {
         for _ in 0..4 {
             assert_eq!(
                 balancer.pick(),
-                Some(ip(1)),
+                Some(ep(1)),
                 "a primary still outranks the whole backup pool"
             );
         }
-        balancer.report_fail(ip(1));
+        balancer.report_fail(&ep(1));
         let picks: Vec<u16> = (0..9)
             .filter_map(|_| balancer.pick())
-            .map(|a| a.port())
+            .map(|a| a.tcp_addr().expect("tcp").port())
             .collect();
         let high = picks.iter().filter(|port| **port == 2).count();
         let low = picks.iter().filter(|port| **port == 3).count();
@@ -1809,7 +2012,7 @@ mod tests {
         .with_all_backups(true);
         let picks: Vec<u16> = (0..6)
             .filter_map(|_| balancer.pick())
-            .map(|a| a.port())
+            .map(|a| a.tcp_addr().expect("tcp").port())
             .collect();
         assert_eq!(
             picks,
@@ -1822,24 +2025,24 @@ mod tests {
     fn all_backups_keeps_a_dead_member_out_and_a_retry_skips_the_one_it_tried() {
         let balancer = Balancer::new(vec![server(1, 1), backup(2, 1), backup(3, 1)], 1, 1)
             .with_all_backups(true);
-        balancer.report_fail(ip(1));
-        balancer.report_fail(ip(2));
+        balancer.report_fail(&ep(1));
+        balancer.report_fail(&ep(2));
         for _ in 0..4 {
             assert_eq!(
                 balancer.pick(),
-                Some(ip(3)),
+                Some(ep(3)),
                 "a dead pool member leaves rotation, the rest still serves"
             );
         }
-        balancer.report_ok(ip(2));
+        balancer.report_ok(&ep(2));
         assert_eq!(
-            balancer.pick_except(&[ip(2)]),
-            Some(ip(3)),
+            balancer.pick_except(&[ep(2)]),
+            Some(ep(3)),
             "a retry that already tried a pool member reaches the other one"
         );
         let picks: Vec<u16> = (0..4)
             .filter_map(|_| balancer.pick())
-            .map(|a| a.port())
+            .map(|a| a.tcp_addr().expect("tcp").port())
             .collect();
         assert!(
             picks.contains(&2) && picks.contains(&3),
@@ -1851,7 +2054,7 @@ mod tests {
     fn all_backups_with_every_member_unusable_is_still_none() {
         let zero_weight = Balancer::new(vec![server(1, 1), backup(2, 0), backup(3, 0)], 1, 1)
             .with_all_backups(true);
-        zero_weight.report_fail(ip(1));
+        zero_weight.report_fail(&ep(1));
         assert_eq!(
             zero_weight.pick(),
             None,
@@ -1859,9 +2062,9 @@ mod tests {
         );
         let down = Balancer::new(vec![server(1, 1), backup(2, 1), backup(3, 1)], 1, 1)
             .with_all_backups(true);
-        down.report_fail(ip(1));
-        down.report_fail(ip(2));
-        down.report_fail(ip(3));
+        down.report_fail(&ep(1));
+        down.report_fail(&ep(2));
+        down.report_fail(&ep(3));
         assert_eq!(down.pick(), None, "an all-down pool answers 503 upstream");
     }
 
@@ -1875,7 +2078,7 @@ mod tests {
             Duration::ZERO,
         )
         .with_all_backups(true);
-        balancer.report_fail(ip(1));
+        balancer.report_fail(&ep(1));
         let (first, guard_a) = balancer.pick_tracked(&[]).expect("pool member");
         let (second, guard_b) = balancer.pick_tracked(&[]).expect("pool member");
         assert_ne!(
@@ -1890,15 +2093,15 @@ mod tests {
     fn affinity_pins_inside_the_backup_pool() {
         let balancer = Balancer::new(vec![backup(1, 1), backup(2, 1)], 1, 1).with_all_backups(true);
         assert_eq!(
-            balancer.pick_pinned(Some(ip(1)), &[]),
-            Some(ip(1)),
+            balancer.pick_pinned(Some(ep(1)), &[]),
+            Some(ep(1)),
             "a sticky key keeps its pool member while that member is eligible"
         );
-        assert_eq!(balancer.pick_pinned(Some(ip(2)), &[]), Some(ip(2)));
-        balancer.report_fail(ip(1));
+        assert_eq!(balancer.pick_pinned(Some(ep(2)), &[]), Some(ep(2)));
+        balancer.report_fail(&ep(1));
         assert_eq!(
-            balancer.pick_pinned(Some(ip(1)), &[]),
-            Some(ip(2)),
+            balancer.pick_pinned(Some(ep(1)), &[]),
+            Some(ep(2)),
             "a sticky key aimed at a dead member falls to the next one in configuration order"
         );
     }
@@ -1906,8 +2109,8 @@ mod tests {
     #[test]
     fn all_servers_down_is_still_none() {
         let balancer = Balancer::new(vec![server(1, 1), backup(2, 1)], 1, 1);
-        balancer.report_fail(ip(1));
-        balancer.report_fail(ip(2));
+        balancer.report_fail(&ep(1));
+        balancer.report_fail(&ep(2));
         assert_eq!(balancer.pick(), None);
     }
 }

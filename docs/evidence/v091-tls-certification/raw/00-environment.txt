@@ -1,0 +1,9 @@
+date: 2026-11-01T02:24:10Z
+host: Darwin 25.5.0 arm64
+rustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)
+cargo: cargo 1.99.1 (5f94df478 2026-08-27)
+openssl: LibreSSL 3.3.6
+binary: /Volumes/Lexar/Cursor/EQProxy/target/release/eqproxy
+sha256: 768f10f25bdddcf6069426cee977c9697f2c9ca24e8bfe95b1d1cb6ae488e63b
+commit: 04859afee80db9f8107fe205dd1f9621cef83e50
+tree: 82 modified/untracked paths

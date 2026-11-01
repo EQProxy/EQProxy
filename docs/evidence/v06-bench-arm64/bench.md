@@ -68,7 +68,7 @@ higher throughput).
 - Every measured run reports `statusCodeDistribution == {"200": 1…}`;
   no run excluded, no retries, no failed runs.
 - Raw oha JSON per repetition in [`raw/`](raw/), generated configs in
-  [`configs/`](configs/), full campaign log in [`run.log`](run.log),
+  [`configs/`](configs/), full campaign log in `run.log` (local-only: `run.log`),
   complete disclosure + summaries + gaps in [`report.json`](report.json).
 
 ## Reproduce

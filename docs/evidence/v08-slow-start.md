@@ -31,7 +31,7 @@ the empty body surfaced as `unexpected origin body ""`, which named neither
 the cause nor the response — the 503 was invisible.
 
 Reproduced deterministically before touching the test
-([`scripts/evidence/v08-slow-start/probe.py`](../../scripts/evidence/v08-slow-start/probe.py),
+(`scripts/evidence/v08-slow-start/probe.py` (local-only: `../../scripts/evidence/v08-slow-start/probe.py`),
 local-only harness; it runs from the repository root against the workspace's
 debug `eqproxy` — `target/debug/eqproxy` unless `EQPROXY_BIN` overrides it).
 A healthy origin whose `/healthz` stalls 300 ms, changing **only** the
@@ -94,7 +94,7 @@ rust-toolchain.toml)`).
 ## 4. Audit legs (this increment)
 
 - **Veyra Proof** — `veyra audit . --profile standard`: **ACCEPTED**, exit 0,
-  evidence [`.veyra/evidence/20261027T202634Z/`](../../.veyra/evidence/20261027T202634Z/)
+  evidence `.veyra/evidence/20261027T202634Z/` (local-only: `../../.veyra/evidence/20261027T202634Z/`)
   (local-only). `rustfmt`, `cargo-check`, `clippy`, `cargo-test`, `nextest`
   (558/558, 2 miri-gated skipped), `llvm-cov`, `cargo-deny`, `cargo-audit`,
   `machete` and `veyra-e2e` (17 scenarios, 17 passed) are OK. `dylint` and

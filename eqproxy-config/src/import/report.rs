@@ -144,6 +144,9 @@ pub fn emit_toml(conv: &Conv) -> String {
             if let Some(version) = tls.min_version {
                 let _ = writeln!(out, "min_version = {}", toml_string(version));
             }
+            if let Some(version) = tls.max_version {
+                let _ = writeln!(out, "max_version = {}", toml_string(version));
+            }
             if let Some(ca) = &tls.client_ca {
                 let _ = writeln!(out, "client_ca = {}", toml_string(ca));
             }
@@ -164,6 +167,34 @@ pub fn emit_toml(conv: &Conv) -> String {
         }
         if listener.cache {
             let _ = writeln!(out, "\n[listener.{}.cache]", toml_key(name));
+        }
+        for page in &listener.error_pages {
+            let _ = writeln!(out, "\n[[listener.{}.error_pages]]", toml_key(name));
+            let codes = page
+                .codes
+                .iter()
+                .map(u16::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let _ = writeln!(out, "codes = [{codes}]");
+            if let Some(file) = &page.file {
+                let _ = writeln!(out, "file = {}", toml_string(file));
+            }
+            if let Some(body) = &page.body {
+                let _ = writeln!(out, "body = {}", toml_string(body));
+            }
+            if let Some(location) = &page.location {
+                let _ = writeln!(out, "location = {}", toml_string(location));
+            }
+            if page.raw {
+                out.push_str("format = \"raw\"\n");
+            }
+            if let Some(status) = page.status {
+                let _ = writeln!(out, "status = {status}");
+            }
+            if page.intercept {
+                out.push_str("intercept = true\n");
+            }
         }
         for rule in &listener.rules {
             let _ = writeln!(out, "\n[[listener.{}.rules]]", toml_key(name));
@@ -294,7 +325,7 @@ pub fn render(source: Source, conv: &Conv, counts: Counts) -> String {
     );
     let _ = writeln!(
         out,
-        "- Directivas leídas: **{}** · clasificadas: **{}** — convertidas **{}** · a revisar **{}** · rechazadas **{}**",
+        "- Directivas leídas: **{}** · clasificadas: **{}** — convertidas **{}** · con aviso **{}** · rechazadas **{}**",
         conv.walked,
         conv.notes.len(),
         counts.converted,

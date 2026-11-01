@@ -3,6 +3,97 @@
 Language: **English**. Format follows "Keep a Changelog" (Added / Changed /
 Fixed); versions are `vMAJOR.MINOR.PATCH` git tags.
 
+## [v0.9.1] — 2026-11-01
+
+### Added
+
+- **Complete parity matrix (v0.9.1 casilla 15; ADR-0047).**
+  [docs/parity-matrix.md](docs/parity-matrix.md) classifies all **120** rows
+  of HAProxy 3.4.6 LTS, nginx 1.27.1, ingress-nginx and Envoy API v3:
+  **11 E1 · 88 E2 · 21 E3, 0 unclassified**. The eleven E1 rows are the cases
+  the differential corpus executes against the three references (23/23, real
+  containers, binary sha256 `d779bcc…`); every other row names its test and
+  documented difference, or its ADR and alternative. ADR-0047 closes the
+  rows that were still `Designed (scope)` (A5, B2, B6, B10, C2, C7, C8, D10,
+  D12 and the nginx non-proxy features) and records B9 and A6 as E2. The
+  IPv6 path gained a real-socket E2E
+  (`an_ipv6_listener_proxies_to_an_ipv6_backend`). Evidence:
+  [v091-parity-matrix](docs/evidence/v091-parity-matrix.md).
+- **TLS version range and `errorloc` (B-I16 · B-N16 · B-H16; ADR-0046).**
+  `[listener.*.tls] max_version` (`"1.2"` or `"1.3"`, absent = 1.3) closes
+  the range opened by `min_version`; validation refuses a cap below the
+  minimum and a QUIC listener capped at 1.2, and the cap is enforced on the
+  wire. It converts from nginx `ssl_protocols`, HAProxy
+  `ssl-min-ver`/`ssl-max-ver` and Envoy `tls_params`; cipher suites, OCSP,
+  DH parameters and the session cache remain provider-managed by decision
+  (ADR-0035/ADR-0046). `[[listener.*.error_pages]] location` implements
+  HAProxy `errorloc`/`errorloc302`/`errorloc303`: a static path or absolute
+  URL answered as a bodyless 3xx (302 by default, `intercept` allowed,
+  placeholders refused), converted from `defaults` and
+  `frontend`/`listen`. The rest of B-H16 is closed by the ADR's E2/E3 table.
+  Verified with real TLS handshakes (`openssl s_client` TLS 1.3 refused,
+  TLS 1.2 still served), local and intercepted redirects over real sockets,
+  conversion tests and a release-binary journey:
+  [v091-tls-gaps](docs/evidence/v091-tls-gaps.md).
+- **Custom error pages (B-H15 · B-E18 · B-N14; ADR-0045).**
+  `[[listener.<name>.error_pages]]` replaces a locally generated error with a
+  configured body (`body` or `file`, resolved against the TOML's directory),
+  optionally answering another `status`; `format = "raw"` keeps HAProxy
+  `errorfile` files working (a complete HTTP response, parsed and bounded at
+  load), and `intercept = true` also replaces a matching **upstream** response,
+  dropping that connection instead of pooling a half-read one. Pages are
+  resolved once, served from memory, counted in
+  `eqproxy_error_pages_served_total`, and a missing or contradictory page
+  rejects the snapshot before the listener serves. Validation refuses TCP
+  listeners, duplicate codes, `raw` with `body`, `raw` with `intercept` and
+  204/304 pages. The converter maps HAProxy `errorfile`, nginx server-level
+  `error_page` with `proxy_intercept_errors`, and Envoy `local_reply_config`
+  mappers, and classifies location-scoped pages, filters it cannot express and
+  ingress-nginx `custom-http-errors` (the body lives in the default backend)
+  as reviews. Verified with real sockets (local failure, `HEAD`, interception
+  and connection drop, raw file, missing file) and a release-binary journey:
+  [v091-error-pages](docs/evidence/v091-error-pages.md).
+- **Unix-domain backend sockets and per-server `source` bind (B-H14 · B-N15;
+  ADR-0043).** `servers[].addr` accepts `unix:/run/app.sock` (nginx) and
+  `unix@/run/app.sock` (HAProxy), pooled and health-checked by path; an
+  optional `servers[].source` binds the outbound socket to a literal local
+  address. Both are validated (absolute path, no NUL, IP-only source) and the
+  forbidden combinations (TLS/PROXY/`source` on a Unix target) are refused
+  with field, cause and example. Verified over real sockets in HTTP and TCP
+  modes, missing/stale sockets, `source` observed by the origin and the
+  converter spellings:
+  [v091-unix-backends](docs/evidence/v091-unix-backends.md).
+
+### Changed
+
+- **Product banner: every dataplane response carries `Server: eqproxy`.**
+  The origin's `Server` value is replaced, never appended, and the proxy does
+  not advertise its build number. The normalizer covers proxied HTTP/1.1 and
+  the h2/h3 paths that traverse the h1 engine, cached entries, local errors,
+  redirects, auth denials, gRPC responses and the `101`/CONNECT switch head;
+  the administration plane keeps its own responses unchanged. There is no
+  `server_header_transformation` toggle: the policy is fixed. Evidence:
+  [v085-server-header](docs/evidence/v085-server-header.md).
+
+### Fixed
+
+- **A certificate and a private key from different pairs no longer load**
+  (found by the B-E9 lifecycle certification). `certified_key` now calls
+  rustls' `CertifiedKey::keys_match` and refuses the snapshot when the key's
+  public key does not match the leaf certificate: startup fails, and a live
+  renewal answers `400` while the previous certificate keeps serving,  instead of answering `200` and breaking every later handshake. Covered by
+  `server_config_rejects_a_key_from_another_pair` and the real-binary
+  fail-closed step of [v091-tls-certification](docs/evidence/v091-tls-certification.md).
+- **`Date` on every response the proxy generates.** Local errors, the custom
+  error page and `errorloc`, redirects and direct responses, auth denials, the
+  h2/h3 stream refusals, the WebSocket refusals and gRPC local answers now
+  carry one IMF-fixdate `Date` (RFC 9110 §6.6.1); before this they carried
+  none. Proxied responses keep the origin's value and are never given a second
+  one, and a rule that sets `Date` cannot forge it. No new dependency: one
+  formatter in `eqproxy-net/src/date.rs`. Covered by five formatter unit tests
+  and date assertions in the real-socket E2E suites for h1, h2, h3, gRPC,
+  error pages and local rules: [v091-date-header](docs/evidence/v091-date-header.md).
+
 ## [v0.8.5] — 2026-10-31
 
 ### Added

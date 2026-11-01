@@ -2,10 +2,10 @@
 
 **Fecha:** 2026-10-30 · **Casilla:** §1 «Conversor oficial `eqproxy config
 import` (Phase 8a)» y §2 **CE6** / **Q9 · CE8** del
-[roadmap 0.8.5](../../ROADMAP%20EQPROXY/ROADMAP/Roadmap%200.8.5.md).
+roadmap 0.8.5 (local-only: `../../ROADMAP%20EQPROXY/ROADMAP/Roadmap%200.8.5.md`).
 **Estado:** implementado en Rust dentro del binario (`eqproxy config import`),
 verificado con sockets y ficheros reales. El conversor Python
-([`eqproxy_migrate.py`](../../ROADMAP%20EQPROXY/eqproxy_migrate.py)) queda como
+(`eqproxy_migrate.py` (local-only: `../../ROADMAP%20EQPROXY/eqproxy_migrate.py`)) queda como
 referencia del maintainer; el producto ya no depende de él.
 
 ## 1. Qué hace
@@ -85,7 +85,7 @@ sin tubería, para que `$?` sea el del binario) en
 
 ## 3. E2E real: convertir → validar → servir tráfico
 
-Script: [`scripts/evidence/v085-config-import/journey.sh`](../../scripts/evidence/v085-config-import/journey.sh)
+Script: `scripts/evidence/v085-config-import/journey.sh` (local-only: `../../scripts/evidence/v085-config-import/journey.sh`)
 (harness local; los datos quedan en
 [`raw/e2e/`](v085-config-import/raw/e2e/)). Con el binario real y un origen HTTP
 real:
@@ -134,7 +134,7 @@ Done 20000 runs in 18 second(s)     # exit 0, 0 artefactos de crash
 Ejecución del **2026-10-30T23:28:34Z** sobre el árbol de `ad0050a` con
 `cargo 1.101.0-nightly (15be64aa0 2026-10-20)`: 20 000 runs, 18 s, `exit 0` y
 cero ficheros en `fuzz/artifacts/config_import`. Registro completo en
-[`raw/fuzz.log`](v085-config-import/raw/fuzz.log) y resumen en
+`raw/fuzz.log` (local-only: `v085-config-import/raw/fuzz.log`) y resumen en
 [`raw/fuzz-summary.txt`](v085-config-import/raw/fuzz-summary.txt). No es una
 campaña de horas: es una ejecución real con semillas del corpus, y así se
 declara.
@@ -177,7 +177,7 @@ mtime a las 22:54):
   --profile standard` (veyra 0.7.0, macOS aarch64, toolchain 1.99.1):
   **ACCEPTED, exit 0**, 11 herramientas en `OK`, 1485.7 s de wall y `cargo-test`
   con **652 passed / 0 failed / 2 ignored**. Evidencia:
-  [`.veyra/evidence/20261030T225104Z/report.md`](../../.veyra/evidence/20261030T225104Z/report.md).
+  `.veyra/evidence/20261030T225104Z/report.md` (local-only: `../../.veyra/evidence/20261030T225104Z/report.md`).
   `cargo-geiger` sale **INCONCLUSIVE** y `dylint`/`cargo-semver-checks`
   **SKIPPED**, los tres con decisión registrada en
   [ADR-0030](../adr/0030-audit-tool-applicability.md).

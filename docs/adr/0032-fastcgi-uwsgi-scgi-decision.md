@@ -4,8 +4,8 @@ Language: **English**.
 
 - State: **Accepted** (2026-10-29, roadmap v0.8.5, box B-I5/B-E4/B-N17)
 - Date: 2026-10-29
-- Related: [roadmap v0.8.5, §1](../../ROADMAP%20EQPROXY/ROADMAP/Roadmap%200.8.5.md)
-  (the box this decision closes), [nginx.md B-N17](../../ROADMAP%20EQPROXY/nginx.md)
+- Related: roadmap v0.8.5, §1 (local-only: `../../ROADMAP EQPROXY/ROADMAP/Roadmap 0.8.5.md`)
+  (the box this decision closes), nginx.md B-N17 (local-only: `../../ROADMAP EQPROXY/nginx.md`)
   (the parity gap), [ADR-0031](0031-wasm-plugin-host.md) (the WASM extension
   this box also lands), [v085-wasm-plugins](../evidence/v085-wasm-plugins.md)
   (evidence and the converter's classification)

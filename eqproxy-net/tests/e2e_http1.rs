@@ -292,6 +292,16 @@ async fn read_body_bytes(
     (String::from_utf8_lossy(&carry).into_owned(), extra)
 }
 
+/// Value of `name` in a response head (case-insensitive).
+fn header_value(head: &str, name: &str) -> Option<String> {
+    head.lines().skip(1).find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        key.trim()
+            .eq_ignore_ascii_case(name)
+            .then(|| value.trim().to_owned())
+    })
+}
+
 async fn send_and_read(addr: SocketAddr, request: &[u8]) -> String {
     let mut client = tokio::time::timeout(WAIT, TcpStream::connect(addr))
         .await
@@ -305,6 +315,81 @@ async fn send_and_read(addr: SocketAddr, request: &[u8]) -> String {
         .expect("response in time")
         .expect("read response");
     String::from_utf8_lossy(&response).into_owned()
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs TCP sockets: miri does not support networking (rust-lang/miri#3449)"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn server_header_is_the_product_banner_not_the_origin() {
+    let backend = start_scripted_backend(
+        vec![
+            b"HTTP/1.1 200 OK\r\nServer: nginx/1.24.0\r\nDate: Sun, 06 Nov 1994 08:49:37 GMT\r\nContent-Length: 2\r\n\r\nok"
+                .to_vec(),
+        ],
+        false,
+    )
+    .await;
+    let metrics = Arc::new(Metrics::default());
+    let cfg = http_listener_cfg(
+        "127.0.0.1:0".parse().expect("addr"),
+        backend,
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    );
+    let (proxy_addr, handle, serve) = start_proxy(cfg, Arc::clone(&metrics)).await;
+
+    let response = send_and_read(
+        proxy_addr,
+        b"GET /banner HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(
+        response.starts_with("HTTP/1.1 200 OK"),
+        "response: {response:?}"
+    );
+    assert_eq!(
+        header_value(&response, "server").as_deref(),
+        Some("eqproxy")
+    );
+    let server_lines = response
+        .lines()
+        .skip(1)
+        .filter(|line| {
+            line.split_once(':')
+                .is_some_and(|(name, _)| name.trim().eq_ignore_ascii_case("server"))
+        })
+        .count();
+    assert_eq!(server_lines, 1, "exactly one Server line: {response:?}");
+    assert!(
+        !response.to_ascii_lowercase().contains("nginx"),
+        "the origin's banner never ships: {response:?}"
+    );
+    assert_eq!(
+        header_value(&response, "date").as_deref(),
+        Some("Sun, 06 Nov 1994 08:49:37 GMT"),
+        "a proxied response keeps the origin's Date: {response:?}"
+    );
+    assert_eq!(
+        response
+            .lines()
+            .skip(1)
+            .filter(|line| line.to_ascii_lowercase().starts_with("date:"))
+            .count(),
+        1,
+        "the proxy must not add a second Date: {response:?}"
+    );
+    assert!(
+        response.ends_with("\r\n\r\nok"),
+        "body unchanged: {response:?}"
+    );
+
+    handle.trigger();
+    tokio::time::timeout(WAIT, serve)
+        .await
+        .expect("serve finishes")
+        .expect("serve task without panic");
 }
 
 #[cfg_attr(
@@ -1178,6 +1263,16 @@ async fn unsupported_expectation_is_rejected_with_417() {
         response.starts_with("HTTP/1.1 417"),
         "unsupported expectations must be refused explicitly: {response}"
     );
+    let date = header_value(&response, "date").expect("a local 417 carries Date");
+    common::assert_http_date(&date);
+    assert_eq!(
+        response
+            .lines()
+            .filter(|line| line.to_ascii_lowercase().starts_with("date:"))
+            .count(),
+        1,
+        "exactly one Date: {response}"
+    );
 
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(metrics.snapshot().http_requests_rejected, 1);
@@ -1304,7 +1399,7 @@ async fn access_log_records_parsed_and_unparsed_requests() {
     assert_eq!(entry.host, "example.test");
     assert_eq!(entry.status, 200);
     assert_eq!(entry.backend.as_deref(), Some("api"));
-    assert_eq!(entry.server, Some(backend));
+    assert_eq!(entry.server, Some(backend.to_string()));
     assert_eq!(entry.user_agent.as_deref(), Some("curl/8.7"));
     assert_eq!(entry.bytes, Some(0));
     assert!(

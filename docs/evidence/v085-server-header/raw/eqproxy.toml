@@ -1,0 +1,29 @@
+schema_version = 1
+shutdown_grace = "1s"
+
+[listener.web]
+listen = "127.0.0.1:64891"
+backend = "api"
+mode = "http"
+maxconn = 128
+connect_timeout = "2s"
+idle_timeout = "10s"
+client_header_timeout = "2s"
+server_header_timeout = "2s"
+
+[listener.web.cache]
+default_ttl = "60s"
+max_memory_bytes = 1048576
+max_entry_bytes = 65536
+
+[[listener.web.rules]]
+name = "healthz"
+path = "/healthz"
+
+[listener.web.rules.direct_response]
+status = 200
+content_type = "text/plain"
+body = "pong"
+
+[backend.api]
+servers = [{ addr = "127.0.0.1:64890" }]

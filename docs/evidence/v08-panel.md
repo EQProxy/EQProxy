@@ -17,16 +17,16 @@ opt-in?
 
 | Piece | Where |
 |---|---|
-| `/panel` path ownership (nothing else reaches the router) | [panel.rs:215](eqproxy-net/src/panel.rs#L215) |
-| Login: bearer token → in-memory session, `401` on refusal | [panel.rs:374](eqproxy-net/src/panel.rs#L374) |
-| Cross-site refusal, then the per-session CSRF token | [panel.rs:308](eqproxy-net/src/panel.rs#L308), [:311](eqproxy-net/src/panel.rs#L311) |
-| A read session reads and cannot write anything | [panel.rs:325](eqproxy-net/src/panel.rs#L325) |
-| State, table and certificate actions (shared implementation) | [panel.rs:414](eqproxy-net/src/panel.rs#L414), [:524](eqproxy-net/src/panel.rs#L524), [:569](eqproxy-net/src/panel.rs#L569) |
-| Panel dispatch and the `303` back to the page | [admin.rs:941](eqproxy-net/src/admin.rs#L941), [:986](eqproxy-net/src/admin.rs#L986) |
-| Opt-in configuration and state | [admin.rs:243](eqproxy-net/src/admin.rs#L243), [:306](eqproxy-net/src/admin.rs#L306), [schema.rs:559](eqproxy-config/src/schema.rs#L559) |
-| Startup announces the panel it serves | [main.rs:3023](eqproxy-cli/src/main.rs#L3023) |
-| The same journey on the debug profile | [cli_e2e.rs:4210](eqproxy-cli/tests/cli_e2e.rs#L4210) (`run_panel_applies_a_table_and_drains_a_server`) |
-| Panel E2E suite (real admin socket) | [e2e_panel.rs](eqproxy-net/tests/e2e_panel.rs) — five tests, see below |
+| `/panel` path ownership (nothing else reaches the router) | [panel.rs:215](../../eqproxy-net/src/panel.rs#L215) |
+| Login: bearer token → in-memory session, `401` on refusal | [panel.rs:374](../../eqproxy-net/src/panel.rs#L374) |
+| Cross-site refusal, then the per-session CSRF token | [panel.rs:308](../../eqproxy-net/src/panel.rs#L308), [:311](../../eqproxy-net/src/panel.rs#L311) |
+| A read session reads and cannot write anything | [panel.rs:325](../../eqproxy-net/src/panel.rs#L325) |
+| State, table and certificate actions (shared implementation) | [panel.rs:414](../../eqproxy-net/src/panel.rs#L414), [:524](../../eqproxy-net/src/panel.rs#L524), [:569](../../eqproxy-net/src/panel.rs#L569) |
+| Panel dispatch and the `303` back to the page | [admin.rs:941](../../eqproxy-net/src/admin.rs#L941), [:986](../../eqproxy-net/src/admin.rs#L986) |
+| Opt-in configuration and state | [admin.rs:243](../../eqproxy-net/src/admin.rs#L243), [:306](../../eqproxy-net/src/admin.rs#L306), [schema.rs:559](../../eqproxy-config/src/schema.rs#L559) |
+| Startup announces the panel it serves | [main.rs:3023](../../eqproxy-cli/src/main.rs#L3023) |
+| The same journey on the debug profile | [cli_e2e.rs:4210](../../eqproxy-cli/tests/cli_e2e.rs#L4210) (`run_panel_applies_a_table_and_drains_a_server`) |
+| Panel E2E suite (real admin socket) | [e2e_panel.rs](../../eqproxy-net/tests/e2e_panel.rs) — five tests, see below |
 
 ## Binary under test
 
@@ -34,7 +34,7 @@ opt-in?
   `47fff1c8cef6193640d3cecbba166b7dbd1f84bf5c5acf392d42b9adb0279c9c`
   (`cargo build --release -p eqproxy-cli`, final tree of the increment).
 - Host: macOS 26.5.1 arm64 (Darwin), `python3.13`.
-- Journey: [`scripts/evidence/v08-panel/journey.py`](../../scripts/evidence/v08-panel/journey.py)
+- Journey: `scripts/evidence/v08-panel/journey.py` (local-only: `../../scripts/evidence/v08-panel/journey.py`)
   (local-only harness, per the `docs/` rule), run from the repository root.
 - Raw run: [`docs/evidence/v08-panel/raw/run-20261027T004000Z/`](v08-panel/raw/run-20261027T004000Z/)
   — `journey.txt` (transcript), `eqproxy.toml` (the panel config),
@@ -182,27 +182,27 @@ valid token; the harness now asserts both). The green intermediates are
 ## Tests that cover what the journey does not
 
 - **The five panel E2E cases** on a real admin socket
-  ([e2e_panel.rs](eqproxy-net/tests/e2e_panel.rs)):
-  `the_login_flow_opens_a_session_and_the_token_never_leaks` ([:207](eqproxy-net/tests/e2e_panel.rs#L207)),
-  `a_session_is_required_and_a_stale_cookie_is_cleared` ([:296](eqproxy-net/tests/e2e_panel.rs#L296)),
-  `the_csrf_token_and_the_origin_are_what_authorise_a_form_post` ([:355](eqproxy-net/tests/e2e_panel.rs#L355)),
-  `a_read_session_reads_and_cannot_write_anything` ([:482](eqproxy-net/tests/e2e_panel.rs#L482), which also
+  ([e2e_panel.rs](../../eqproxy-net/tests/e2e_panel.rs)):
+  `the_login_flow_opens_a_session_and_the_token_never_leaks` ([:207](../../eqproxy-net/tests/e2e_panel.rs#L207)),
+  `a_session_is_required_and_a_stale_cookie_is_cleared` ([:296](../../eqproxy-net/tests/e2e_panel.rs#L296)),
+  `the_csrf_token_and_the_origin_are_what_authorise_a_form_post` ([:355](../../eqproxy-net/tests/e2e_panel.rs#L355)),
+  `a_read_session_reads_and_cannot_write_anything` ([:482](../../eqproxy-net/tests/e2e_panel.rs#L482), which also
   refuses the read session on `/panel/certificates/reload` and on the table
   editors individually) and
-  `the_panel_is_not_served_unless_the_config_turns_it_on` ([:543](eqproxy-net/tests/e2e_panel.rs#L543)).
+  `the_panel_is_not_served_unless_the_config_turns_it_on` ([:543](../../eqproxy-net/tests/e2e_panel.rs#L543)).
 - **Session bookkeeping** is unit-tested inside the module: the idle window
-  (`a_session_is_only_valid_for_its_idle_window`, [panel.rs:846](eqproxy-net/src/panel.rs#L846)),
+  (`a_session_is_only_valid_for_its_idle_window`, [panel.rs:846](../../eqproxy-net/src/panel.rs#L846)),
   the bound and its eviction
-  (`the_session_table_is_bounded_and_evicts_the_oldest`, [panel.rs:856](eqproxy-net/src/panel.rs#L856)),
+  (`the_session_table_is_bounded_and_evicts_the_oldest`, [panel.rs:856](../../eqproxy-net/src/panel.rs#L856)),
   one logout revoking only its own session, an id and its CSRF token being
   independent secrets, and the cookie being scoped and never echoed as a value.
 - **Path ownership and escaping** have their own unit tests
-  ([panel.rs:897](eqproxy-net/src/panel.rs#L897),
-  [panel.rs:981](eqproxy-net/src/panel.rs#L981)),
+  ([panel.rs:897](../../eqproxy-net/src/panel.rs#L897),
+  [panel.rs:981](../../eqproxy-net/src/panel.rs#L981)),
   so `/api/v1/status` can never be served as a page and a configured name
   cannot become markup.
 - **The same journey on the debug profile** is part of the suite
-  ([cli_e2e.rs:4210](eqproxy-cli/tests/cli_e2e.rs#L4210)); this page is its
+  ([cli_e2e.rs:4210](../../eqproxy-cli/tests/cli_e2e.rs#L4210)); this page is its
   release-binary counterpart, and both drive the real forms over real sockets.
 
 ## Not executed in this run

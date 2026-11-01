@@ -774,6 +774,38 @@ fn annotation(
             context,
             "[[listener.*.rules]].set_headers / del_headers: transcríbalo a mano",
         ),
+        "custom-http-errors" => {
+            let codes: Vec<&str> = value
+                .split(',')
+                .map(str::trim)
+                .filter(|code| !code.is_empty())
+                .collect();
+            if codes.is_empty() {
+                conv.review(1, &text, context, "lista vacía: no intercepta ningún código");
+            } else if let Some(bad) = codes
+                .iter()
+                .find(|code| !code.parse::<u16>().is_ok_and(|c| (400..=599).contains(&c)))
+            {
+                conv.review(
+                    1,
+                    &text,
+                    context,
+                    format!("«{bad}» no es un código 400-599: revise la lista"),
+                );
+            } else {
+                let list = codes.join(", ");
+                conv.review(
+                    1,
+                    &text,
+                    context,
+                    format!(
+                        "intercepta {list} con la página del default backend, que el conversor no puede \
+                         leer: añada [[listener.*.error_pages]] codes = [{list}], intercept = true y un \
+                         body o file"
+                    ),
+                );
+            }
+        }
         "proxy-next-upstream" | "proxy-next-upstream-tries" => conv.review(
             1,
             &text,
@@ -832,7 +864,7 @@ fn global_config(conv: &mut Conv, global: &BTreeMap<String, String>) -> Result<(
                 1,
                 &text,
                 "ConfigMap",
-                "[listener.*.tls].min_version (EQProxy nunca acepta TLS 1.0/1.1)",
+                "[listener.*.tls].min_version/max_version (EQProxy nunca acepta TLS 1.0/1.1; el certificado se monta a mano)",
             ),
             "enable-http2" => conv.review(
                 1,
@@ -904,6 +936,23 @@ mod tests {
             .expect("parse")
             .remove(0);
         assert_eq!(metadata(&doc), ("default".to_owned(), "web".to_owned()));
+    }
+
+    #[test]
+    fn custom_http_errors_names_the_codes_and_the_missing_body() {
+        // ingress-nginx intercepts the listed codes with its default backend,
+        // whose body is not in the Ingress: the converter names both halves
+        // instead of inventing a page.
+        let source = "apiVersion: networking.k8s.io/v1\nkind: Ingress\nmetadata:\n  name: web\n  annotations:\n    nginx.ingress.kubernetes.io/custom-http-errors: \"404,503\"\nspec:\n  rules:\n    - host: shop.example.com\n      http:\n        paths:\n          - path: /\n            pathType: Prefix\n            backend:\n              service:\n                name: web\n                port:\n                  number: 8080\n";
+        let outcome = super::super::convert(super::super::Source::Ingress, source)
+            .expect("custom-http-errors must convert");
+        assert!(!outcome.toml.contains("error_pages"), "{}", outcome.toml);
+        assert!(
+            outcome.report.contains("intercepta 404, 503")
+                && outcome.report.contains("body o file"),
+            "the annotation must name the codes and the missing content:\n{}",
+            outcome.report
+        );
     }
 
     #[test]

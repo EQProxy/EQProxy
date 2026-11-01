@@ -1,0 +1,45 @@
+
+===== config =====
+schema_version = 1
+
+[listener.web]
+listen = "127.0.0.1:52130"
+mode = "http"
+backend = "app"
+
+[backend.app]
+server = "127.0.0.1:52089"
+
+[[listener.web.error_pages]]
+codes = [503]
+location = "/status"
+status = 303
+intercept = true
+
+===== GET /fail (origin 503 replaced by 303) =====
+HTTP/1.1 303 see other
+Server: eqproxy
+connection: close
+location: /status
+content-length: 0
+
+
+===== GET / (200 passes through untouched) =====
+HTTP/1.1 200 OK
+Server: eqproxy
+Content-Length: 3
+Content-Type: text/plain
+Connection: keep-alive
+
+ok
+
+===== origin log =====
+listening 127.0.0.1:52089
+connection 1
+request GET /
+connection 2
+request GET /
+connection 3
+request GET /fail
+connection 4
+request GET /

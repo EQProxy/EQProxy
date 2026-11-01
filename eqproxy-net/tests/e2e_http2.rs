@@ -28,6 +28,8 @@ use eqproxy_net::{
     ResolvedServer, RouteAction, ServerAddr, bind,
 };
 
+mod common;
+
 const WAIT: Duration = Duration::from_secs(10);
 const CERT: &[u8] = include_bytes!("fixtures/cert.pem");
 const KEY: &[u8] = include_bytes!("fixtures/key.pem");
@@ -412,8 +414,14 @@ async fn h2_dead_backend_answers_502_and_a_redirect_answers_locally() {
     let response = tokio::time::timeout(WAIT, h2_get(&mut send, "/down"))
         .await
         .expect("response in time");
-    let (status, _headers, _body, _trailers) = read_response(response).await;
+    let (status, headers, _body, _trailers) = read_response(response).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY, "a dead backend is a 502");
+    let date = headers
+        .get("date")
+        .expect("a local 502 carries Date")
+        .to_str()
+        .expect("Date is ASCII");
+    common::assert_http_date(date);
     stop_proxy(handle, serve).await;
 
     // Local answers go through the same exchange engine: a rule redirect must
@@ -472,6 +480,7 @@ async fn backup_serves_h2_requests_when_every_primary_is_down() {
         vec![
             ResolvedServer {
                 addr: ServerAddr::Ip(primary),
+                source: None,
                 weight: 1,
                 backup: false,
                 priority: 0,
@@ -479,6 +488,7 @@ async fn backup_serves_h2_requests_when_every_primary_is_down() {
             },
             ResolvedServer {
                 addr: ServerAddr::Ip(backup),
+                source: None,
                 weight: 1,
                 backup: true,
                 priority: 0,
@@ -500,7 +510,9 @@ async fn backup_serves_h2_requests_when_every_primary_is_down() {
     assert!(backup_seen.lock().expect("seen").is_empty());
 
     // Every primary down: the backup tier takes the h2 stream.
-    backend.balancer.report_fail(primary);
+    backend
+        .balancer
+        .report_fail(&eqproxy_net::Endpoint::Tcp(primary));
     let (status, _headers, body, _trailers) =
         read_response(h2_get(&mut client, "/two").await).await;
     assert_eq!(status, StatusCode::OK);
@@ -508,7 +520,9 @@ async fn backup_serves_h2_requests_when_every_primary_is_down() {
     assert_eq!(backup_seen.lock().expect("seen").len(), 1);
 
     // The recovered primary takes it back.
-    backend.balancer.report_ok(primary);
+    backend
+        .balancer
+        .report_ok(&eqproxy_net::Endpoint::Tcp(primary));
     let (status, _headers, body, _trailers) =
         read_response(h2_get(&mut client, "/three").await).await;
     assert_eq!(status, StatusCode::OK);

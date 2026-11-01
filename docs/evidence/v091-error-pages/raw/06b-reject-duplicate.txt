@@ -1,0 +1,21 @@
+
+===== config =====
+schema_version = 1
+[backend.app]
+server = "127.0.0.1:9000"
+[listener.web]
+listen = "127.0.0.1:18080"
+mode = "http"
+backend = "app"
+[[listener.web.error_pages]]
+codes = [502, 503]
+body = "a"
+[[listener.web.error_pages]]
+codes = [503]
+body = "b"
+
+===== eqproxy config validate =====
+configuration error in /tmp/eqproxy-v091-errors.YkzOCD/duplicate.toml:4 — field `listener.web.error_pages[1].codes`: code 503 is already covered by error_pages[0]: one page per code
+  example: remove the duplicate code
+invalid config: 1 error(s) in /tmp/eqproxy-v091-errors.YkzOCD/duplicate.toml
+exit: 1

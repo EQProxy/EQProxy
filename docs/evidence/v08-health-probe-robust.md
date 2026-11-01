@@ -248,7 +248,7 @@ its log:
   (coverage warnings in 4 runs; unsafe counts are a lower bound, not a pass).
 - **Rust Audit** — `python3.13 <rust-ai-audit>/scripts/rust_audit.py scan .
   --format md --out report --fail-on high`: exit 0, **0 critical, 0 high**,
-  241 medium, 85 low ([report/rust-audit-20261028-030033.md](../../report/rust-audit-20261028-030033.md),
+  241 medium, 85 low (report/rust-audit-20261028-030033.md (local-only: `../../report/rust-audit-20261028-030033.md`),
   local-only). The scan names the new helper once,
   `[R08 · medium] e2e_pool.rs:176 wait_for_proxied` — "wall-clock/monotonic
   time read in test": reviewed, heuristic false positive. The clock there is
@@ -275,7 +275,7 @@ its log:
 
 - **Veyra Proof** — `veyra audit . --profile standard`: **ACCEPTED**, exit
   **0** (`VEYRA_EXIT=0`), evidence
-  [`.veyra/evidence/20261028T153231Z/`](../../.veyra/evidence/20261028T153231Z/report.md).
+  `.veyra/evidence/20261028T153231Z/` (local-only: `../../.veyra/evidence/20261028T153231Z/report.md`).
   OK: `rustfmt`, `cargo check`, `clippy`, `cargo test` (558 passed, 0 failed,
   2 ignored over 30 targets), `cargo-audit`, `veyra-anti-theater`,
   `cargo-nextest`, `cargo-llvm-cov`, `cargo-deny`, `cargo-machete`,
@@ -289,7 +289,7 @@ its log:
 - **Rust Audit** — `python3.13 <rust-ai-audit>/scripts/rust_audit.py scan .
   --format md --out report --fail-on high` (tool 0.2.7): exit 0, **0
   critical, 0 high**, 241 medium, 85 low
-  ([report/rust-audit-20261028-155611.md](../../report/rust-audit-20261028-155611.md),
+  (report/rust-audit-20261028-155611.md (local-only: `../../report/rust-audit-20261028-155611.md`),
   local-only). Against the previous scan of the tree
   (`rust-audit-20261028-030033.md`) the finding set is **identical**:
   `added: []`, `removed: []` over the same per-rule/per-file/per-function

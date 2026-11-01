@@ -156,8 +156,14 @@ only under the documented separation rule.
 ### 7.5 TLS, balancing and health checks (Phase 2b)
 
 - **TLS termination (A11):** per-listener certificate chain + private key
-  (PEM); the handshake is part of the client phase (`client_header_timeout`).
-  Min TLS 1.2; ALPN explicit per listener (A14).
+  (PEM), additional certificates selected by SNI and optional client-cert
+  verification (mTLS); the handshake is part of the client phase
+  (`client_header_timeout`). The accepted range is `min_version` (1.2 by
+  default) through `max_version` (1.3 when absent); TLS 1.0/1.1 are never
+  accepted. ALPN is explicit per listener (A14). Cipher suites, OCSP
+  stapling and DH parameters are provider-managed and deliberately have no
+  operator knob ([ADR-0035](docs/adr/0035-hot-secrets-and-drift-runbook.md),
+  [ADR-0046](docs/adr/0046-tls-version-range-and-minor-gaps.md)).
 - **Backend TLS (A12):** per-backend; certificate **and hostname verified by
   default** (Mozilla roots + `ca_file` for private CAs). The SNI/verified name
   defaults to the server's IP literal, overridable with `server_name`.
@@ -197,6 +203,18 @@ only under the documented separation rule.
   failures take a server down, `rise` consecutive successes bring it back.
 - **No servers available:** HTTP answers 503 before touching any server; TCP
   closes the connection immediately. Both count `no_available_server`.
+- **Custom error pages (B-H15/B-E18/B-N14, ADR-0045):** a listener may map
+  status codes to a file, an inline body or a static 3xx `location`
+  (`errorloc`). Pages answer locally generated failures and, with
+  `intercept = true`, replace the matching origin response; the origin
+  connection of an intercepted exchange is closed, never pooled.
+- **Unix-domain backends and `source` (B-H14/B-N15, ADR-0043):** a server
+  address may name a local socket (`unix:/absolute/path`, or the HAProxy
+  spelling `unix@/absolute/path`). It is pooled and health-checked by path,
+  and no DNS, TLS/SNI or PROXY header applies; those combinations are
+  configuration errors, not silently ignored. A TCP server may bind its
+  outbound socket to a literal `source` address; a bind failure is an
+  explicit connect failure, never a fallback to the default address.
 - **PROXY protocol v1 (A9 send):** header written to the chosen server before
   the payload (inside the TLS stream when backend TLS is on).
 
@@ -658,13 +676,31 @@ the whole service), sanitizers/concurrency tools where appropriate.
       [ADR-0027](docs/adr/0027-xds-bridge-decision.md); migration note in
       [docs/migration/README.md](docs/migration/README.md).
 
+  16. **Product banner (v0.9.1):** every response assembled by the dataplane
+      carries exactly one `Server: eqproxy`; the origin's value is replaced,
+      never appended, and the proxy does not advertise its version. This
+      covers proxied HTTP/1.1 and the h2/h3 paths that traverse the h1 engine,
+      cached entries, local errors, redirects, auth denials and gRPC; the
+      administration plane keeps its own responses unchanged. There is no
+      `server_header_transformation` toggle, and a rule that sets `Server`
+      cannot add a second line. Evidence:
+      [docs/evidence/v085-server-header.md](docs/evidence/v085-server-header.md).
+
+  17. **`Date` on generated responses (v0.9.1):** every response the dataplane
+      assembles itself — local errors, the custom error page and `errorloc`,
+      redirects and direct responses, auth denials, the h2/h3 and WebSocket
+      refusals, and gRPC local answers — carries one IMF-fixdate `Date`
+      (RFC 9110 §6.6.1). A proxied response keeps the origin's value and is
+      never given a second one; a rule that sets `Date` cannot forge it.
+      Evidence: [docs/evidence/v091-date-header.md](docs/evidence/v091-date-header.md).
+
 ## 14. Project state and evidence
 
 | Area | State | Evidence |
 |---|---|---|
 | Phase 0 research (the reference proxy, user pain, Rust ecosystem) | Tested* | Sources with URL in docs; *verified by reading sources, not by execution |
 | Specification and scope | Designed | This document |
-| Parity matrix | Designed | Internal documentation (incomplete by design, gaps declared) |
+| Parity matrix | **Complete** (2026-11-01) | [docs/parity-matrix.md](docs/parity-matrix.md): 120 reference rows classified 11 E1 · 88 E2 · 21 E3, 0 unclassified; ADR-0047 and [v091-parity-matrix](docs/evidence/v091-parity-matrix.md) |
 | Phase 1 code (TCP proxy, TOML config, CLI) | **Tested** (2026-10-12) | 30 tests green: 19 unit + 6 E2E with real sockets + 5 E2E through the real `eqproxy` binary (incl. SIGINT). fmt/clippy `-D warnings` green; 0 own `unsafe` (`forbid(unsafe_code)`); cargo-deny and cargo-machete green; SBOM in `sbom/` |
 | Backend idle-pool sizing (S-H2-01, v0.7 slice 10) | **Tested** (2026-10-23) | 2 new unit tests (the cap follows the reported peak: 400 in flight keeps 400; the ceiling clamps an absurd report) plus the existing floor test, and 1 dataplane E2E with a real h2 client and a real keep-alive h1 origin: 4 connections × 100 streams (400 in flight) in two waves — the second wave dials **zero** new backend connections and reuses all 400, the origin sees exactly the connections the proxy reports opening, and no exchange is discarded. The same test fails (wave 2 re-dials ~336) with the previous fixed 64-slot cap. Design in [ADR-0015](docs/adr/0015-backend-idle-pool-sizing.md). |
 | Keep-alive idle bound (v0.7 slice 3 fix) | **Tested** (2026-10-22) | 1 dataplane E2E with a 150 ms header phase and a 1200 ms inactivity window: a connection idle 450 ms serves the next request, then closes silently past 1200 ms with `header_timeouts = 0` and `idle_timeouts = 1`. The hot-maps binary E2E (keep-alive held across a data swap) now passes deterministically. |
@@ -686,6 +722,6 @@ the whole service), sanitizers/concurrency tools where appropriate.
 | HTTP/2 backend multiplexing (B-H1/B-N1/B-I1/B-E2, v0.7 slice 3) | **Tested** (2026-10-22) | 3 new dataplane E2E journeys over real sockets: two in-flight exchanges that only complete when both streams are inside the origin (the second is answered on the **same** session: one accepted backend connection), a backend that hangs its session up being replaced by exactly one fresh session (the racing request gets `502` and delivers nothing), and a `tcp` listener relaying bytes unchanged although its backend negotiates `h2`. Plus the release-binary journey: 4 concurrent `curl` requests, each held 1.2 s by an independent hyper-h2 origin, all answer in 1.20–1.21 s (1.29 s wall) over **one** connection with streams 1/3/5/7, once with an h1 listener and once with an h2/TLS listener, and a kill/restart of the origin producing `200 → 502 → 200` with `opened=2 connect_failures=1`. Suite: **365 tests**, exit 0. Design in [ADR-0008](docs/adr/0008-http2-backend-multiplexing.md), evidence in [docs/evidence/v07-http2-multiplexing.md](docs/evidence/v07-http2-multiplexing.md) |
 | HTTP/2 to the backend (B-H1/B-N1/B-I1/B-E2, v0.7 slice 2) | **Tested** (2026-10-22) | 4 unit tests (h1-only headers never cross, chunked keeps no length, `CONNECT`/host-less refused, absolute-form keeps its authority) + 7 E2E over real sockets with a real h2 server over TLS: h1 client → h2 backend (backend sees HTTP/2, `:authority` from `Host`, headers/body intact), h2 client end to end, one pooled backend session serving consecutive requests, request and response trailers in both directions, `HEAD` keeping its declared length and the session usable, `CONNECT` refused without reaching the backend, and a backend that cannot negotiate h2 producing an explicit `502` with the handshake counted; plus 1 CLI E2E (`config validate` accepting `alpn = ["h2"]` on a backend) and a journey through the real release binary and real `curl` against an independent Python `h2` origin. Evidence in [docs/evidence/v07-http2-backend.md](docs/evidence/v07-http2-backend.md) |
 | HTTP/2 client termination (B-H1/B-N1/B-I1/B-E2, v0.7 slice 1) | **Tested** (2026-10-22) | 7 unit tests (origin-form translation, `:authority`→`host`, content-length vs chunked, hop-by-hop stripping, response-header filtering) + 6 E2E over real sockets with a real h2 client: h2c prior knowledge, three streams that only complete when they advance in parallel, a body without `content-length` reaching the origin as `chunked`, chunked response with trailers arriving as trailing HEADERS, truncated backend body resetting the stream, 502 on a dead backend and a rule `308` answered locally, TLS ALPN `h2`; plus 1 E2E through the real binary with real `curl` (`HTTP/2 200` over h2c and TLS, HTTP/1.1 still served on the same listener). Evidence in [docs/evidence/v07-http2.md](docs/evidence/v07-http2.md) |
-| v0.8 administration, hot configuration and observability (slices 1–11: B-H12/B-H14/B-N14/B-I14/B-I15/B-E1/B-E8, D6/D7, H2/H3/CE2/CE4, Q1/Q9/CE1/CE8(p)) | **Tested** (2026-10-25 to 2026-10-27) | An optional `[admin]` plane of its own (ADR-0017) on TCP or a Unix socket — mode/gid/peer-uid allowlist/POSIX ACL, all hot on `SIGHUP` (ADR-0021/0022/0023) —, per-server `ready`/`drain` (ADR-0018) and `maintenance`, which also closes the slot's idle h1 pool and backend h2 session (ADR-0028), hot backend/listener writes with `If-Match` and an atomic swap (ADR-0019), observable draining (ADR-0024), certificate renewal without a restart (ADR-0025), opt-in per-server/per-route metrics under an explicit budget (ADR-0026), the structured access log (ADR-0020) and the opt-in server-rendered panel with bearer sessions and CSRF (ADR-0029). Evidence: the `v08-*` pages under [docs/evidence/](docs/evidence/) (17 pages, several with journeys over the release binary), the route×role matrix in [docs/evidence/v08-endpoint-authorization.md](docs/evidence/v08-endpoint-authorization.md), and the suite: **559 tests in 30 targets, 0 failed** on Linux (558 on macOS, where one test is Linux-only; `cargo test --workspace`, 2026-10-27) |
+| v0.8 administration, hot configuration and observability (slices 1–11: B-H12/B-H14/B-N14/B-I14/B-I15/B-E1/B-E8, D6/D7, H2/H3/CE2/CE4, Q1/Q9/CE1/CE8(p)) | **Tested** (2026-10-25 to 2026-10-27) | An optional `[admin]` plane of its own (ADR-0017) on TCP or a Unix socket — mode/gid/peer-uid allowlist/POSIX ACL, all hot on `SIGHUP` (ADR-0021/0022/0023) —, per-server `ready`/`drain` (ADR-0018) and `maintenance`, which also closes the slot's idle h1 pool and backend h2 session (ADR-0028), hot backend/listener writes with `If-Match` and an atomic swap (ADR-0019), observable draining (ADR-0024), certificate renewal without a restart (ADR-0025), opt-in per-server/per-route metrics under an explicit budget (ADR-0026), the structured access log (ADR-0020) and the opt-in server-rendered panel with bearer sessions and CSRF (ADR-0029). Evidence: the `v08-*` pages under [docs/evidence/](docs/evidence/) (17 pages, several with journeys over the release binary), the route×role matrix in [docs/evidence/v08-endpoint-authorization.md](docs/evidence/v08-endpoint-authorization.md), and the suite at the v0.8.5 tag: **652 tests passed, 0 failed, 2 declared `#[ignore]` Docker harnesses, 31 targets** (`cargo test --workspace`, 2026-10-31) |
 | Non-blocking dynamic DNS (B-H13/B-N18/B-E15, CE7) | **Tested** (2026-10-19) | 8 tests: 4 balancer-slot unit + 3 resolver-loop unit (stub seam) + 2 dataplane E2E (hot re-resolution, hung DNS → immediate 503 + recovery) + 2 through the real binary with the OS resolver (broken `.invalid` name → listeners announced < 3 s + counted 503; `localhost` backend → traffic + periodic rounds in METRICS) |
 | Per-listener HTTP response cache (B-N7/H1, v0.8.5) | **Tested** (2026-10-30) | Opt-in `[listener.<name>.cache]` (`http` mode only): 13 dataplane E2E over real sockets with a recording origin (MISS→HIT byte-identical; sessions never share; `Set-Cookie` never stored; `Vary` variants; `ETag`/`304` revalidation without a body; TTL expiry; 10 concurrent sharing one fetch and one dial; `HEAD` from the `GET` entry; `Authorization`/`Range` bypass; unstorable statuses/directives; oversized bodies; cookie-affinity runtime bypass; disk entries surviving a restart with the origin dark) plus store unit tests and the config gate. The revalidation journey caught a real proxy bug: the conditional appended without a leading CRLF glued onto the last header, so the origin never saw the validator. Every served response carries `X-Cache: HIT \| MISS \| REVALIDATED`; `GET /api/v1/cache` lists entries. Design in [ADR-0034](docs/adr/0034-http-response-cache.md), evidence in [docs/evidence/v085-http-cache.md](docs/evidence/v085-http-cache.md) |

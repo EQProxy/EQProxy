@@ -31,13 +31,13 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpSocket, TcpStream, UnixStream};
 use tokio::task::{JoinHandle, JoinSet};
 
 use eqproxy_core::{Metrics, Shutdown, ShutdownHandle};
 
 use crate::backend_h2;
-use crate::balancer::{ActiveGuard, Balance, Balancer, ResolvedServer};
+use crate::balancer::{ActiveGuard, Balance, Balancer, Endpoint, ResolvedServer};
 use crate::dns::{self, DnsSettings, Resolving, SystemResolver};
 use crate::health::{self, HealthCheck};
 use crate::http1;
@@ -109,6 +109,7 @@ impl ResolvedBackend {
             name,
             vec![ResolvedServer {
                 addr: server.into(),
+                source: None,
                 weight: 1,
                 backup: false,
                 priority: 0,
@@ -862,6 +863,9 @@ pub struct ResolvedListener {
     pub forwarded_headers: ForwardedMode,
     /// Custom response for the "no server available" class (C9).
     pub local_response: Option<LocalResponse>,
+    /// Custom error pages (B-H15/B-E18/B-N14, ADR-0045). Empty = built-in
+    /// minimal errors, the previous behaviour.
+    pub error_pages: crate::error_pages::ErrorPages,
     /// Response compression (B-N6/H6). `None` = identity only.
     pub compression: Option<crate::compression::ResolvedCompression>,
     /// Message limits and per-stream buffer sizing (B-N19/B-I17/B-E19).
@@ -917,6 +921,7 @@ impl ResolvedListener {
             proxy_receive: None,
             forwarded_headers: ForwardedMode::Off,
             local_response: None,
+            error_pages: crate::error_pages::ErrorPages::default(),
             compression: None,
             limits: ResolvedLimits::default(),
             plugin: None,
@@ -1109,6 +1114,13 @@ impl ResolvedListener {
     #[must_use]
     pub fn with_local_response(mut self, local: LocalResponse) -> Self {
         self.local_response = Some(local);
+        self
+    }
+
+    /// Installs resolved custom error pages (ADR-0045).
+    #[must_use]
+    pub fn with_error_pages(mut self, pages: crate::error_pages::ErrorPages) -> Self {
+        self.error_pages = pages;
         self
     }
 
@@ -2018,9 +2030,9 @@ impl Drop for ConnectionGuard {
 /// rejected exchange, never per queue poll).
 fn select_server<'a>(
     backend: &'a ResolvedBackend,
-    exclude: &[SocketAddr],
-    preferred: Option<SocketAddr>,
-) -> Result<(SocketAddr, ActiveGuard<'a>), OutboundError> {
+    exclude: &[Endpoint],
+    preferred: Option<Endpoint>,
+) -> Result<(Endpoint, ActiveGuard<'a>), OutboundError> {
     // `preferred = None` is the plain pick (roundrobin / leastconn); with
     // affinity the pin wins and falls forward past down/excluded servers
     // (B-H8). The pick holds one in-flight slot (B-H5 leastconn), taken
@@ -2037,11 +2049,11 @@ fn select_server<'a>(
 /// count and reject the same way.
 async fn pick_server<'a>(
     backend: &'a ResolvedBackend,
-    tried: &[SocketAddr],
-    preferred: Option<SocketAddr>,
+    tried: &[Endpoint],
+    preferred: Option<Endpoint>,
     metrics: &Arc<Metrics>,
-) -> Result<(SocketAddr, ActiveGuard<'a>), OutboundError> {
-    match select_server(backend, tried, preferred) {
+) -> Result<(Endpoint, ActiveGuard<'a>), OutboundError> {
+    match select_server(backend, tried, preferred.clone()) {
         Ok(picked) => Ok(picked),
         Err(OutboundError::NoServer) if !tried.is_empty() => {
             // Every candidate already failed this exchange: the class is
@@ -2062,7 +2074,7 @@ async fn pick_server<'a>(
             let result = tokio::time::timeout_at(deadline, async {
                 loop {
                     tokio::time::sleep(Duration::from_millis(50)).await;
-                    if let Ok(picked) = select_server(backend, &[], preferred) {
+                    if let Ok(picked) = select_server(backend, &[], preferred.clone()) {
                         return picked;
                     }
                 }
@@ -2094,7 +2106,7 @@ fn affinity_hash(ip: IpAddr) -> usize {
 /// backend sets `passive = true` AND an active checker exists that can bring
 /// the server back (its `rise` transition clears the mark) — without a
 /// checker a passive DOWN would be permanent.
-fn report_passive(backend: &ResolvedBackend, addr: SocketAddr) {
+fn report_passive(backend: &ResolvedBackend, addr: &Endpoint) {
     if backend
         .health_check
         .as_ref()
@@ -2163,13 +2175,13 @@ async fn dial_with_retries<'a>(
     } else {
         0
     };
-    let mut tried: Vec<SocketAddr> = Vec::new();
+    let mut tried: Vec<Endpoint> = Vec::new();
     loop {
         // --- Server selection (B11 active state; B-H7 exclusion) ---
         // The pick holds one in-flight slot (B-H5); it is released with
         // the guard when the attempt fails and travels with the
         // connection on success.
-        let (addr, active) = pick_server(backend, &tried, preferred, metrics).await?;
+        let (addr, active) = pick_server(backend, &tried, preferred.clone(), metrics).await?;
 
         // --- Pool reuse first (A16), first attempt only ---
         // HTTP/2 has no byte-stream connection to pool: its exchanges take a
@@ -2186,7 +2198,7 @@ async fn dial_with_retries<'a>(
             // burst that is still starting up).
             backend
                 .pool
-                .note_in_flight(addr, active.in_flight() as usize);
+                .note_in_flight(&addr, active.in_flight() as usize);
             metrics
                 .backend_connections_reused
                 .fetch_add(1, Ordering::Relaxed);
@@ -2216,7 +2228,7 @@ async fn dial_with_retries<'a>(
                 pipe_buffer: cfg.limits.stream_buffer_bytes,
             },
             backend,
-            addr,
+            addr.clone(),
             peer,
             local,
             metrics,
@@ -2227,7 +2239,7 @@ async fn dial_with_retries<'a>(
                 if !h2 {
                     backend
                         .pool
-                        .note_in_flight(addr, active.in_flight() as usize);
+                        .note_in_flight(&addr, active.in_flight() as usize);
                 }
                 if opened {
                     metrics
@@ -2251,9 +2263,9 @@ async fn dial_with_retries<'a>(
                 ));
             }
             Err(OutboundError::Connect) => {
-                tried.push(addr);
+                tried.push(addr.clone());
                 // Passive mark (when safe to restart) + exclusion.
-                report_passive(backend, addr);
+                report_passive(backend, &addr);
                 if tried.len() as u32 > max_attempts {
                     // Retry budget spent: final error.
                     return Err(OutboundError::Connect);
@@ -2296,7 +2308,7 @@ pub async fn connect_backend<'a>(
 /// freshly dialed. `reused` feeds `backend_connections_reused`.
 pub struct BackendConn {
     /// Balancer-chosen server (pool key).
-    pub addr: SocketAddr,
+    pub addr: Endpoint,
     /// Read half (ready for `read_head`: message-aligned).
     pub read: BufReader<BoxRead>,
     /// Write half.
@@ -2367,6 +2379,8 @@ pub(crate) struct DialTimeouts<'a> {
 /// the whole object (it owns the connection), h1 works on split halves.
 enum Transport {
     Plain(TcpStream),
+    /// Unix-domain backend (ADR-0043): plain bytes, no TLS, no PROXY.
+    Unix(UnixStream),
     Tls(Box<tokio_rustls::client::TlsStream<TcpStream>>),
 }
 
@@ -2374,7 +2388,7 @@ impl Transport {
     /// Did the TLS handshake agree on `h2`?
     fn alpn_h2(&self) -> bool {
         match self {
-            Transport::Plain(_) => false,
+            Transport::Plain(_) | Transport::Unix(_) => false,
             Transport::Tls(stream) => stream.get_ref().1.alpn_protocol() == Some(b"h2"),
         }
     }
@@ -2382,6 +2396,10 @@ impl Transport {
     fn split(self) -> (BoxRead, BoxWrite) {
         match self {
             Transport::Plain(socket) => {
+                let (read, write) = socket.into_split();
+                (Box::new(read), Box::new(write))
+            }
+            Transport::Unix(socket) => {
                 let (read, write) = socket.into_split();
                 (Box::new(read), Box::new(write))
             }
@@ -2406,7 +2424,7 @@ impl Transport {
 pub(crate) async fn connect_backend_to(
     timeouts: DialTimeouts<'_>,
     backend: &ResolvedBackend,
-    addr: SocketAddr,
+    addr: Endpoint,
     peer: SocketAddr,
     local: SocketAddr,
     metrics: &Arc<Metrics>,
@@ -2424,6 +2442,11 @@ pub(crate) async fn connect_backend_to(
     // so no dial, handshake or PROXY header is needed. This is the path that
     // multiplexes: concurrent exchanges each land here.
     if http && let Some(hub) = &backend.h2 {
+        // An HTTP/2 backend is TLS-only, so it is always a TCP target; a Unix
+        // backend never builds a hub (ADR-0043: no TLS/SNI on a local socket).
+        let Some(tcp) = addr.tcp_addr() else {
+            return Err(OutboundError::Connect);
+        };
         return open_h2_exchange(
             hub,
             DialTimeouts {
@@ -2435,7 +2458,7 @@ pub(crate) async fn connect_backend_to(
                 pipe_buffer,
             },
             backend,
-            addr,
+            tcp,
             peer,
             local,
             metrics,
@@ -2448,9 +2471,10 @@ pub(crate) async fn connect_backend_to(
         connect: connect_timeout,
         tls: backend.tls.as_ref(),
         proxy_protocol: backend.proxy_protocol,
+        source: backend.balancer.source_of(&addr),
         metrics,
     };
-    let (read, write) = dial_transport(spec, addr, peer, local).await?.split();
+    let (read, write) = dial_transport(spec, &addr, peer, local).await?.split();
     Ok((read, write, true))
 }
 
@@ -2493,6 +2517,7 @@ async fn open_h2_exchange(
         idle,
         tls: backend.tls.clone(),
         proxy_protocol: backend.proxy_protocol,
+        source: backend.balancer.source_of(&Endpoint::Tcp(addr)),
         metrics: Arc::clone(metrics),
     });
     let (session, mut opened) = session_for(hub, &dialer, addr).await?;
@@ -2609,9 +2634,14 @@ pub(crate) async fn open_grpc_stream<'a>(
     } else {
         0
     };
-    let mut tried: Vec<SocketAddr> = Vec::new();
+    let mut tried: Vec<Endpoint> = Vec::new();
     loop {
-        let (addr, active) = pick_server(backend, &tried, preferred, metrics).await?;
+        let (picked, active) = pick_server(backend, &tried, preferred.clone(), metrics).await?;
+        let Some(addr) = picked.tcp_addr() else {
+            // gRPC runs on an HTTP/2 session, which a Unix target never has
+            // (ADR-0043: no TLS/SNI on a local socket).
+            return Err(OutboundError::Connect);
+        };
         let dialer = Arc::new(H2Dialer {
             hub: Arc::clone(hub),
             name: cfg.name.clone(),
@@ -2622,14 +2652,15 @@ pub(crate) async fn open_grpc_stream<'a>(
             idle: cfg.idle_timeout,
             tls: backend.tls.clone(),
             proxy_protocol: backend.proxy_protocol,
+            source: backend.balancer.source_of(&Endpoint::Tcp(addr)),
             metrics: Arc::clone(metrics),
         });
         let reached = session_for(hub, &dialer, addr).await;
         let (session, opened) = match reached {
             Ok(pair) => pair,
             Err(OutboundError::Connect) => {
-                tried.push(addr);
-                report_passive(backend, addr);
+                tried.push(picked.clone());
+                report_passive(backend, &picked);
                 if tried.len() as u32 > max_attempts {
                     return Err(OutboundError::Connect);
                 }
@@ -2640,8 +2671,8 @@ pub(crate) async fn open_grpc_stream<'a>(
         };
         let Some((slot, mut send_request)) = session.enter() else {
             // The session closed between the lookup and the admission.
-            tried.push(addr);
-            report_passive(backend, addr);
+            tried.push(picked.clone());
+            report_passive(backend, &picked);
             if tried.len() as u32 > max_attempts {
                 return Err(OutboundError::Connect);
             }
@@ -2706,6 +2737,8 @@ struct H2Dialer {
     idle: Duration,
     tls: Option<ClientTls>,
     proxy_protocol: ProxyProtocolMode,
+    /// Source address to bind (ADR-0043); a TCP backend only.
+    source: Option<IpAddr>,
     metrics: Arc<Metrics>,
 }
 
@@ -2719,9 +2752,11 @@ impl H2Dialer {
             connect: self.connect,
             tls: self.tls.as_ref(),
             proxy_protocol: self.proxy_protocol,
+            source: self.source,
             metrics: &self.metrics,
         };
-        let transport = dial_transport(spec, self.addr, self.peer, self.local).await?;
+        let transport =
+            dial_transport(spec, &Endpoint::Tcp(self.addr), self.peer, self.local).await?;
         // The backend is configured for HTTP/2 only: a handshake that did not
         // select `h2` cannot be served by writing h1 bytes into it.
         if !transport.alpn_h2() {
@@ -2788,13 +2823,16 @@ struct DialSpec<'a> {
     connect: Duration,
     tls: Option<&'a ClientTls>,
     proxy_protocol: ProxyProtocolMode,
+    /// Local address to bind before connecting (ADR-0043).
+    source: Option<IpAddr>,
     metrics: &'a Metrics,
 }
 
-/// TCP connect, optional TLS handshake and optional PROXY header.
+/// TCP connect, optional TLS handshake and optional PROXY header, or a plain
+/// connect to a Unix-domain socket (ADR-0043).
 async fn dial_transport(
     spec: DialSpec<'_>,
-    addr: SocketAddr,
+    addr: &Endpoint,
     peer: SocketAddr,
     local: SocketAddr,
 ) -> Result<Transport, OutboundError> {
@@ -2803,27 +2841,44 @@ async fn dial_transport(
         connect: connect_timeout,
         tls: backend_tls,
         proxy_protocol,
+        source,
         metrics,
     } = spec;
-    let socket = match tokio::time::timeout(connect_timeout, TcpStream::connect(addr)).await {
-        Ok(Ok(socket)) => socket,
-        Ok(Err(err)) => {
-            metrics.connect_failures.fetch_add(1, Ordering::Relaxed);
-            eprintln!("ERROR [{name}] could not connect to {addr} (peer {peer}): {err}");
-            return Err(OutboundError::Connect);
-        }
-        Err(_elapsed) => {
+
+    // A Unix target is local (ADR-0043): no TLS, no PROXY header. Validation
+    // rejects those combinations, so reaching this branch means a config that
+    // bypassed it: refuse explicitly instead of silently dropping them.
+    if let Some(path) = addr.unix_path() {
+        if backend_tls.is_some() || proxy_protocol != ProxyProtocolMode::None {
             metrics.connect_failures.fetch_add(1, Ordering::Relaxed);
             eprintln!(
-                "ERROR [{name}] connect timeout to {addr} (peer {peer}) after {connect_timeout:?}"
+                "ERROR [{name}] Unix backend {addr} cannot use TLS or PROXY protocol (peer {peer})"
             );
             return Err(OutboundError::Connect);
         }
+        return match tokio::time::timeout(connect_timeout, UnixStream::connect(path)).await {
+            Ok(Ok(stream)) => Ok(Transport::Unix(stream)),
+            Ok(Err(err)) => {
+                metrics.connect_failures.fetch_add(1, Ordering::Relaxed);
+                eprintln!("ERROR [{name}] could not connect to {addr} (peer {peer}): {err}");
+                Err(OutboundError::Connect)
+            }
+            Err(_elapsed) => {
+                metrics.connect_failures.fetch_add(1, Ordering::Relaxed);
+                eprintln!(
+                    "ERROR [{name}] connect timeout to {addr} (peer {peer}) after {connect_timeout:?}"
+                );
+                Err(OutboundError::Connect)
+            }
+        };
+    }
+    let Some(target) = addr.tcp_addr() else {
+        return Err(OutboundError::Connect);
     };
-    let _ = socket.set_nodelay(true);
+    let socket = tcp_connect(target, source, connect_timeout, name, peer, metrics).await?;
 
     if let Some(client_tls) = backend_tls {
-        let server_name = tls::server_name_for(client_tls, addr);
+        let server_name = tls::server_name_for(client_tls, target);
         let handshake = tokio::time::timeout(
             connect_timeout,
             client_tls.connector.connect(server_name, socket),
@@ -2834,7 +2889,7 @@ async fn dial_transport(
                 metrics
                     .tls_handshake_failures
                     .fetch_add(1, Ordering::Relaxed);
-                eprintln!("ERROR [{name}] failed TLS handshake to {addr} (peer {peer}): {err}");
+                eprintln!("ERROR [{name}] failed TLS handshake to {target} (peer {peer}): {err}");
 
                 return Err(OutboundError::Connect);
             }
@@ -2843,7 +2898,7 @@ async fn dial_transport(
                     .tls_handshake_failures
                     .fetch_add(1, Ordering::Relaxed);
                 eprintln!(
-                    "ERROR [{name}] TLS handshake timeout to {addr} (peer {peer}) after {connect_timeout:?}"
+                    "ERROR [{name}] TLS handshake timeout to {target} (peer {peer}) after {connect_timeout:?}"
                 );
                 return Err(OutboundError::Connect);
             }
@@ -2870,6 +2925,81 @@ async fn dial_transport(
             return Err(OutboundError::Connect);
         }
         Ok(Transport::Plain(socket))
+    }
+}
+
+/// TCP connect with the optional per-server source bind (ADR-0043). A bind
+/// failure is an explicit connect failure with its own log line and counter:
+/// never a silent fallback to the kernel-chosen address.
+async fn tcp_connect(
+    target: SocketAddr,
+    source: Option<IpAddr>,
+    connect_timeout: Duration,
+    name: &str,
+    peer: SocketAddr,
+    metrics: &Metrics,
+) -> Result<TcpStream, OutboundError> {
+    let Some(source) = source else {
+        return match tokio::time::timeout(connect_timeout, TcpStream::connect(target)).await {
+            Ok(Ok(socket)) => {
+                let _ = socket.set_nodelay(true);
+                Ok(socket)
+            }
+            Ok(Err(err)) => {
+                metrics.connect_failures.fetch_add(1, Ordering::Relaxed);
+                eprintln!("ERROR [{name}] could not connect to {target} (peer {peer}): {err}");
+                Err(OutboundError::Connect)
+            }
+            Err(_elapsed) => {
+                metrics.connect_failures.fetch_add(1, Ordering::Relaxed);
+                eprintln!(
+                    "ERROR [{name}] connect timeout to {target} (peer {peer}) after {connect_timeout:?}"
+                );
+                Err(OutboundError::Connect)
+            }
+        };
+    };
+    // The socket family follows the configured source: binding an IPv4
+    // address on a v6 socket (or the reverse) is a config error, reported
+    // here as an explicit connect failure.
+    let socket = match source {
+        IpAddr::V4(_) => TcpSocket::new_v4(),
+        IpAddr::V6(_) => TcpSocket::new_v6(),
+    };
+    let socket = match socket {
+        Ok(socket) => socket,
+        Err(err) => {
+            metrics.connect_failures.fetch_add(1, Ordering::Relaxed);
+            eprintln!("ERROR [{name}] could not create a socket for source {source}: {err}");
+            return Err(OutboundError::Connect);
+        }
+    };
+    if let Err(err) = socket.bind(SocketAddr::new(source, 0)) {
+        metrics.connect_failures.fetch_add(1, Ordering::Relaxed);
+        eprintln!(
+            "ERROR [{name}] could not bind source {source} for {target} (peer {peer}): {err}"
+        );
+        return Err(OutboundError::Connect);
+    }
+    match tokio::time::timeout(connect_timeout, socket.connect(target)).await {
+        Ok(Ok(socket)) => {
+            let _ = socket.set_nodelay(true);
+            Ok(socket)
+        }
+        Ok(Err(err)) => {
+            metrics.connect_failures.fetch_add(1, Ordering::Relaxed);
+            eprintln!(
+                "ERROR [{name}] could not connect to {target} from source {source} (peer {peer}): {err}"
+            );
+            Err(OutboundError::Connect)
+        }
+        Err(_elapsed) => {
+            metrics.connect_failures.fetch_add(1, Ordering::Relaxed);
+            eprintln!(
+                "ERROR [{name}] connect timeout to {target} from source {source} (peer {peer}) after {connect_timeout:?}"
+            );
+            Err(OutboundError::Connect)
+        }
     }
 }
 

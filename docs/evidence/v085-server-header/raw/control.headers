@@ -1,0 +1,6 @@
+HTTP/1.0 200 OK
+Server: nginx/1.24.0
+Content-Type: text/plain
+Cache-Control: max-age=60
+Content-Length: 12
+

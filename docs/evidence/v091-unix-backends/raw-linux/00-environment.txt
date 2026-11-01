@@ -1,0 +1,8 @@
+date: 2026-10-31T22:59:29Z
+host: Linux 7.0.14-linuxkit aarch64
+rustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)
+cargo: cargo 1.99.1 (5f94df478 2026-08-27)
+binary: /target/debug/eqproxy
+sha256: 3e7d1fec8e7066ece03a3e632c1cdc4227f3766b755ee8d72d4b920c4a3f4c93
+commit: 04859afee80db9f8107fe205dd1f9621cef83e50
+tree: 187 modified/untracked paths

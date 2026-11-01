@@ -1,7 +1,7 @@
 # v0.8 — Rotación de certificados en caliente (D7)
 
 Fecha: **2026-10-25** · ADR: [ADR-0025](../adr/0025-certificate-renewal-without-restart.md) ·
-Roadmap: [0.8](../../ROADMAP%20EQPROXY/ROADMAP/Roadmap%200.8.md) (casilla D7) ·
+Roadmap: 0.8 (local-only: `../../ROADMAP%20EQPROXY/ROADMAP/Roadmap%200.8.md`) (casilla D7) ·
 Estado: **verificado E2E contra el binario de release**
 
 ## Qué se afirma (y con qué se demuestra)

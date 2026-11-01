@@ -53,6 +53,46 @@
 // Each binary compiles this module and uses the subset of helpers it needs.
 #![allow(dead_code)]
 
+const WEEKDAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// Asserts that `value` is an IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`).
+///
+/// An independent check, not a call into the formatter the dataplane uses:
+/// the test must not prove the formatter against itself.
+#[track_caller]
+pub fn assert_http_date(value: &str) {
+    let (weekday, rest) = value
+        .split_once(", ")
+        .unwrap_or_else(|| panic!("missing weekday: {value:?}"));
+    assert!(WEEKDAYS.contains(&weekday), "weekday: {value:?}");
+    let parts: Vec<&str> = rest.split(' ').collect();
+    assert_eq!(parts.len(), 5, "IMF-fixdate fields: {value:?}");
+    assert_eq!(parts[0].len(), 2, "two-digit day: {value:?}");
+    let day: u32 = parts[0].parse().expect("numeric day");
+    assert!((1..=31).contains(&day), "day range: {value:?}");
+    assert!(MONTHS.contains(&parts[1]), "month: {value:?}");
+    assert_eq!(parts[2].len(), 4, "four-digit year: {value:?}");
+    let year: u32 = parts[2].parse().expect("numeric year");
+    assert!(year >= 1970, "year: {value:?}");
+    let time: Vec<&str> = parts[3].split(':').collect();
+    assert_eq!(time.len(), 3, "time fields: {value:?}");
+    assert!(
+        time.iter().all(|field| field.len() == 2),
+        "two-digit time fields: {value:?}"
+    );
+    let hour: u32 = time[0].parse().expect("numeric hour");
+    let minute: u32 = time[1].parse().expect("numeric minute");
+    let second: u32 = time[2].parse().expect("numeric second");
+    assert!(
+        hour < 24 && minute < 60 && second <= 60,
+        "time range: {value:?}"
+    );
+    assert_eq!(parts[4], "GMT", "UTC suffix: {value:?}");
+}
+
 use std::net::{SocketAddr, TcpListener};
 use std::time::Duration;
 

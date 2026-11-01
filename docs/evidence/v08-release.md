@@ -13,7 +13,7 @@ pushed, tagged or released here.
 |---|---|
 | Image definition (builder `rust:1.97-alpine`, Wolfi runtime) | [docker/Dockerfile](../../docker/Dockerfile) |
 | Pinned base (index digest, ADR-0016) | [docker/Dockerfile:71](../../docker/Dockerfile#L71) |
-| Container E2E harness (local-only) | [`scripts/evidence/v08-release/container-e2e.sh`](../../scripts/evidence/v08-release/container-e2e.sh) |
+| Container E2E harness (local-only) | `scripts/evidence/v08-release/container-e2e.sh` (local-only: `../../scripts/evidence/v08-release/container-e2e.sh`) |
 | Scout reports and transcripts | [`docs/evidence/v08-release/raw/20261027T011607Z/`](v08-release/raw/20261027T011607Z/) |
 | CI gate that repeats this on the pushed candidate | [.github/workflows/release.yml:533](../../.github/workflows/release.yml#L533) |
 
@@ -212,7 +212,7 @@ eqproxy 0.8.0
   it ("one secret per privilege level") and the harness was fixed — the
   refusal is the documented boundary, not a bug.
 - **Container E2E against the published Docker Hub tag**
-  ([`container-e2e.sh`](../../scripts/evidence/v08-release/container-e2e.sh)):
+  (`container-e2e.sh` (local-only: `../../scripts/evidence/v08-release/container-e2e.sh`)):
   **20 PASS / 0 FAIL** on `linux/arm64` (`push-20261027T154430Z`, transcript in
   [raw/push-20261027T154430Z](v08-release/raw/push-20261027T154430Z/)) and
   **20 PASS / 0 FAIL** on `linux/amd64` (`push-amd-20261027T154441Z`, same

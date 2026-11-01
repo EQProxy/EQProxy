@@ -12,11 +12,11 @@ changes nothing, and writing the single-primary document back retires the pool
 
 | Piece | Where |
 |---|---|
-| A whole `[backend.<name>]` table replaces the live one | [lib.rs:87](eqproxy-config/src/lib.rs#L87) (`parse_backend_table`), [lib.rs:109](eqproxy-config/src/lib.rs#L109) (`parse_table`: the body may be the bare table **or** the complete section) |
-| Validation + swap + revision, serialised with `SIGHUP` | [main.rs:2192](eqproxy-cli/src/main.rs#L2192) (`apply_candidate`) |
-| The rebuilt balancer keeps the policy | [proxy.rs:163](eqproxy-net/src/proxy.rs#L163) (`with_all_backups`) |
-| CLI E2E of the same flip (debug profile) | [cli_e2e.rs:3857](eqproxy-cli/tests/cli_e2e.rs#L3857) (`run_document_put_flips_the_backup_pool_live`) |
-| Panel form that drives the same pipeline | [cli_e2e.rs:4206](eqproxy-cli/tests/cli_e2e.rs#L4206) (`run_panel_applies_a_table_and_drains_a_server`), [ADR-0029](../adr/0029-panel-sessions-and-csrf.md) |
+| A whole `[backend.<name>]` table replaces the live one | [lib.rs:87](../../eqproxy-config/src/lib.rs#L87) (`parse_backend_table`), [lib.rs:109](../../eqproxy-config/src/lib.rs#L109) (`parse_table`: the body may be the bare table **or** the complete section) |
+| Validation + swap + revision, serialised with `SIGHUP` | [main.rs:2192](../../eqproxy-cli/src/main.rs#L2192) (`apply_candidate`) |
+| The rebuilt balancer keeps the policy | [proxy.rs:163](../../eqproxy-net/src/proxy.rs#L163) (`with_all_backups`) |
+| CLI E2E of the same flip (debug profile) | [cli_e2e.rs:3857](../../eqproxy-cli/tests/cli_e2e.rs#L3857) (`run_document_put_flips_the_backup_pool_live`) |
+| Panel form that drives the same pipeline | [cli_e2e.rs:4206](../../eqproxy-cli/tests/cli_e2e.rs#L4206) (`run_panel_applies_a_table_and_drains_a_server`), [ADR-0029](../adr/0029-panel-sessions-and-csrf.md) |
 
 ## Binary under test
 
@@ -27,7 +27,7 @@ changes nothing, and writing the single-primary document back retires the pool
   build `c532bd1c…` in `raw/run-20261026T230428Z/`, same outcome, and the
   quotes below are from this run).
 - Host: macOS 26.5.1 arm64 (Darwin), `python3.13`.
-- Journey: [`scripts/evidence/v08-flip-live/journey.py`](../../scripts/evidence/v08-flip-live/journey.py)
+- Journey: `scripts/evidence/v08-flip-live/journey.py` (local-only: `../../scripts/evidence/v08-flip-live/journey.py`)
   (local-only harness), run from the repository root.
 - Raw run: [`docs/evidence/v08-flip-live/raw/run-20261027T003553Z/`](v08-flip-live/raw/run-20261027T003553Z/)
   — `journey.txt`, `eqproxy.toml` (the starting document), `eqproxy.log`,

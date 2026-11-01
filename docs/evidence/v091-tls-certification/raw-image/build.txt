@@ -1,0 +1,20 @@
+command: docker build --platform linux/arm64 -f docker/Dockerfile -t eqproxy:v091-arm64 .
+date: 2026-11-01T03:22:21Z
+exit: 0
+image_id=sha256:4a11955cac1c7e21ba27e5bd4791002f88599f28be7b58be2e3417c1e7ce36d4 platform=linux/arm64 size_bytes=67754121
+binary_sha256: fd453a8c9175ac2a73908ff18f2c5ab01eb89030aaaeee96403ec2ecf99d375b
+runtime_base: cgr.dev/chainguard/wolfi-base@sha256:360896efb0753a5701c48f860e17130c205eae5a264797aa3e7ea126ee2923a7
+
+build log tail:
+#25 exporting layers 1.0s done
+#25 exporting manifest sha256:c7c369ab81f048d14ffe29464195a22708591c33d3e24fc1260a83debd8e7043 done
+#25 exporting config sha256:642f61c7a3e3e2d3c8ca8addc1a2e3bd787c51d180ca8aa9d1699298833a2a82 0.0s done
+#25 exporting attestation manifest sha256:f0e209a838db37e2b841c8dbbe38d5fb8713e96357f2c0dcd082e81b06456da9 done
+#25 exporting manifest list sha256:4a11955cac1c7e21ba27e5bd4791002f88599f28be7b58be2e3417c1e7ce36d4 done
+#25 naming to docker.io/library/eqproxy:v091-arm64 done
+#25 unpacking to docker.io/library/eqproxy:v091-arm64
+#25 unpacking to docker.io/library/eqproxy:v091-arm64 0.2s done
+#25 DONE 1.3s
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/m9ptv3rety2lj275yljtdy0ft
+BUILD_EXIT=0

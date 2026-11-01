@@ -1723,7 +1723,7 @@ fn backend_status(backend: &ResolvedBackend) -> BackendStatus<'_> {
             .into_iter()
             .map(|server| ServerStatus {
                 addr: server.target,
-                resolved: server.addr.map(|addr| addr.to_string()),
+                resolved: server.addr.as_ref().map(ToString::to_string),
                 weight: server.weight,
                 backup: server.backup,
                 priority: server.priority,
@@ -1913,10 +1913,11 @@ pub(crate) fn apply_server_state(
         // completion path refuses to pool a maintenance slot
         // (`ActiveGuard::mode`). The mode is set first on purpose: a
         // connection parked in between is closed by the sweep below.
-        if let Some(addr) = server.addr {
-            backend.pool.close_idle(&addr);
-            if let Some(hub) = backend.h2.as_ref() {
-                hub.close_idle(addr);
+        if let Some(addr) = server.addr.as_ref() {
+            backend.pool.close_idle(addr);
+            // An HTTP/2 hub exists only for a TCP target (ADR-0043).
+            if let (Some(hub), Some(tcp)) = (backend.h2.as_ref(), addr.tcp_addr()) {
+                hub.close_idle(tcp);
             }
         }
     }
@@ -1974,6 +1975,7 @@ mod tests {
                 vec![
                     ResolvedServer {
                         addr: crate::ServerAddr::Ip("127.0.0.1:9000".parse().expect("addr")),
+                        source: None,
                         weight: 1,
                         backup: false,
                         priority: 0,
@@ -1981,6 +1983,7 @@ mod tests {
                     },
                     ResolvedServer {
                         addr: crate::ServerAddr::Ip("127.0.0.1:9001".parse().expect("addr")),
+                        source: None,
                         weight: 2,
                         backup: false,
                         priority: 0,
@@ -2156,6 +2159,7 @@ mod tests {
             vec![
                 ResolvedServer {
                     addr: crate::ServerAddr::Ip("127.0.0.1:9000".parse().expect("addr")),
+                    source: None,
                     weight: 1,
                     backup: false,
                     priority: 0,
@@ -2163,6 +2167,7 @@ mod tests {
                 },
                 ResolvedServer {
                     addr: crate::ServerAddr::Ip("127.0.0.1:9001".parse().expect("addr")),
+                    source: None,
                     weight: 1,
                     backup: true,
                     priority: 10,
@@ -2196,6 +2201,7 @@ mod tests {
                 vec![
                     ResolvedServer {
                         addr: crate::ServerAddr::Ip("127.0.0.1:9000".parse().expect("addr")),
+                        source: None,
                         weight: 1,
                         backup: true,
                         priority: 0,
@@ -2203,6 +2209,7 @@ mod tests {
                     },
                     ResolvedServer {
                         addr: crate::ServerAddr::Ip("127.0.0.1:9001".parse().expect("addr")),
+                        source: None,
                         weight: 1,
                         backup: true,
                         priority: 0,
@@ -2484,14 +2491,14 @@ mod tests {
         let modes = Arc::new(ServerModes::new());
         let state = state_with(Arc::clone(&modes), None);
         let backend = state.read_topology().backends[0].clone();
-        let addr: SocketAddr = "127.0.0.1:9000".parse().expect("addr");
+        let addr = crate::balancer::Endpoint::Tcp("127.0.0.1:9000".parse().expect("addr"));
         // Park one clean idle connection for the slot, exactly as the
         // completion path would after a keep-alive exchange.
         let (near, _far) = duplex(1024);
         let (read, write) = split(near);
-        backend.pool.note_in_flight(addr, 1);
+        backend.pool.note_in_flight(&addr, 1);
         backend.pool.checkin(
-            addr,
+            &addr,
             BufReader::new(Box::new(read) as BoxRead),
             Box::new(write) as BoxWrite,
             Instant::now(),

@@ -1,0 +1,85 @@
+
+===== nginx: import exit 0 =====
+import: /tmp/eqproxy-v091-errors.YkzOCD/nginx.conf (nginx) → /tmp/eqproxy-v091-errors.YkzOCD/nginx.eqproxy.toml: 5 converted, 1 with notes, 0 rejected
+
+===== generated TOML =====
+# Generado por `eqproxy config import`.
+# Revise el informe de conversión antes de usarlo en producción.
+schema_version = 1
+
+[backend.app]
+server = "127.0.0.1:9000"
+
+[listener.web__sin_server_name]
+listen = "0.0.0.0:18082"
+mode = "http"
+backend = "app"
+
+[[listener.web__sin_server_name.error_pages]]
+codes = [502, 503]
+file = "errors/50x.html"
+status = 200
+intercept = true
+
+[[listener.web__sin_server_name.rules]]
+name = "server (sin server_name) location /"
+use_backend = "app"
+path_prefix = "/"
+
+===== conversion report =====
+# Informe de conversión nginx → EQProxy
+
+- Entrada: `/tmp/eqproxy-v091-errors.YkzOCD/nginx.conf`
+- Salida: `/tmp/eqproxy-v091-errors.YkzOCD/nginx.eqproxy.toml`
+- Listeners generados: **1** · Backends generados: **1**
+- Directivas leídas: **6** · clasificadas: **6** — convertidas **5** · con aviso **1** · rechazadas **0**
+
+«Nunca se descarta en silencio»: cada directiva del origen aparece abajo. El fichero generado se ha parseado y validado con el propio parser de EQProxy (`schema_version = 1`) antes de escribirlo. La conversión es estática: no se ha ejecutado nada de la configuración de origen ni se ha medido tráfico.
+
+## Conversión generada
+
+| listener | escucha | modo | backend | TLS |
+|---|---|---|---|---|
+| `web__sin_server_name` | 0.0.0.0:18082 | http | `app` | no |
+
+| backend | servidores (peso) | balance | health check | PROXY | TLS backend |
+|---|---|---|---|---|---|
+| `app` | 127.0.0.1:9000 (1) | roundrobin | — | none | no |
+
+## Detalle de la clasificación
+
+### ❌ no traducible (0)
+
+
+### ⛔ rechazado (sin equivalente en EQProxy) (0)
+
+
+### ⚠️ revisar (0)
+
+
+### ℹ️ informativo (1)
+
+- `listen 18082` — *server (sin server_name)*: binding y TLS del listener: aplicados arriba en [listener.*.tls]
+
+### ✅ convertido (5)
+
+- `server 127.0.0.1:9000` — *upstream app*: servidor 127.0.0.1:9000 (peso 1) en el upstream
+- `listen 18082` — *server (sin server_name)*: listener de EQProxy en 18082
+- `proxy_intercept_errors on` — *server (sin server_name)*: intercept = true en las páginas error_page de este server (también sustituyen respuestas del backend)
+- `error_page 502 503 =200 /errors/50x.html` — *server (sin server_name)*: [[listener.*.error_pages]] codes = [502, 503], file = "errors/50x.html", status = 200: la ruta se resuelve contra el directorio del TOML, no contra el root de nginx
+- `proxy_pass http://app` — *server (sin server_name) location /*: regla con use_backend = «app»
+
+## Qué no se ha traducido
+
+Ninguna: todas las directivas del origen tienen destino o son informativas.
+
+## Siguiente paso
+
+1. `eqproxy config validate --config <salida>` — el mismo gate que usa el binario.
+2. Leer las secciones «revisar» y «rechazado» de arriba y corregir a mano lo que falte.
+3. `eqproxy config diff --help` para comparar con la configuración actual antes de `config apply`.
+
+===== config validate =====
+warning: listener "web__sin_server_name" listens on 0.0.0.0:18082 without TLS: expose it only on trusted networks or enable [listener.web__sin_server_name.tls]
+config OK: 1 listener(s), 1 backend(s) in /tmp/eqproxy-v091-errors.YkzOCD/nginx.eqproxy.toml
+validate exit: 0

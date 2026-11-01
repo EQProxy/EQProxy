@@ -5,8 +5,9 @@ Language: **English**.
 - State: **Accepted** (2026-10-29, roadmap v0.8.5, box B-I5/B-E4; B-N17 is
   decided in [ADR-0032](0032-fastcgi-uwsgi-scgi-decision.md))
 - Date: 2026-10-29
-- Related: [roadmap v0.8.5, §1](../../ROADMAP%20EQPROXY/ROADMAP/Roadmap%200.8.5.md)
-  (the box this closes), [SPEC §10](../..//SPEC.md#10-extensions-wasm)
+- Related: roadmap v0.8.5, §1 (local-only:
+  `../../ROADMAP EQPROXY/ROADMAP/Roadmap 0.8.5.md`) (the box this closes),
+  [SPEC §10](../../SPEC.md#10-extensions-wasm)
   (the extension contract), [ADR-0004](0004-network-stack-and-crate-layout.md)
   (workspace layout), [BENCHMARK_PLAN §3](../../BENCHMARK_PLAN.md) (S-PLG-01),
   [v085-wasm-plugins](../evidence/v085-wasm-plugins.md) (commands, numbers

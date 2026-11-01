@@ -22,7 +22,7 @@ fn supported_manually(name: &str) -> Option<&'static str> {
         "log" => "[access_log].path con format = \"json\" | \"combined\"",
         "log-format" | "log-format-sd" => "[access_log].format (campos estables, no plantillas)",
         "errorfile" | "errorloc" | "errorloc302" | "errorloc303" => {
-            "[[listener.*.rules]].direct_response / local_response"
+            "[[listener.*.error_pages]] (file/body o location)"
         }
         "monitor-uri" => "una regla con path + direct_response 200 en [[listener.*.rules]]",
         "resolvers" => "[backend.*].resolve_interval (re-resolución en caliente)",
@@ -280,6 +280,18 @@ struct Defaults {
     timeouts: BTreeMap<String, String>,
     forwardfor: bool,
     maxconn: Option<u32>,
+    /// `errorfile <code> <file>` from `defaults`: applies to every listener.
+    errorfiles: BTreeMap<u16, String>,
+    /// `errorloc <code> <url>` from `defaults`: (target, 3xx status).
+    errorlocs: BTreeMap<u16, (String, u16)>,
+}
+
+/// Replaces any page covering one of `page`'s codes, so a later `errorfile`
+/// or `errorloc` for the same status wins (HAProxy's last declaration does)
+/// instead of emitting two pages for one code, which validation refuses.
+fn upsert_error_page(pages: &mut Vec<super::ErrorPageIr>, page: super::ErrorPageIr) {
+    pages.retain(|existing| !existing.codes.iter().any(|code| page.codes.contains(code)));
+    pages.push(page);
 }
 
 pub(super) fn convert(conv: &mut Conv, text: &str) -> Result<(), ImportError> {
@@ -331,6 +343,51 @@ pub(super) fn convert(conv: &mut Conv, text: &str) -> Result<(), ImportError> {
             let text = args.join(" ");
             let keyword = args[0].to_ascii_lowercase();
             match keyword.as_str() {
+                "errorfile" => match (
+                    args.get(1).and_then(|code| code.parse::<u16>().ok()),
+                    args.get(2),
+                ) {
+                    (Some(code), Some(file)) => {
+                        defaults.errorfiles.insert(code, file.clone());
+                        conv.done(
+                            1,
+                            &text,
+                            context,
+                            format!(
+                                "[[listener.*.error_pages]] codes = [{code}], file = \"{file}\", format = \"raw\" en cada listener"
+                            ),
+                        );
+                    }
+                    _ => conv.review(
+                        1,
+                        &text,
+                        context,
+                        "errorfile sin código y ruta: transcríbalo a [[listener.*.error_pages]]",
+                    ),
+                },
+                "errorloc" | "errorloc302" | "errorloc303" => match (
+                    args.get(1).and_then(|code| code.parse::<u16>().ok()),
+                    args.get(2),
+                ) {
+                    (Some(code), Some(location)) => {
+                        let status = if keyword == "errorloc303" { 303 } else { 302 };
+                        defaults.errorlocs.insert(code, (location.clone(), status));
+                        conv.done(
+                            1,
+                            &text,
+                            context,
+                            format!(
+                                "[[listener.*.error_pages]] codes = [{code}], location = \"{location}\", status = {status} en cada listener"
+                            ),
+                        );
+                    }
+                    _ => conv.review(
+                        1,
+                        &text,
+                        context,
+                        "errorloc sin código y URL: transcríbalo a [[listener.*.error_pages]].location",
+                    ),
+                },
                 "mode" => {
                     let mode = args.get(1).cloned().unwrap_or_else(|| "http".to_owned());
                     defaults.mode = Some(mode.clone());
@@ -520,6 +577,13 @@ fn backend_body(
         let text = args.join(" ");
         let keyword = args[0].to_ascii_lowercase();
         match keyword.as_str() {
+            "errorfile" | "errorloc" | "errorloc302" | "errorloc303" if !named => conv.review(
+                1,
+                &text,
+                &context,
+                "HAProxy declara páginas de error por backend; EQProxy las declara por listener: transcríbalas a [[listener.*.error_pages]] del listener que use este backend",
+            ),
+            "errorfile" | "errorloc" | "errorloc302" | "errorloc303" => {}
             "mode" => conv.info(
                 1,
                 &text,
@@ -784,9 +848,19 @@ fn server_line(
     let raw = args[2].clone();
     let mut params = defaults.clone();
     server_params(&args[3..], &mut params);
-    let Some(addr) = normalize_addr(conv, &raw, None, &format!("server {name}"), context) else {
+    let Some(addr) = normalize_addr(conv, &raw, None, &format!("server {name}"), context, true)
+    else {
         return;
     };
+    // The address itself is the unit this line contributes: a plain
+    // `server name addr` line has no other classification, and a Unix target
+    // (ADR-0043) is a conversion, not a gap.
+    conv.done(
+        1,
+        format!("server {name} {raw}"),
+        context,
+        format!("servidor {addr}"),
+    );
     let mut weight = 1u32;
     if let Some(value) = params.get("weight") {
         match value.parse::<u32>() {
@@ -972,6 +1046,38 @@ fn frontend(
     let mut set_headers: Vec<HeaderOp> = Vec::new();
     let mut deny_rules: Vec<Rule> = Vec::new();
     let mut path_rules: Vec<Rule> = Vec::new();
+    // Inherited `errorfile`/`errorloc` directives (defaults) plus the ones
+    // declared here. A frontend declaration for a code replaces the
+    // inherited one instead of duplicating it.
+    let mut error_pages: Vec<super::ErrorPageIr> = Vec::new();
+    for (code, file) in &defaults.errorfiles {
+        upsert_error_page(
+            &mut error_pages,
+            super::ErrorPageIr {
+                codes: vec![*code],
+                file: Some(file.clone()),
+                body: None,
+                location: None,
+                raw: true,
+                status: None,
+                intercept: false,
+            },
+        );
+    }
+    for (code, (location, status)) in &defaults.errorlocs {
+        upsert_error_page(
+            &mut error_pages,
+            super::ErrorPageIr {
+                codes: vec![*code],
+                file: None,
+                body: None,
+                location: Some(location.clone()),
+                raw: false,
+                status: Some(*status),
+                intercept: false,
+            },
+        );
+    }
 
     for args in &section.lines {
         let before = conv.notes.len();
@@ -998,6 +1104,77 @@ fn frontend(
                 }
                 None => conv.review(1, &text, &context, "maxconn no numérico: se usa 1024"),
             },
+            "errorfile" => {
+                match (
+                    args.get(1).and_then(|code| code.parse::<u16>().ok()),
+                    args.get(2),
+                ) {
+                    (Some(code), Some(file)) => {
+                        upsert_error_page(
+                            &mut error_pages,
+                            super::ErrorPageIr {
+                                codes: vec![code],
+                                file: Some(file.clone()),
+                                body: None,
+                                location: None,
+                                raw: true,
+                                status: None,
+                                intercept: false,
+                            },
+                        );
+                        conv.done(
+                            1,
+                            &text,
+                            &context,
+                            format!(
+                                "[[listener.*.error_pages]] codes = [{code}], file = \"{file}\", format = \"raw\""
+                            ),
+                        );
+                    }
+                    _ => conv.review(
+                        1,
+                        &text,
+                        &context,
+                        "errorfile sin código y ruta: transcríbalo a [[listener.*.error_pages]]",
+                    ),
+                }
+            }
+            "errorloc" | "errorloc302" | "errorloc303" => {
+                match (
+                    args.get(1).and_then(|code| code.parse::<u16>().ok()),
+                    args.get(2),
+                ) {
+                    (Some(code), Some(location)) => {
+                        let status = if keyword == "errorloc303" { 303 } else { 302 };
+                        upsert_error_page(
+                            &mut error_pages,
+                            super::ErrorPageIr {
+                                codes: vec![code],
+                                file: None,
+                                body: None,
+                                location: Some(location.clone()),
+                                raw: false,
+                                status: Some(status),
+                                intercept: false,
+                            },
+                        );
+                        conv.done(
+                            1,
+                            &text,
+                            &context,
+                            format!(
+                                "[[listener.*.error_pages]] codes = [{code}], location = \"{location}\", status = {status}"
+                            ),
+                        );
+                    }
+                    _ => conv.review(
+                        1,
+                        &text,
+                        &context,
+                        "errorloc sin código y URL: transcríbalo a [[listener.*.error_pages]].location",
+                    ),
+                }
+            }
             "default_backend" => {
                 default_backend = args.get(1).cloned();
                 conv.done(
@@ -1215,6 +1392,8 @@ fn frontend(
         let ssl = has("ssl");
         let mut cert: Option<String> = None;
         let mut alpn: Vec<String> = Vec::new();
+        let mut min_version: Option<&'static str> = None;
+        let mut max_version: Option<&'static str> = None;
         let mut quic = false;
         let mut index = 0;
         while index < flags.len() {
@@ -1261,13 +1440,32 @@ fn frontend(
                     &context,
                     "varios certificados por SNI: EQProxy lo soporta en [listener.*.tls].certs; transcríbalo a mano",
                 ),
+                "ssl-min-ver" | "ssl-max-ver" => {
+                    let value = flags.get(index + 1).map(String::as_str).unwrap_or("");
+                    let parsed = match value.to_ascii_lowercase().as_str() {
+                        "tlsv1.2" => Some("1.2"),
+                        "tlsv1.3" => Some("1.3"),
+                        _ => None,
+                    };
+                    match parsed {
+                        Some(version) if flag == "ssl-min-ver" => min_version = Some(version),
+                        Some(version) => max_version = Some(version),
+                        None => conv.review(
+                            1,
+                            format!("{flag} {value}"),
+                            &context,
+                            "solo TLSv1.2 y TLSv1.3 existen en EQProxy (1.0/1.1 nunca)",
+                        ),
+                    }
+                    index += 1;
+                }
                 other => {
                     if matches!(
                         other,
                         "tfo" | "v4v6" | "v6v4" | "deferred" | "prefer-client-ciphers" | "strict-sni"
                             | "allow-0rtt" | "npn" | "extended-negotiation" | "no-tlsv10"
-                            | "no-tlsv11" | "no-tlsv12" | "no-tlsv13" | "no-sslv3" | "ssl-min-ver"
-                            | "ssl-max-ver" | "ciphers" | "ciphersuites" | "ca-ignore-err"
+                            | "no-tlsv11" | "no-tlsv12" | "no-tlsv13" | "no-sslv3"
+                            | "ciphers" | "ciphersuites" | "ca-ignore-err"
                             | "crt-ignore-err" | "crl-file" | "ecdhe" | "dhe" | "curves"
                     ) {
                         conv.review(
@@ -1276,8 +1474,7 @@ fn frontend(
                             &context,
                             "flag de bind sin equivalente exacto (se ignora)",
                         );
-                        if matches!(other, "ssl-min-ver" | "ssl-max-ver" | "ciphers" | "ciphersuites" | "curves")
-                        {
+                        if matches!(other, "ciphers" | "ciphersuites" | "curves") {
                             index += 1;
                         }
                     } else {
@@ -1299,6 +1496,7 @@ fn frontend(
             Some(if ssl { 443 } else { 80 }),
             &format!("bind {raw}"),
             &context,
+            false,
         ) else {
             continue;
         };
@@ -1318,7 +1516,8 @@ fn frontend(
                         key: format!("{cert}.key"),
                         cert,
                         alpn: alpn.clone(),
-                        min_version: None,
+                        min_version,
+                        max_version,
                         client_ca: None,
                     })
                 }
@@ -1444,6 +1643,7 @@ fn frontend(
                 listener.mode
             ),
         );
+        listener.error_pages = error_pages.clone();
         conv.add_listener(name, listener);
     }
     Ok(())
@@ -1669,6 +1869,66 @@ mod tests {
         assert_eq!(params.get("check").map(String::as_str), Some("yes"));
         assert_eq!(params.get("inter").map(String::as_str), Some("2s"));
         assert_eq!(params.get("weight").map(String::as_str), Some("100"));
+    }
+
+    #[test]
+    fn errorfile_becomes_a_raw_error_page_in_defaults_and_frontends() {
+        // B-H15: HAProxy's `errorfile` is a complete HTTP response, so it maps
+        // to `format = "raw"`; a `defaults` declaration reaches every listener.
+        let source = "global\n\ndefaults\n    mode http\n    errorfile 502 /etc/haproxy/errors/502.http\n\nfrontend fe\n    bind :80\n    default_backend app\n    errorfile 503 /etc/haproxy/errors/503.http\n\nbackend app\n    server s1 10.0.0.1:8080\n";
+        let outcome = super::super::convert(super::super::Source::Haproxy, source)
+            .expect("errorfile must convert");
+        assert!(
+            outcome.toml.contains("codes = [502]") && outcome.toml.contains("codes = [503]"),
+            "both codes must reach the file:\n{}",
+            outcome.toml
+        );
+        assert_eq!(
+            outcome.toml.matches("format = \"raw\"").count(),
+            2,
+            "an errorfile is a raw page:\n{}",
+            outcome.toml
+        );
+        assert!(
+            outcome.toml.contains("/etc/haproxy/errors/502.http")
+                && outcome.toml.contains("/etc/haproxy/errors/503.http"),
+            "the file paths must be preserved:\n{}",
+            outcome.toml
+        );
+        // The generated text is the product's own input, so it must validate.
+        let parsed = crate::parse_str(&outcome.toml, std::path::Path::new("haproxy.cfg"))
+            .expect("generated TOML parses");
+        let check =
+            crate::validate::check(&parsed, &outcome.toml, std::path::Path::new("haproxy.cfg"));
+        assert!(check.is_valid(), "{check:?}");
+    }
+
+    #[test]
+    fn errorloc_and_tls_version_flags_become_real_configuration() {
+        // B-H16: `errorloc` is a 302 redirect, not a body; B-N16: the bind
+        // version flags become the listener range instead of being ignored.
+        let source = "global\n\ndefaults\n    mode http\n\nfrontend fe\n    bind :443 ssl crt /etc/c.pem ssl-min-ver TLSv1.2 ssl-max-ver TLSv1.2\n    default_backend app\n    errorloc 503 https://status.example.test/maintenance\n\nbackend app\n    server s1 10.0.0.1:8080\n";
+        let outcome = super::super::convert(super::super::Source::Haproxy, source)
+            .expect("errorloc must convert");
+        assert!(
+            outcome
+                .toml
+                .contains("location = \"https://status.example.test/maintenance\"")
+                && outcome.toml.contains("status = 302"),
+            "errorloc must become a redirect page:\n{}",
+            outcome.toml
+        );
+        assert!(
+            outcome.toml.contains("min_version = \"1.2\"")
+                && outcome.toml.contains("max_version = \"1.2\""),
+            "the bind version flags must reach the listener:\n{}",
+            outcome.toml
+        );
+        let parsed = crate::parse_str(&outcome.toml, std::path::Path::new("haproxy.cfg"))
+            .expect("generated TOML parses");
+        let check =
+            crate::validate::check(&parsed, &outcome.toml, std::path::Path::new("haproxy.cfg"));
+        assert!(check.is_valid(), "{check:?}");
     }
 
     #[test]

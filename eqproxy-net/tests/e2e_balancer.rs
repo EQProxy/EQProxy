@@ -251,6 +251,7 @@ async fn leastconn_routes_new_exchanges_to_the_least_loaded_server() {
             vec![
                 ResolvedServer {
                     addr: a.addr.into(),
+                    source: None,
                     weight: 1,
                     backup: false,
                     priority: 0,
@@ -258,6 +259,7 @@ async fn leastconn_routes_new_exchanges_to_the_least_loaded_server() {
                 },
                 ResolvedServer {
                     addr: b.addr.into(),
+                    source: None,
                     weight: 1,
                     backup: false,
                     priority: 0,
@@ -284,7 +286,9 @@ async fn leastconn_routes_new_exchanges_to_the_least_loaded_server() {
     )
     .await;
     assert_eq!(
-        backend.balancer.active_count(a.addr),
+        backend
+            .balancer
+            .active_count(&eqproxy_net::Endpoint::Tcp(a.addr)),
         1,
         "the held exchange counts as in-flight load on A"
     );
@@ -314,7 +318,12 @@ async fn leastconn_routes_new_exchanges_to_the_least_loaded_server() {
         .expect("join");
     assert_eq!(body, "a", "the held exchange was served by A");
     eventually(
-        || backend.balancer.active_count(a.addr) == 0,
+        || {
+            backend
+                .balancer
+                .active_count(&eqproxy_net::Endpoint::Tcp(a.addr))
+                == 0
+        },
         "the in-flight slot released at exchange end",
     )
     .await;
@@ -339,6 +348,7 @@ async fn leastconn_weights_share_in_flight_load_by_conns_over_weight() {
             vec![
                 ResolvedServer {
                     addr: a.addr.into(),
+                    source: None,
                     weight: 2,
                     backup: false,
                     priority: 0,
@@ -346,6 +356,7 @@ async fn leastconn_weights_share_in_flight_load_by_conns_over_weight() {
                 },
                 ResolvedServer {
                     addr: b.addr.into(),
+                    source: None,
                     weight: 1,
                     backup: false,
                     priority: 0,
@@ -427,6 +438,7 @@ async fn slow_start_ramps_the_recovered_server_up() {
             vec![
                 ResolvedServer {
                     addr: a.addr.into(),
+                    source: None,
                     weight: 1,
                     backup: false,
                     priority: 0,
@@ -434,6 +446,7 @@ async fn slow_start_ramps_the_recovered_server_up() {
                 },
                 ResolvedServer {
                     addr: b.addr.into(),
+                    source: None,
                     weight: 1,
                     backup: false,
                     priority: 0,
@@ -466,7 +479,7 @@ async fn slow_start_ramps_the_recovered_server_up() {
 
     // Phase 0: the health check drops the unhealthy server (fall = 1).
     eventually(
-        || !backend.balancer.is_up(b.addr),
+        || !backend.balancer.is_up(&eqproxy_net::Endpoint::Tcp(b.addr)),
         "B marked DOWN by the health check",
     )
     .await;
@@ -481,15 +494,19 @@ async fn slow_start_ramps_the_recovered_server_up() {
     tokio::time::sleep(Duration::from_millis(2100)).await;
     b.set_healthy(true);
     eventually(
-        || backend.balancer.is_up(b.addr),
+        || backend.balancer.is_up(&eqproxy_net::Endpoint::Tcp(b.addr)),
         "B marked UP again (rise = 1)",
     )
     .await;
 
     // Phase 2 (ramp): the recovered server is nearly invisible next to
     // the fully ramped one.
-    let eff_a = backend.balancer.effective_weight(a.addr);
-    let eff_b = backend.balancer.effective_weight(b.addr);
+    let eff_a = backend
+        .balancer
+        .effective_weight(&eqproxy_net::Endpoint::Tcp(a.addr));
+    let eff_b = backend
+        .balancer
+        .effective_weight(&eqproxy_net::Endpoint::Tcp(b.addr));
     assert!(
         eff_b < eff_a / 10,
         "the recovered server starts with a tiny weight: eff_a={eff_a} eff_b={eff_b}"
@@ -575,6 +592,7 @@ async fn per_server_maxconn_caps_concurrency_and_answers_503() {
         "api",
         vec![ResolvedServer {
             addr: a.addr.into(),
+            source: None,
             weight: 1,
             backup: false,
             priority: 0,
@@ -593,7 +611,12 @@ async fn per_server_maxconn_caps_concurrency_and_answers_503() {
     let held_proxy = proxy_addr;
     let held = tokio::spawn(async move { get_body(held_proxy).await });
     eventually(
-        || backend.balancer.active_count(a.addr) == 1,
+        || {
+            backend
+                .balancer
+                .active_count(&eqproxy_net::Endpoint::Tcp(a.addr))
+                == 1
+        },
         "the first exchange in flight on the capped slot",
     )
     .await;
@@ -618,7 +641,12 @@ async fn per_server_maxconn_caps_concurrency_and_answers_503() {
         .expect("join");
     assert_eq!(body, "a");
     eventually(
-        || backend.balancer.active_count(a.addr) == 0,
+        || {
+            backend
+                .balancer
+                .active_count(&eqproxy_net::Endpoint::Tcp(a.addr))
+                == 0
+        },
         "the capped slot released at exchange end",
     )
     .await;

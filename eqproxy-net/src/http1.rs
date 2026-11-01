@@ -38,7 +38,7 @@ use tokio::io::{
 
 use eqproxy_core::Metrics;
 
-use crate::balancer::ServerMode;
+use crate::balancer::{Endpoint, ServerMode};
 use crate::cache;
 use crate::compression;
 
@@ -84,6 +84,10 @@ const CRLF: &[u8] = b"\r\n";
 const HEAD_END: &[u8] = b"\r\n\r\n";
 /// Real interim response that releases an `Expect: 100-continue` client.
 const CONTINUE: &[u8] = b"HTTP/1.1 100 Continue\r\n\r\n";
+/// Product banner for every dataplane response. No version: the build number
+/// is an oracle for known CVEs and no operator migrates a proxy because of its
+/// patch level.
+pub(crate) const SERVER_HEADER: &str = "Server: eqproxy";
 /// Interim responses accepted before the final one (bounded, never an
 /// endless 1xx stream).
 const MAX_INTERIM_RESPONSES: u32 = 8;
@@ -1110,14 +1114,79 @@ pub(crate) async fn read_head<R: AsyncRead + Unpin>(
 }
 
 async fn write_error<W: AsyncWrite + Unpin>(writer: &mut W, status: u16, reason: &str) {
-    let response =
-        format!("HTTP/1.1 {status} {reason}\r\nconnection: close\r\ncontent-length: 0\r\n\r\n");
+    let date = crate::date::current_http_date();
+    let response = format!(
+        "HTTP/1.1 {status} {reason}\r\n{SERVER_HEADER}\r\ndate: {date}\r\nconnection: close\r\ncontent-length: 0\r\n\r\n"
+    );
     let _ = tokio::time::timeout(
         Duration::from_secs(5),
         writer.write_all(response.as_bytes()),
     )
     .await;
     let _ = tokio::time::timeout(Duration::from_secs(5), writer.shutdown()).await;
+}
+
+/// Writes one resolved custom error page (ADR-0045): the page's status,
+/// content type and payload, then closes the connection like every other
+/// locally generated error. `include_body` is `false` for a `HEAD` request.
+async fn write_page<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    page: &crate::error_pages::ErrorPage,
+    fired: u16,
+    include_body: bool,
+) {
+    // A page may answer several codes and keep each one (the nginx default);
+    // an explicit `status` (or a raw file's status line) overrides it.
+    let status = page.status.unwrap_or(fired);
+    let date = crate::date::current_http_date();
+    // `errorloc` (B-H16): a redirect is a head with no body. `Location` is
+    // static and control-free (validated at load), so it is written verbatim.
+    if let Some(location) = &page.location {
+        let response = format!(
+            "HTTP/1.1 {} {}\r\n{SERVER_HEADER}\r\ndate: {date}\r\nconnection: close\r\nlocation: {}\r\ncontent-length: 0\r\n\r\n",
+            status,
+            phrase(status),
+            location
+        );
+        let _ = tokio::time::timeout(
+            Duration::from_secs(5),
+            writer.write_all(response.as_bytes()),
+        )
+        .await;
+        let _ = tokio::time::timeout(Duration::from_secs(5), writer.shutdown()).await;
+        return;
+    }
+    let mut response = format!(
+        "HTTP/1.1 {} {}\r\n{SERVER_HEADER}\r\ndate: {date}\r\nconnection: close\r\ncontent-type: {}\r\ncontent-length: {}\r\n\r\n",
+        status,
+        phrase(status),
+        page.content_type,
+        page.body.len()
+    )
+    .into_bytes();
+    if include_body {
+        response.extend_from_slice(&page.body);
+    }
+    let _ = tokio::time::timeout(Duration::from_secs(5), writer.write_all(&response)).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), writer.shutdown()).await;
+}
+
+/// A locally generated status: the configured page when one covers the code,
+/// else the built-in minimal error. Counted either way the page is served.
+async fn write_local<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    cfg: &ResolvedListener,
+    metrics: &Metrics,
+    status: u16,
+    reason: &str,
+    head_only: bool,
+) {
+    if let Some(page) = cfg.error_pages.page_for(status) {
+        metrics.error_pages_served.fetch_add(1, Ordering::Relaxed);
+        write_page(writer, page, status, !head_only).await;
+        return;
+    }
+    write_error(writer, status, reason).await;
 }
 
 /// Short reason phrase for a locally generated status (C9 + v0.6
@@ -1156,13 +1225,22 @@ async fn write_no_server<W: AsyncWrite + Unpin>(
     metrics: &Metrics,
     status: u16,
     reason: &str,
+    head_only: bool,
 ) {
+    // A configured page for this code wins over the single `local_response`
+    // (C9): pages are per status, the legacy knob is one class.
+    if let Some(page) = cfg.error_pages.page_for(status) {
+        metrics.error_pages_served.fetch_add(1, Ordering::Relaxed);
+        write_page(writer, page, status, !head_only).await;
+        return;
+    }
     if let Some(local) = &cfg.local_response {
         metrics
             .local_responses_served
             .fetch_add(1, Ordering::Relaxed);
+        let date = crate::date::current_http_date();
         let response = format!(
-            "HTTP/1.1 {} {}\r\nconnection: close\r\ncontent-type: {}\r\ncontent-length: {}\r\n\r\n{}",
+            "HTTP/1.1 {} {}\r\n{SERVER_HEADER}\r\ndate: {date}\r\nconnection: close\r\ncontent-type: {}\r\ncontent-length: {}\r\n\r\n{}",
             local.status,
             phrase(local.status),
             local.content_type,
@@ -1207,8 +1285,9 @@ async fn write_rule_response<W: AsyncWrite + Unpin>(
     extra_headers: &[String],
     close: bool,
 ) {
+    let date = crate::date::current_http_date();
     let mut response = format!(
-        "HTTP/1.1 {status} {}\r\nconnection: {}\r\n",
+        "HTTP/1.1 {status} {}\r\n{SERVER_HEADER}\r\ndate: {date}\r\nconnection: {}\r\n",
         phrase(status),
         if close { "close" } else { "keep-alive" }
     );
@@ -1218,6 +1297,14 @@ async fn write_rule_response<W: AsyncWrite + Unpin>(
         response.push_str("\r\n");
     }
     for line in extra_headers {
+        // The banner is already in this head; a configured
+        // `response_headers` server entry must not add a second line.
+        if line.split_once(':').is_some_and(|(name, _)| {
+            let name = name.trim();
+            name.eq_ignore_ascii_case("server") || name.eq_ignore_ascii_case("date")
+        }) {
+            continue;
+        }
         response.push_str(line);
         response.push_str("\r\n");
     }
@@ -1239,12 +1326,16 @@ async fn write_rule_response<W: AsyncWrite + Unpin>(
 /// replaces the request and the connection closes (the request body was
 /// never read, so the stream cannot stay aligned).
 async fn write_deny<W: AsyncWrite + Unpin>(writer: &mut W, deny: &crate::auth::DenyResponse) {
+    let date = crate::date::current_http_date();
     let mut response = format!(
-        "HTTP/1.1 {} {}\r\nconnection: close\r\n",
+        "HTTP/1.1 {} {}\r\n{SERVER_HEADER}\r\ndate: {date}\r\nconnection: close\r\n",
         deny.status,
         phrase(deny.status)
     );
     for (name, value) in &deny.headers {
+        if name.eq_ignore_ascii_case("server") || name.eq_ignore_ascii_case("date") {
+            continue;
+        }
         response.push_str(name);
         response.push_str(": ");
         response.push_str(value);
@@ -1682,6 +1773,10 @@ pub(crate) fn apply_plugin_headers(
 
 /// Appends the rendered `response` header actions to the response head
 /// the client sees (B-N4/B-I4/B-E17).
+///
+/// `Date` is never taken from a rule: a proxied response keeps the origin's
+/// value and a generated one gets its own, so a configured `response_headers`
+/// entry cannot forge it or add a second line (SPEC §13.17).
 fn append_response_headers(head: &[u8], lines: &[String]) -> Vec<u8> {
     let mut split: Vec<Vec<u8>> = Vec::new();
     let mut rest = head;
@@ -1691,9 +1786,43 @@ fn append_response_headers(head: &[u8], lines: &[String]) -> Vec<u8> {
     }
     split.push(rest.to_vec());
     for line in lines {
+        if line
+            .split_once(':')
+            .is_some_and(|(name, _)| name.trim().eq_ignore_ascii_case("date"))
+        {
+            continue;
+        }
         split.push(line.as_bytes().to_vec());
     }
     join_head_lines(&split, head.len() + lines.len() * 32)
+}
+
+/// Replaces the `Server` header of an assembled head with [`SERVER_HEADER`],
+/// right after the status line. Case-insensitive: the origin may have sent
+/// `server: nginx/1.24.0`, a rule may have appended another one, and a cached
+/// entry may predate this policy. Every other line is preserved byte for byte,
+/// so the origin's framing is never touched.
+pub(crate) fn with_server_header(head: &[u8]) -> Vec<u8> {
+    let mut lines: Vec<&[u8]> = Vec::new();
+    let mut rest = head;
+    while let Some(pos) = rest.windows(2).position(|w| w == CRLF) {
+        lines.push(&rest[..pos]);
+        rest = &rest[pos + 2..];
+    }
+    lines.push(rest);
+    if lines[0].is_empty() {
+        return head.to_vec();
+    }
+    let mut out: Vec<Vec<u8>> = Vec::with_capacity(lines.len() + 1);
+    out.push(lines[0].to_vec());
+    out.push(SERVER_HEADER.as_bytes().to_vec());
+    for line in &lines[1..] {
+        let name_end = line.iter().position(|&b| b == b':').unwrap_or(line.len());
+        if !line[..name_end].eq_ignore_ascii_case(b"server") {
+            out.push(line.to_vec());
+        }
+    }
+    join_head_lines(&out, head.len() + SERVER_HEADER.len() + 2)
 }
 
 /// First value of a lower-cased request header, for the access log only.
@@ -2066,6 +2195,7 @@ async fn serve_cached<CW: AsyncWrite + Unpin>(
             record.bytes(bytes);
         }
     }
+    head = with_server_header(&head);
     metrics
         .http_requests_proxied
         .fetch_add(1, Ordering::Relaxed);
@@ -2118,7 +2248,7 @@ fn finish_exchange(
     metrics: &Metrics,
     listener: &str,
     backend: &ResolvedBackend,
-    served_addr: SocketAddr,
+    served_addr: &Endpoint,
     route_name: Option<&str>,
     maintenance: bool,
     status: u16,
@@ -2127,7 +2257,7 @@ fn finish_exchange(
     resp_close: bool,
     clean_boundary: bool,
     backend_alive: bool,
-    conn_addr: SocketAddr,
+    conn_addr: &Endpoint,
     backend_read: BufReader<BoxRead>,
     backend_write: BoxWrite,
 ) -> bool {
@@ -2239,7 +2369,15 @@ pub async fn serve_http<CR, CW>(
                     if first_exchange {
                         metrics.header_timeouts.fetch_add(1, Ordering::Relaxed);
                         log_unparsed(cfg, peer, protocol, 408);
-                        write_error(&mut client_write, 408, "request timeout").await;
+                        write_local(
+                            &mut client_write,
+                            cfg,
+                            &metrics,
+                            408,
+                            "request timeout",
+                            false,
+                        )
+                        .await;
                     } else {
                         // An idle keep-alive close is normal traffic: counted as
                         // inactivity, never as a client protocol failure.
@@ -2252,7 +2390,15 @@ pub async fn serve_http<CR, CW>(
                         .http_requests_rejected
                         .fetch_add(1, Ordering::Relaxed);
                     log_unparsed(cfg, peer, protocol, 431);
-                    write_error(&mut client_write, 431, "request header fields too large").await;
+                    write_local(
+                        &mut client_write,
+                        cfg,
+                        &metrics,
+                        431,
+                        "request header fields too large",
+                        false,
+                    )
+                    .await;
                     return;
                 }
                 Err(HeadError::Io) => return,
@@ -2271,10 +2417,21 @@ pub async fn serve_http<CR, CW>(
                     .http_requests_rejected
                     .fetch_add(1, Ordering::Relaxed);
                 log_unparsed(cfg, peer, protocol, reject.status);
-                write_error(&mut client_write, reject.status, reject.reason).await;
+                write_local(
+                    &mut client_write,
+                    cfg,
+                    &metrics,
+                    reject.status,
+                    reject.reason,
+                    false,
+                )
+                .await;
                 return;
             }
         };
+        // A HEAD request gets the page's head (status, type, length) and no
+        // payload, exactly like a forwarded HEAD. Known from here on.
+        let head_only = request.method == "HEAD";
 
         // Access log (ADR-0020): one record per parsed request. Every terminal
         // path below sets what it knows; dropping the record stamps the
@@ -2325,7 +2482,15 @@ pub async fn serve_http<CR, CW>(
             if let Some(record) = access.as_mut() {
                 record.status(429);
             }
-            write_error(&mut client_write, 429, "too many requests").await;
+            write_local(
+                &mut client_write,
+                cfg,
+                &metrics,
+                429,
+                "too many requests",
+                head_only,
+            )
+            .await;
             return;
         }
         // Authentication (B-N9/B-I9): Basic first (local), then the
@@ -2505,7 +2670,15 @@ pub async fn serve_http<CR, CW>(
                     if let Some(record) = access.as_mut() {
                         record.status(status);
                     }
-                    write_error(&mut client_write, status, "denied by plugin").await;
+                    write_local(
+                        &mut client_write,
+                        cfg,
+                        &metrics,
+                        status,
+                        "denied by plugin",
+                        head_only,
+                    )
+                    .await;
                     return;
                 }
                 crate::plugin::PluginOutcome::Failed { .. } => {
@@ -2514,7 +2687,15 @@ pub async fn serve_http<CR, CW>(
                         if let Some(record) = access.as_mut() {
                             record.status(503);
                         }
-                        write_error(&mut client_write, 503, "plugin failure").await;
+                        write_local(
+                            &mut client_write,
+                            cfg,
+                            &metrics,
+                            503,
+                            "plugin failure",
+                            head_only,
+                        )
+                        .await;
                         return;
                     }
                     // `open`: forward the request unchanged, never a partial
@@ -2550,7 +2731,15 @@ pub async fn serve_http<CR, CW>(
                     if let Some(record) = access.as_mut() {
                         record.status(503);
                     }
-                    write_error(&mut client_write, 503, "plugin failure").await;
+                    write_local(
+                        &mut client_write,
+                        cfg,
+                        &metrics,
+                        503,
+                        "plugin failure",
+                        head_only,
+                    )
+                    .await;
                     return;
                 }
                 forwarded_base
@@ -2629,7 +2818,15 @@ pub async fn serve_http<CR, CW>(
                 record.status(413);
                 record.bytes(0);
             }
-            write_error(&mut client_write, 413, "request body too large").await;
+            write_local(
+                &mut client_write,
+                cfg,
+                &metrics,
+                413,
+                "request body too large",
+                head_only,
+            )
+            .await;
             return;
         }
 
@@ -2760,7 +2957,15 @@ pub async fn serve_http<CR, CW>(
                             .map_or(503, |local| local.status),
                     );
                 }
-                write_no_server(&mut client_write, cfg, &metrics, 503, "service unavailable").await;
+                write_no_server(
+                    &mut client_write,
+                    cfg,
+                    &metrics,
+                    503,
+                    "service unavailable",
+                    head_only,
+                )
+                .await;
                 return;
             }
             Err(OutboundError::QueueFull) | Err(OutboundError::QueueTimeout) => {
@@ -2772,20 +2977,36 @@ pub async fn serve_http<CR, CW>(
                             .map_or(503, |local| local.status),
                     );
                 }
-                write_no_server(&mut client_write, cfg, &metrics, 503, "service unavailable").await;
+                write_no_server(
+                    &mut client_write,
+                    cfg,
+                    &metrics,
+                    503,
+                    "service unavailable",
+                    head_only,
+                )
+                .await;
                 return;
             }
             Err(OutboundError::Connect) => {
                 if let Some(record) = access.as_mut() {
                     record.status(502);
                 }
-                write_error(&mut client_write, 502, "bad gateway").await;
+                write_local(
+                    &mut client_write,
+                    cfg,
+                    &metrics,
+                    502,
+                    "bad gateway",
+                    head_only,
+                )
+                .await;
                 return;
             }
         };
-        let served_addr = conn.addr;
+        let served_addr = conn.addr.clone();
         if let Some(record) = access.as_mut() {
-            record.backend(&backend.name, served_addr);
+            record.backend(&backend.name, &served_addr);
         }
         // An HTTP/2 exchange owns one stream: its pipe is single-use and is
         // dropped here, never checked back in (the h2 session is shared
@@ -2808,7 +3029,15 @@ pub async fn serve_http<CR, CW>(
             if let Some(record) = access.as_mut() {
                 record.status(502);
             }
-            write_error(&mut client_write, 502, "bad gateway").await;
+            write_local(
+                &mut client_write,
+                cfg,
+                &metrics,
+                502,
+                "bad gateway",
+                head_only,
+            )
+            .await;
             return;
         }
 
@@ -2901,7 +3130,15 @@ pub async fn serve_http<CR, CW>(
                 if let Some(record) = access.as_mut() {
                     record.status(504);
                 }
-                write_error(&mut client_write, 504, "gateway timeout").await;
+                write_local(
+                    &mut client_write,
+                    cfg,
+                    &metrics,
+                    504,
+                    "gateway timeout",
+                    head_only,
+                )
+                .await;
                 return;
             }
         };
@@ -2914,7 +3151,15 @@ pub async fn serve_http<CR, CW>(
                 if let Some(record) = access.as_mut() {
                     record.status(reject.status);
                 }
-                write_error(&mut client_write, reject.status, reject.reason).await;
+                write_local(
+                    &mut client_write,
+                    cfg,
+                    &metrics,
+                    reject.status,
+                    reject.reason,
+                    head_only,
+                )
+                .await;
                 return;
             }
             Err(CopyError::Truncated) => {
@@ -2924,7 +3169,15 @@ pub async fn serve_http<CR, CW>(
                 if let Some(record) = access.as_mut() {
                     record.status(400);
                 }
-                write_error(&mut client_write, 400, "truncated request body").await;
+                write_local(
+                    &mut client_write,
+                    cfg,
+                    &metrics,
+                    400,
+                    "truncated request body",
+                    head_only,
+                )
+                .await;
                 return;
             }
             Err(CopyError::TooLarge) => {
@@ -2937,7 +3190,15 @@ pub async fn serve_http<CR, CW>(
                 if let Some(record) = access.as_mut() {
                     record.status(413);
                 }
-                write_error(&mut client_write, 413, "request body too large").await;
+                write_local(
+                    &mut client_write,
+                    cfg,
+                    &metrics,
+                    413,
+                    "request body too large",
+                    head_only,
+                )
+                .await;
                 return;
             }
             Err(CopyError::Idle) => return,
@@ -3004,14 +3265,30 @@ pub async fn serve_http<CR, CW>(
                     if let Some(record) = access.as_mut() {
                         record.status(504);
                     }
-                    write_error(&mut client_write, 504, "gateway timeout").await;
+                    write_local(
+                        &mut client_write,
+                        cfg,
+                        &metrics,
+                        504,
+                        "gateway timeout",
+                        head_only,
+                    )
+                    .await;
                     return;
                 }
                 Err(_) => {
                     if let Some(record) = access.as_mut() {
                         record.status(502);
                     }
-                    write_error(&mut client_write, 502, "bad gateway").await;
+                    write_local(
+                        &mut client_write,
+                        cfg,
+                        &metrics,
+                        502,
+                        "bad gateway",
+                        head_only,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -3035,7 +3312,15 @@ pub async fn serve_http<CR, CW>(
                     if let Some(record) = access.as_mut() {
                         record.status(reject.status);
                     }
-                    write_error(&mut client_write, reject.status, reject.reason).await;
+                    write_local(
+                        &mut client_write,
+                        cfg,
+                        &metrics,
+                        reject.status,
+                        reject.reason,
+                        head_only,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -3095,7 +3380,15 @@ pub async fn serve_http<CR, CW>(
                 if let Some(record) = access.as_mut() {
                     record.status(502);
                 }
-                write_error(&mut client_write, 502, "bad gateway").await;
+                write_local(
+                    &mut client_write,
+                    cfg,
+                    &metrics,
+                    502,
+                    "bad gateway",
+                    head_only,
+                )
+                .await;
                 return;
             }
             interim_count += 1;
@@ -3107,7 +3400,15 @@ pub async fn serve_http<CR, CW>(
                 if let Some(record) = access.as_mut() {
                     record.status(502);
                 }
-                write_error(&mut client_write, 502, "bad gateway").await;
+                write_local(
+                    &mut client_write,
+                    cfg,
+                    &metrics,
+                    502,
+                    "bad gateway",
+                    head_only,
+                )
+                .await;
                 return;
             }
             if sent_continue && response.status == 100 {
@@ -3126,6 +3427,20 @@ pub async fn serve_http<CR, CW>(
             }
         };
 
+        // Custom error pages (ADR-0045): with `intercept`, a matching origin
+        // status is replaced by the configured page. The origin body is
+        // deliberately not read: the connection is dropped (never pooled), so
+        // a half-read response cannot desync a later exchange on it.
+        if let Some(page) = cfg.error_pages.intercept_for(response.status) {
+            metrics.error_pages_served.fetch_add(1, Ordering::Relaxed);
+            if let Some(record) = access.as_mut() {
+                record.status(page.status.unwrap_or(response.status));
+            }
+            drop((backend_read, backend_write));
+            write_page(&mut client_write, page, response.status, !head_only).await;
+            return;
+        }
+
         // A revalidated entry serves from the store: the 304 connection
         // returns to the pool under the same contract as a clean origin
         // exchange. This block diverges (`continue`/`return`), so the
@@ -3141,7 +3456,7 @@ pub async fn serve_http<CR, CW>(
             {
                 backend
                     .pool
-                    .checkin(conn.addr, backend_read, backend_write, Instant::now());
+                    .checkin(&conn.addr, backend_read, backend_write, Instant::now());
             } else {
                 drop((backend_read, backend_write));
             }
@@ -3182,7 +3497,10 @@ pub async fn serve_http<CR, CW>(
         if (response.status == 101 && request.wants_upgrade)
             || (request.method == "CONNECT" && (200..300).contains(&response.status))
         {
-            if write_with_timeout(&mut client_write, &response_head_bytes, cfg.idle_timeout)
+            // The switch head is forwarded byte for byte except for the
+            // product banner: an upgrade must not leak the origin's either.
+            let switch_head = with_server_header(&response_head_bytes);
+            if write_with_timeout(&mut client_write, &switch_head, cfg.idle_timeout)
                 .await
                 .is_err()
                 || write_with_timeout(&mut client_write, HEAD_END, cfg.idle_timeout)
@@ -3220,7 +3538,7 @@ pub async fn serve_http<CR, CW>(
                 .balancer
                 // Stable slot index (B-H13): a re-resolution must not
                 // change the cookie's meaning.
-                .slot_of(served_addr)
+                .slot_of(&served_addr)
                 .map(|idx| idx.to_string())
             && Some(&token) != affinity_cookie.as_ref()
         {
@@ -3237,6 +3555,10 @@ pub async fn serve_http<CR, CW>(
         } else {
             append_response_headers(&response_head_bytes, &response_lines)
         };
+        // Product banner, after every header source (origin, rule actions,
+        // sticky cookie, CORS): exactly one `Server: eqproxy`, never the
+        // origin's value and never a version.
+        response_head_bytes = with_server_header(&response_head_bytes);
         // Response compression (B-N6/H6): the decision happens once, before a
         // byte of the head is sent, so nothing has to be unwound later. The
         // backend framing is untouched; only the client's view is rewritten.
@@ -3411,7 +3733,15 @@ pub async fn serve_http<CR, CW>(
                         if let Some(record) = access.as_mut() {
                             record.status(504);
                         }
-                        write_error(&mut client_write, 504, "gateway timeout").await;
+                        write_local(
+                            &mut client_write,
+                            cfg,
+                            &metrics,
+                            504,
+                            "gateway timeout",
+                            head_only,
+                        )
+                        .await;
                     }
                     return;
                 }
@@ -3453,7 +3783,7 @@ pub async fn serve_http<CR, CW>(
                 &metrics,
                 &cfg.name,
                 backend,
-                served_addr,
+                &served_addr,
                 route_name,
                 active.mode() == ServerMode::Maintenance,
                 response.status,
@@ -3462,7 +3792,7 @@ pub async fn serve_http<CR, CW>(
                 response.wants_close,
                 clean_boundary,
                 backend_alive,
-                conn.addr,
+                &conn.addr,
                 backend_read,
                 backend_write,
             ) {
@@ -3547,7 +3877,15 @@ pub async fn serve_http<CR, CW>(
                     if let Some(record) = access.as_mut() {
                         record.status(504);
                     }
-                    write_error(&mut client_write, 504, "gateway timeout").await;
+                    write_local(
+                        &mut client_write,
+                        cfg,
+                        &metrics,
+                        504,
+                        "gateway timeout",
+                        head_only,
+                    )
+                    .await;
                 }
                 return;
             }
@@ -3559,7 +3897,15 @@ pub async fn serve_http<CR, CW>(
                 if let Some(record) = access.as_mut() {
                     record.status(reject.status);
                 }
-                write_error(&mut client_write, reject.status, reject.reason).await;
+                write_local(
+                    &mut client_write,
+                    cfg,
+                    &metrics,
+                    reject.status,
+                    reject.reason,
+                    head_only,
+                )
+                .await;
                 return;
             }
             Err(_) => return,
@@ -3575,7 +3921,7 @@ pub async fn serve_http<CR, CW>(
             &metrics,
             &cfg.name,
             backend,
-            served_addr,
+            &served_addr,
             route_name,
             active.mode() == ServerMode::Maintenance,
             response.status,
@@ -3584,7 +3930,7 @@ pub async fn serve_http<CR, CW>(
             response.wants_close,
             clean_boundary,
             backend_alive,
-            conn.addr,
+            &conn.addr,
             backend_read,
             backend_write,
         ) {
@@ -3600,6 +3946,113 @@ mod tests {
 
     fn req(head: &str) -> Result<RequestHead, Reject> {
         parse_request_head(head.as_bytes(), HeadLimits::default())
+    }
+
+    #[test]
+    fn server_header_replaces_the_origin_value_without_a_version() {
+        let head = b"HTTP/1.1 200 OK\r\nServer: nginx/1.24.0\r\ncontent-type: text/plain";
+        let stamped = with_server_header(head);
+        assert_eq!(
+            stamped,
+            b"HTTP/1.1 200 OK\r\nServer: eqproxy\r\ncontent-type: text/plain".to_vec()
+        );
+        // Idempotent and case-insensitive: the second pass changes nothing.
+        assert_eq!(with_server_header(&stamped), stamped);
+        let mixed_case = with_server_header(b"HTTP/1.1 200 OK\r\nserver: Apache/2.4");
+        assert_eq!(mixed_case, b"HTTP/1.1 200 OK\r\nServer: eqproxy".to_vec());
+        // A head that carried none gets exactly one, after the status line.
+        let added = with_server_header(b"HTTP/1.1 204 No Content");
+        assert_eq!(
+            added,
+            b"HTTP/1.1 204 No Content\r\nServer: eqproxy".to_vec()
+        );
+    }
+
+    #[test]
+    fn response_header_actions_cannot_forge_date() {
+        // SPEC §13.17: a proxied response keeps the origin's Date and is never
+        // given a second one; a rule that sets Date cannot forge it.
+        let head = b"HTTP/1.1 200 OK\r\ndate: Sun, 06 Nov 1994 08:49:37 GMT\r\ncontent-length: 0";
+        let with_rule = append_response_headers(
+            head,
+            &["date: forged-value".to_owned(), "x-marker: v".to_owned()],
+        );
+        let text = String::from_utf8(with_rule).expect("ascii head");
+        assert_eq!(
+            text.to_ascii_lowercase().matches("date:").count(),
+            1,
+            "{text:?}"
+        );
+        assert!(text.contains("Sun, 06 Nov 1994 08:49:37 GMT"), "{text:?}");
+        assert!(!text.contains("forged-value"), "{text:?}");
+        assert!(text.contains("x-marker: v"), "{text:?}");
+    }
+
+    #[test]
+    fn response_header_actions_cannot_add_a_second_banner() {
+        // The proxied path appends rule `response_headers` and then normalizes:
+        // a rule that sets `Server` must not end up with two lines.
+        let head = b"HTTP/1.1 200 OK\r\ncontent-length: 0";
+        let with_rule = append_response_headers(
+            head,
+            &[
+                "server: configured-value".to_owned(),
+                "x-marker: v".to_owned(),
+            ],
+        );
+        let stamped = with_server_header(&with_rule);
+        let text = String::from_utf8(stamped).expect("ascii head");
+        assert_eq!(text.matches("Server: eqproxy").count(), 1, "{text:?}");
+        assert!(
+            !text.to_ascii_lowercase().contains("configured-value"),
+            "{text:?}"
+        );
+        assert!(text.contains("x-marker: v"), "{text:?}");
+    }
+
+    #[tokio::test]
+    async fn local_error_carries_the_product_server_header() {
+        let mut out = Vec::new();
+        write_error(&mut out, 502, "bad gateway").await;
+        let text = String::from_utf8(out).expect("ascii head");
+        assert!(text.starts_with("HTTP/1.1 502 bad gateway\r\n"), "{text:?}");
+        assert_eq!(text.matches("Server: eqproxy").count(), 1, "{text:?}");
+        let dates: Vec<_> = text
+            .lines()
+            .filter(|line| line.to_ascii_lowercase().starts_with("date:"))
+            .collect();
+        assert_eq!(dates.len(), 1, "{text:?}");
+        assert_eq!(dates[0].len(), "date: Thu, 01 Jan 1970 00:00:00 GMT".len());
+        assert!(dates[0].ends_with(" GMT"), "{text:?}");
+    }
+
+    #[tokio::test]
+    async fn rule_response_carries_the_product_server_header() {
+        let mut out = Vec::new();
+        write_rule_response(
+            &mut out,
+            302,
+            Some("https://elsewhere.test/"),
+            Some("text/plain"),
+            "moved",
+            // A configured response header with the same name must not add a
+            // second line: the product banner and the generated Date win.
+            &[
+                "server: configured-value".to_owned(),
+                "date: forged-value".to_owned(),
+            ],
+            true,
+        )
+        .await;
+        let text = String::from_utf8(out).expect("ascii head");
+        assert!(text.starts_with("HTTP/1.1 302 found\r\n"), "{text:?}");
+        assert_eq!(text.matches("Server: eqproxy").count(), 1, "{text:?}");
+        assert_eq!(
+            text.to_ascii_lowercase().matches("date:").count(),
+            1,
+            "{text:?}"
+        );
+        assert!(!text.contains("forged-value"), "{text:?}");
     }
 
     #[test]

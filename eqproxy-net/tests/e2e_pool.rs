@@ -323,9 +323,11 @@ async fn close_request_is_never_pooled() {
             .await
             .expect("response on time")
             .expect("read");
+        // Exact bytes: the origin's `Content-Length: 2` framing untouched,
+        // plus the product banner every dataplane response now carries.
         assert_eq!(
             String::from_utf8_lossy(&response),
-            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+            "HTTP/1.1 200 OK\r\nServer: eqproxy\r\nContent-Length: 2\r\n\r\nok",
             "a close-request exchange must be answered, never 502"
         );
     }

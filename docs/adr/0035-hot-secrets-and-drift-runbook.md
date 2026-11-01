@@ -4,11 +4,11 @@ Language: **English**.
 
 - State: **Accepted** (2026-10-30, roadmap v0.8.5)
 - Date: 2026-10-30
-- Related: [ADR-0011](0011-tls-and-certificates.md) (TLS stack),
+- Related: [SPEC §7.5](../../SPEC.md) (TLS stack),
   [ADR-0019](0019-hot-config-writes-via-admin-api.md) (single writer),
   [ADR-0025](0025-certificate-renewal-without-restart.md) (renewal in place),
   [ADR-0027](0027-xds-bridge-decision.md) (no xDS client),
-  [SPEC §9](../SPEC.md), [THREAT_MODEL.md](../../THREAT_MODEL.md) (T10)
+  [SPEC §9](../../SPEC.md), [THREAT_MODEL.md](../../THREAT_MODEL.md) (T10)
 
 ## Context
 

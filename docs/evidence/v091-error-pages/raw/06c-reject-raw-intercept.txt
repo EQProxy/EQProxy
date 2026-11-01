@@ -1,0 +1,20 @@
+
+===== config =====
+schema_version = 1
+[backend.app]
+server = "127.0.0.1:9000"
+[listener.web]
+listen = "127.0.0.1:18080"
+mode = "http"
+backend = "app"
+[[listener.web.error_pages]]
+codes = [502]
+file = "502.http"
+format = "raw"
+intercept = true
+
+===== eqproxy config validate =====
+configuration error in /tmp/eqproxy-v091-errors.YkzOCD/raw-intercept.toml:4 — field `listener.web.error_pages[0].intercept`: intercept is not allowed on a raw page: its status line is fixed
+  example: remove intercept, or use format = "body"
+invalid config: 1 error(s) in /tmp/eqproxy-v091-errors.YkzOCD/raw-intercept.toml
+exit: 1

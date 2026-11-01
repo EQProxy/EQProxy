@@ -1,0 +1,12 @@
+configuration error in /tmp/eqproxy-v091-tls.7VcUON/inverted.toml:3 — field `listener.web.tls.max_version`: max_version = "1.2" is lower than min_version = "1.3": no TLS version could be negotiated
+  example: max_version = "1.3" (or remove it)
+invalid config: 1 error(s) in /tmp/eqproxy-v091-tls.7VcUON/inverted.toml
+
+===== inverted: validate exit 1 =====
+exit: 1
+configuration error in /tmp/eqproxy-v091-tls.7VcUON/quic-cap.toml:3 — field `listener.web.tls.max_version`: quic = true needs TLS 1.3, but tls.max_version = "1.2" caps the listener at 1.2
+  example: tls.max_version = "1.3" (or remove it), or quic = false
+invalid config: 1 error(s) in /tmp/eqproxy-v091-tls.7VcUON/quic-cap.toml
+
+===== quic-cap: validate exit 1 =====
+exit: 1

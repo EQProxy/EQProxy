@@ -30,6 +30,8 @@ use eqproxy_net::{
     BoundProxy, ProxyMode, ResolvedBackend, ResolvedListener, ResolvedServer, ServerAddr, bind,
 };
 
+mod common;
+
 const WAIT: Duration = Duration::from_secs(10);
 const CERT: &[u8] = include_bytes!("fixtures/cert.pem");
 const KEY: &[u8] = include_bytes!("fixtures/key.pem");
@@ -156,6 +158,10 @@ async fn serve_stream(
     response
         .headers_mut()
         .insert("content-type", HeaderValue::from_static("application/grpc"));
+    // A versioned origin banner the pass-through must replace.
+    response
+        .headers_mut()
+        .insert("server", HeaderValue::from_static("grpc-origin/1.0"));
     let Ok(mut send) = respond.send_response(response, false) else {
         inflight.fetch_sub(1, Ordering::SeqCst);
         return;
@@ -487,6 +493,7 @@ async fn a_backup_serves_grpc_streams_when_every_primary_is_down() {
             vec![
                 ResolvedServer {
                     addr: ServerAddr::Ip(primary.addr),
+                    source: None,
                     weight: 1,
                     backup: false,
                     priority: 0,
@@ -494,6 +501,7 @@ async fn a_backup_serves_grpc_streams_when_every_primary_is_down() {
                 },
                 ResolvedServer {
                     addr: ServerAddr::Ip(backup.addr),
+                    source: None,
                     weight: 1,
                     backup: true,
                     priority: 0,
@@ -539,7 +547,9 @@ async fn a_backup_serves_grpc_streams_when_every_primary_is_down() {
     assert!(seen(&backup).is_empty());
 
     // Every primary down: the backup origin serves the stream.
-    backend.balancer.report_fail(primary.addr);
+    backend
+        .balancer
+        .report_fail(&eqproxy_net::Endpoint::Tcp(primary.addr));
     assert_eq!(call(&mut client, b"two").await, b"two");
     assert_eq!(
         seen(&backup).len(),
@@ -553,7 +563,9 @@ async fn a_backup_serves_grpc_streams_when_every_primary_is_down() {
     );
 
     // The recovered primary takes it back.
-    backend.balancer.report_ok(primary.addr);
+    backend
+        .balancer
+        .report_ok(&eqproxy_net::Endpoint::Tcp(primary.addr));
     assert_eq!(call(&mut client, b"three").await, b"three");
     assert_eq!(seen(&primary).len(), 2);
     stop_proxy(handle, serve).await;
@@ -643,6 +655,15 @@ async fn grpc_forwarded_headers_cross_the_pass_through() {
         response.status(),
         StatusCode::OK,
         "local answer: headers {:?}",
+        response.headers()
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("server")
+            .map(|value| value.as_bytes()),
+        Some(&b"eqproxy"[..]),
+        "the gRPC pass-through carries the product banner, not grpc-origin/1.0: {:?}",
         response.headers()
     );
     let mut recv = response.into_body();
@@ -759,6 +780,13 @@ async fn grpc_dead_backend_is_an_explicit_502() {
         .expect("answer in time")
         .expect("502 response");
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let date = response
+        .headers()
+        .get("date")
+        .expect("a local gRPC 502 carries Date")
+        .to_str()
+        .expect("Date is ASCII");
+    common::assert_http_date(date);
     assert!(
         metrics.connect_failures.load(Ordering::SeqCst) >= 1,
         "the failed dial must be counted"

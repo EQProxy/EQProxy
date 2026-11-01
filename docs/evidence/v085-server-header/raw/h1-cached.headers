@@ -1,0 +1,8 @@
+HTTP/1.1 200 OK
+Server: eqproxy
+content-type: text/plain
+cache-control: max-age=60
+content-length: 12
+x-cache: HIT
+age: 0
+

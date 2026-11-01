@@ -1,0 +1,15 @@
+--- control: the origin's own banner ---
+--- HTTP/1.1 proxied ---
+h1 proxied: HTTP/1.0 200 OK + Server: eqproxy
+--- HTTP/1.1 cached hit ---
+h1 cached: x-cache: HIT + Server: eqproxy
+--- local direct_response ---
+direct: HTTP/1.1 200 ok + Server: eqproxy
+--- HTTP/2 (h2c prior knowledge) ---
+h2: HTTP/2 200  + server: eqproxy
+--- origin down: local 502 ---
+status=502
+502: HTTP/1.1 502 bad gateway + Server: eqproxy
+--- origin down, cached entry still served ---
+offline cached: x-cache: HIT + Server: eqproxy
+OK

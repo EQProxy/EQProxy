@@ -8,8 +8,8 @@ Language: **English**.
 - Related: [ADR-0018](0018-first-write-path-server-state.md) (the state this
   extends), [ADR-0024](0024-drain-observability.md) (the finished-drain event
   this reuses the shape of), [ADR-0029](0029-panel-sessions-and-csrf.md) (the
-  panel that offers the state), [SPEC §9](../SPEC.md),
-  [PARITY_MATRIX.md](../../PARITY_MATRIX.md),
+  panel that offers the state), [SPEC §9](../../SPEC.md),
+  PARITY_MATRIX.md (local-only: `../../PARITY_MATRIX.md`),
   [evidence](../evidence/v08-maintenance.md)
 
 ## Context

@@ -4,8 +4,9 @@ Language: **English**.
 
 - State: **Accepted** (2026-10-28, roadmap v0.8.5 audit debt)
 - Date: 2026-10-28
-- Related: [roadmap v0.8.5, §3](../../ROADMAP%20EQPROXY/ROADMAP/Roadmap%200.8.5.md)
-  (the debt this closes), [v085-audit-tools-decision](../evidence/v085-audit-tools-decision.md)
+- Related: roadmap v0.8.5, §3 (local-only:
+  `../../ROADMAP EQPROXY/ROADMAP/Roadmap 0.8.5.md`) (the debt this closes),
+  [v085-audit-tools-decision](../evidence/v085-audit-tools-decision.md)
   (commands and raw output), [v08-health-probe-robust](../evidence/v08-health-probe-robust.md)
   §5/§7 (where the three entries were first recorded),
   [ADR-0004](0004-network-stack-and-crate-layout.md) (workspace layout),

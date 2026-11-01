@@ -8,7 +8,7 @@ Language: **English**.
   [ADR-0018](0018-first-write-path-server-state.md) (first write),
   [ADR-0019](0019-hot-config-writes-via-admin-api.md) (hot configuration),
   [ADR-0022](0022-admin-socket-group-and-peer-uid.md) (group mode and uid
-  allowlist), [SPEC §9](../SPEC.md),
+  allowlist), [SPEC §9](../../SPEC.md),
   [THREAT_MODEL.md](../../THREAT_MODEL.md)
 
 ## Context

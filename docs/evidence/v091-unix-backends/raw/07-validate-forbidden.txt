@@ -1,0 +1,19 @@
+
+===== config =====
+schema_version = 1
+
+[backend.app]
+tls = { verify = false }
+proxy_protocol = "v1"
+servers = [{ addr = "unix:/tmp/eqproxy-v091-unix.orfB6k/app.sock", source = "10.0.0.5" }]
+
+===== eqproxy config validate =====
+warning: no [listener.*] sections: the dataplane will not accept connections
+configuration error in /tmp/eqproxy-v091-unix.orfB6k/forbidden.toml:3 — field `backend.app.proxy_protocol`: proxy_protocol cannot be sent to a Unix socket backend: there is no peer address to announce
+  example: drop `proxy_protocol` from this backend (ADR-0043)
+configuration error in /tmp/eqproxy-v091-unix.orfB6k/forbidden.toml:3 — field `backend.app.tls`: TLS does not apply to a Unix socket backend: the connection never leaves the host
+  example: drop `tls` from this backend (ADR-0043)
+configuration error in /tmp/eqproxy-v091-unix.orfB6k/forbidden.toml:3 — field `backend.app.servers[0].source`: source binds a TCP socket and cannot apply to a Unix target
+  example: drop `source` from this server, or use a TCP `addr`
+invalid config: 3 error(s) in /tmp/eqproxy-v091-unix.orfB6k/forbidden.toml
+exit: 1

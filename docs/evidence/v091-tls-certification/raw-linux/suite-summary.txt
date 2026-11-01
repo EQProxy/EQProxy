@@ -1,0 +1,6 @@
+command: docker run ... cargo test --workspace -j 2 -- --nocapture
+date: 2026-11-01T03:21:51Z
+targets=36 passed=698 failed=0 ignored=2
+uid-gated skips as root: 2 printed, 2 declared in uid-skips.txt
+ok: every uid-gated skip of the root run is declared, with its reason
+uid_check_exit=0

@@ -1,0 +1,4 @@
+binary=/Volumes/Lexar/Cursor/EQProxy/target/release/eqproxy
+5d81b436762f48b65c62bbab6786404af7041a09edc198ed2531f71d3ff2bbb8  /Volumes/Lexar/Cursor/EQProxy/target/release/eqproxy
+eqproxy 0.8.5
+origin=64890 proxy=64891

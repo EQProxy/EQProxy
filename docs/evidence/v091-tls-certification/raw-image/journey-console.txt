@@ -1,0 +1,16 @@
+
+===== 0. artifact and packaged CLI =====
+
+===== 1. startup: file, image handshake and status agree =====
+
+===== 2. a no-op renewal is honest about changed=false =====
+
+===== 3. rotate the default certificate without dropping a live connection =====
+
+===== 4. a bad candidate is rejected and the previous certificate keeps serving =====
+
+===== 5. SIGHUP rotates the SNI set inside the image =====
+
+===== 6. the renewal action keeps its permission model =====
+
+===== 7. final state =====

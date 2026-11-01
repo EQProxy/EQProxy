@@ -1,0 +1,17 @@
+
+===== POST with a cert/key mismatch =====
+{"error":"invalid_config","message":"inconsistent configuration after validation: listener.web.tls: invalid PEM private key: the private key does not match the certificate's public key: the files belong to different pairs"}
+http status: 400
+
+===== served leaf after the rejected candidate =====
+default served: 764aa4dbc7f8d7b4adcd8146a49978ddd8967e6f2a36309aba9d52d41f70002c
+status:         sha256:764aa4dbc7f8d7b4adcd8146a49978ddd8967e6f2a36309aba9d52d41f70002c
+
+===== metrics =====
+config_reloads=2
+config_reload_failures=1
+
+===== proxy log (the rejection is loud) =====
+INFO config reload applied: listeners kept=1 added=0 removed=0 in 16.542µs
+INFO config reload applied: listeners kept=1 added=0 removed=0 in 7.041µs
+ERROR config reload rejected: inconsistent configuration after validation: listener.web.tls: invalid PEM private key: the private key does not match the certificate's public key: the files belong to different pairs

@@ -946,6 +946,13 @@ async fn read_bytes<R: AsyncRead + Unpin>(
 async fn refuse(stream: &mut H3Stream, status: StatusCode) {
     let mut response = Response::new(());
     *response.status_mut() = status;
+    // The engine never sees this stream, so the product banner is set here.
+    response
+        .headers_mut()
+        .insert("server", HeaderValue::from_static("eqproxy"));
+    if let Ok(date) = HeaderValue::from_str(&crate::date::current_http_date()) {
+        response.headers_mut().insert("date", date);
+    }
     if let Ok(length) = HeaderValue::from_str("0") {
         response.headers_mut().insert("content-length", length);
     }

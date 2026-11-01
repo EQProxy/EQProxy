@@ -79,8 +79,11 @@ in the 09:38–09:55 UTC pass over this tree (log
 embedded`), and the rebuild materialised them into the fresh store from the
 embedding cache. No vector in the store predates the current sources.
 
-**Store.** Fresh `.codegraph/db` is 639 MB (the previous 2.9 GB store, whose
-compaction was stuck, is kept as `.codegraph/db.stale-20261031T101632Z`).
+**Store.** Fresh `.codegraph/db` was 639 MB at this run (the previous 2.9 GB
+store, whose compaction was stuck, was kept as
+`.codegraph/db.stale-20261031T101632Z`). That stale copy was deleted on
+2026-10-31 22:41 once the rebuilt index had been re-run and queried; the live
+store at that point measured 1.5 GB after the later reindexes.
 `.codegraph/` is git-ignored in full (`.codegraph/.gitignore` is `*`), so the
 store stays local and only this page and its transcripts are published.
 

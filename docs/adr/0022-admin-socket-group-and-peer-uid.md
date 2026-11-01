@@ -7,7 +7,7 @@ Language: **English**.
 - Related: [ADR-0021](0021-admin-unix-socket.md) (Unix socket endpoint),
   [ADR-0017](0017-read-only-admin-plane.md),
   [ADR-0018](0018-first-write-path-server-state.md),
-  [SPEC §9](../SPEC.md), [THREAT_MODEL.md](../../THREAT_MODEL.md)
+  [SPEC §9](../../SPEC.md), [THREAT_MODEL.md](../../THREAT_MODEL.md)
 
 ## Context
 

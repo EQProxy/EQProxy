@@ -314,6 +314,13 @@ pub(crate) enum StreamError {
 fn refuse(respond: &mut SendResponse<Bytes>, status: StatusCode) {
     let mut response = Response::new(());
     *response.status_mut() = status;
+    // The engine never sees this stream, so the product banner is set here.
+    response
+        .headers_mut()
+        .insert("server", http::HeaderValue::from_static("eqproxy"));
+    if let Ok(date) = http::HeaderValue::from_str(&crate::date::current_http_date()) {
+        response.headers_mut().insert("date", date);
+    }
     let _ = respond.send_response(response, true);
 }
 

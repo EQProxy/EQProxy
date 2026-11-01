@@ -1,0 +1,33 @@
+
+===== config =====
+schema_version = 1
+
+[listener.web]
+listen = "127.0.0.1:61027"
+mode = "http"
+backend = "app"
+connect_timeout = "300ms"
+
+[backend.app]
+server = "127.0.0.1:60971"
+
+[[listener.web.error_pages]]
+codes = [502]
+file = "errors/502.http"
+format = "raw"
+
+===== raw page file =====
+HTTP/1.1 502 Bad Gateway
+Content-Type: text/html; charset=utf-8
+Content-Length: 9
+
+raw-page
+
+===== GET (status, Content-Type and body come from the file) =====
+HTTP/1.1 502 bad gateway
+Server: eqproxy
+connection: close
+content-type: text/html; charset=utf-8
+content-length: 9
+
+raw-page

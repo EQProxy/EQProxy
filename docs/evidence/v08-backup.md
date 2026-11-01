@@ -5,7 +5,7 @@ Language: **English**.
 **Increment:** parity matrix **B8** — HAProxy `server … backup`, "activated
 only when primaries fail", with the primary → backup → primary transition.
 Sibling of B7 (weights), whose known-limitations column no longer points at a
-missing flag. Semantics recorded in [SPEC §7.5](../SPEC.md#75-tls-balancing-and-health-checks-phase-2b).
+missing flag. Semantics recorded in [SPEC §7.5](../../SPEC.md#75-tls-balancing-and-health-checks-phase-2b).
 
 **Binary under test:** `target/release/eqproxy`, `eqproxy 0.7.0`,
 sha256 `02d86a529c3913756f770d66ed395c345087c676d50a87e8fa5602390dd37e68`
@@ -114,7 +114,7 @@ so the expected result is unchanged): sha256
 
 The first run's own files are
 [raw/run-20261026T000510Z/eqproxy.toml](v08-backup/raw/run-20261026T000510Z/eqproxy.toml)
-and [its log](v08-backup/raw/run-20261026T000510Z/eqproxy.log). The final
+and its log (local-only: `v08-backup/raw/run-20261026T000510Z/eqproxy.log`). The final
 `METRICS` line of that log closes the journey: `accepted=112 completed=112`,
 `backend[proxied=107 connect_failures=3]`, `proxy[no_server=2]` — 40 requests
 in phase 1, 31 in phase 2 (one probe), 31 in phase 3 and 2 all-down probes,

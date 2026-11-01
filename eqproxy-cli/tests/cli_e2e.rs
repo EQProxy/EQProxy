@@ -111,6 +111,43 @@ fn validate_accepts_a_good_config() {
     );
 }
 
+/// A `raw` page file is bounded like an inline body: an oversized HAProxy
+/// `errorfile` must reject the snapshot before a listener binds, not be read
+/// into memory and served.
+#[cfg_attr(
+    miri,
+    ignore = "needs processes and the filesystem: miri does not support them (rust-lang/miri#3449)"
+)]
+#[test]
+fn run_refuses_a_raw_error_page_over_the_file_bound() {
+    let config = temp_config(
+        "oversize-page",
+        "schema_version = 1\n[listener.web]\nlisten = \"127.0.0.1:0\"\n\
+         mode = \"http\"\nbackend = \"api\"\n\
+         [[listener.web.error_pages]]\ncodes = [502]\nformat = \"raw\"\nfile = \"oversize.http\"\n\
+         [backend.api]\nserver = \"127.0.0.1:9\"\n",
+    );
+    let page = config.with_file_name("oversize.http");
+    let mut raw = b"HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\n\r\n".to_vec();
+    raw.resize(70 * 1024, b'x');
+    std::fs::write(&page, raw).expect("write oversized raw page");
+
+    let output = bin()
+        .args(["run", "--config"])
+        .arg(&config)
+        .output()
+        .expect("run eqproxy run");
+    remove_temp(&config);
+    remove_temp(&page);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
+    assert!(
+        stderr.contains("oversize.http") && stderr.contains("maximum 65536"),
+        "the oversized raw file must name its path and bound; stderr: {stderr}"
+    );
+}
+
 /// Origin that answers each request with its body, `Content-Length` framed.
 fn start_body_echo_origin() -> std::net::SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind body echo");
@@ -2196,6 +2233,117 @@ fn run_with_tls_termination_proxies_real_traffic() {
     assert!(
         echoed.contains("ping"),
         "the TLS echo must come back intact; stdout: {echoed}"
+    );
+    wait_for_sigint_shutdown(&mut child, &config);
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
+)]
+#[test]
+fn run_with_tls_max_version_1_2_refuses_a_tls13_client() {
+    let backend = start_echo_backend();
+    let config = temp_config(
+        "tls-max-version",
+        &format!(
+            "schema_version = 1\nshutdown_grace = \"1s\"\n\
+             [listener.web]\n\
+             listen = \"127.0.0.1:0\"\n\
+             backend = \"api\"\n\
+             connect_timeout = \"2s\"\n\
+             idle_timeout = \"1s\"\n\
+             [listener.web.tls]\n\
+             cert = \"{FIXTURE_CERT}\"\n\
+             key = \"{FIXTURE_KEY}\"\n\
+             alpn = [\"http/1.1\"]\n\
+             min_version = \"1.2\"\n\
+             max_version = \"1.2\"\n\
+             [backend.api]\n\
+             server = \"{backend}\"\n"
+        ),
+    );
+    let (mut child, addr, _stderr) = spawn_run_and_wait(&config, "web");
+
+    // The cap is enforced by the handshake, not only by config validation:
+    // a client that offers TLS 1.3 only cannot negotiate.
+    let tls13 = Command::new("openssl")
+        .args(["s_client", "-connect", &addr, "-tls1_3"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run openssl s_client -tls1_3");
+    let tls13_out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&tls13.stdout),
+        String::from_utf8_lossy(&tls13.stderr)
+    );
+    assert!(
+        tls13_out.contains("New, (NONE), Cipher is (NONE)"),
+        "a TLS 1.3-only client must fail the handshake against max_version = 1.2: {tls13_out}"
+    );
+    assert!(
+        !tls13_out.contains("New, TLSv1.3"),
+        "the server must not negotiate TLS 1.3: {tls13_out}"
+    );
+
+    // TLS 1.2 is the remaining version and still carries traffic.
+    let tls12 = Command::new("openssl")
+        .args(["s_client", "-connect", &addr, "-tls1_2"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run openssl s_client -tls1_2");
+    let tls12_out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&tls12.stdout),
+        String::from_utf8_lossy(&tls12.stderr)
+    );
+    assert!(
+        tls12_out.contains("Protocol  : TLSv1.2"),
+        "TLS 1.2 must stay available: {tls12_out}"
+    );
+    wait_for_sigint_shutdown(&mut child, &config);
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
+)]
+#[test]
+fn run_with_errorloc_answers_a_local_failure_with_a_redirect() {
+    let config = temp_config(
+        "errorloc",
+        "schema_version = 1\nshutdown_grace = \"1s\"\n\
+         [listener.web]\n\
+         listen = \"127.0.0.1:0\"\n\
+         mode = \"http\"\n\
+         backend = \"api\"\n\
+         connect_timeout = \"2s\"\n\
+         idle_timeout = \"1s\"\n\
+         [[listener.web.error_pages]]\n\
+         codes = [502]\n\
+         location = \"https://status.example.test/maintenance\"\n\
+         [backend.api]\n\
+         server = \"127.0.0.1:9\"\n",
+    );
+    let (mut child, addr, _stderr) = spawn_run_and_wait(&config, "web");
+
+    let response = proxied(
+        &addr,
+        b"GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n",
+    );
+    assert!(
+        response.starts_with("HTTP/1.1 302 found"),
+        "errorloc answers 302 by default: {response}"
+    );
+    assert!(
+        response
+            .to_ascii_lowercase()
+            .contains("location: https://status.example.test/maintenance"),
+        "the configured target crosses the wire: {response}"
+    );
+    assert!(
+        body_of(&response).is_empty(),
+        "a redirect has no body: {response}"
     );
     wait_for_sigint_shutdown(&mut child, &config);
 }

@@ -10,7 +10,7 @@ Language: **English**.
   [ADR-0028](0028-maintenance-closes-the-idle-pool.md) (the states it offers),
   [ADR-0019](0019-hot-config-writes-via-admin-api.md) (the document write),
   [ADR-0025](0025-certificate-renewal-without-restart.md) (the renewal action),
-  [SPEC §9](../SPEC.md), [THREAT_MODEL.md](../../THREAT_MODEL.md)
+  [SPEC §9](../../SPEC.md), [THREAT_MODEL.md](../../THREAT_MODEL.md)
 
 ## Context
 

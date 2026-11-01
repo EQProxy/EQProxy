@@ -211,6 +211,7 @@ mod tests {
                     host: "api.internal".to_owned(),
                     port,
                 },
+                source: None,
                 weight: 1,
                 backup: false,
                 priority: 0,
@@ -253,7 +254,10 @@ mod tests {
         ));
 
         // First round is immediate (no interval wait).
-        eventually("first resolution", || balancer.pick() == Some(a)).await;
+        eventually("first resolution", || {
+            balancer.pick() == Some(crate::balancer::Endpoint::Tcp(a))
+        })
+        .await;
         assert_eq!(
             balancer.name_targets(),
             vec![("api.internal".to_owned(), 9000)]
@@ -262,12 +266,12 @@ mod tests {
         // The periodic round picks up the new address (hot swap).
         stub.set(Answer::Addrs(vec![b]));
         eventually("re-resolution swaps the address", || {
-            balancer.pick() == Some(b)
+            balancer.pick() == Some(crate::balancer::Endpoint::Tcp(b))
         })
         .await;
         assert_eq!(
             balancer.pick(),
-            Some(b),
+            Some(crate::balancer::Endpoint::Tcp(b)),
             "traffic follows the re-resolved address"
         );
 
@@ -302,7 +306,10 @@ mod tests {
             stub.clone(),
             signal,
         ));
-        eventually("first resolution", || balancer.pick() == Some(a)).await;
+        eventually("first resolution", || {
+            balancer.pick() == Some(crate::balancer::Endpoint::Tcp(a))
+        })
+        .await;
 
         // DNS hangs: the round times out (bounded), the address stays.
         stub.set(Answer::Hang);
@@ -312,7 +319,7 @@ mod tests {
         .await;
         assert_eq!(
             balancer.pick(),
-            Some(a),
+            Some(crate::balancer::Endpoint::Tcp(a)),
             "a hung DNS keeps the last-known address serving"
         );
 
@@ -325,7 +332,7 @@ mod tests {
         .await;
         assert_eq!(
             balancer.pick(),
-            Some(a),
+            Some(crate::balancer::Endpoint::Tcp(a)),
             "a failed lookup keeps the last-known address serving"
         );
 
@@ -361,7 +368,7 @@ mod tests {
             .await
             .expect("interval 0 resolves once and returns")
             .expect("join");
-        assert_eq!(balancer.pick(), Some(a));
+        assert_eq!(balancer.pick(), Some(crate::balancer::Endpoint::Tcp(a)));
         assert_eq!(stub.calls(), 1, "exactly one resolution round");
         let snap = metrics.snapshot();
         assert_eq!(snap.dns_resolutions_ok, 1, "{snap:?}");

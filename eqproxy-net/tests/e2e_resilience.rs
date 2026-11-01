@@ -308,6 +308,7 @@ async fn retry_saves_idempotent_get_from_dead_server() {
         vec![
             ResolvedServer {
                 addr: dead.into(),
+                source: None,
                 weight: 1,
                 backup: false,
                 priority: 0,
@@ -315,6 +316,7 @@ async fn retry_saves_idempotent_get_from_dead_server() {
             },
             ResolvedServer {
                 addr: live.into(),
+                source: None,
                 weight: 1,
                 backup: false,
                 priority: 0,
@@ -367,6 +369,7 @@ async fn non_idempotent_post_is_never_retried_without_opt_in() {
         vec![
             ResolvedServer {
                 addr: dead.into(),
+                source: None,
                 weight: 1,
                 backup: false,
                 priority: 0,
@@ -374,6 +377,7 @@ async fn non_idempotent_post_is_never_retried_without_opt_in() {
             },
             ResolvedServer {
                 addr: live.into(),
+                source: None,
                 weight: 1,
                 backup: false,
                 priority: 0,
@@ -431,6 +435,7 @@ async fn non_idempotent_opt_in_allows_post_retry() {
         vec![
             ResolvedServer {
                 addr: dead.into(),
+                source: None,
                 weight: 1,
                 backup: false,
                 priority: 0,
@@ -438,6 +443,7 @@ async fn non_idempotent_opt_in_allows_post_retry() {
             },
             ResolvedServer {
                 addr: live.into(),
+                source: None,
                 weight: 1,
                 backup: false,
                 priority: 0,
@@ -487,6 +493,7 @@ async fn full_queue_rejects_explicitly_and_waiters_time_out() {
         "api",
         vec![ResolvedServer {
             addr: drained.into(),
+            source: None,
             weight: 0,
             backup: false,
             priority: 0,
@@ -559,6 +566,7 @@ async fn local_response_serves_the_configured_body() {
         "api",
         vec![ResolvedServer {
             addr: drained.into(),
+            source: None,
             weight: 0,
             backup: false,
             priority: 0,
@@ -587,6 +595,11 @@ async fn local_response_serves_the_configured_body() {
         response.ends_with("maintenance mode"),
         "must carry the configured body: {response:?}"
     );
+    assert_eq!(
+        response.matches("Server: eqproxy").count(),
+        1,
+        "a custom local reply carries the product banner exactly once: {response:?}"
+    );
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(
         metrics.snapshot().local_responses_served >= 1,
@@ -610,6 +623,7 @@ async fn proxy_receive_forwards_the_claimed_peer() {
         "api",
         vec![ResolvedServer {
             addr: echo.into(),
+            source: None,
             weight: 1,
             backup: false,
             priority: 0,
@@ -672,6 +686,7 @@ async fn proxy_receive_accepts_the_v2_header() {
         "api",
         vec![ResolvedServer {
             addr: echo.into(),
+            source: None,
             weight: 1,
             backup: false,
             priority: 0,
@@ -733,6 +748,7 @@ async fn proxy_receive_rejects_non_allowlisted_origin() {
         "api",
         vec![ResolvedServer {
             addr: echo.into(),
+            source: None,
             weight: 1,
             backup: false,
             priority: 0,
@@ -785,6 +801,7 @@ async fn proxy_receive_rejects_invalid_header() {
         "api",
         vec![ResolvedServer {
             addr: echo.into(),
+            source: None,
             weight: 1,
             backup: false,
             priority: 0,
@@ -842,6 +859,7 @@ async fn forwarded_headers_append_and_replace() {
         "api",
         vec![ResolvedServer {
             addr: echo.into(),
+            source: None,
             weight: 1,
             backup: false,
             priority: 0,
@@ -874,6 +892,7 @@ async fn forwarded_headers_append_and_replace() {
         "api",
         vec![ResolvedServer {
             addr: echo.into(),
+            source: None,
             weight: 1,
             backup: false,
             priority: 0,
@@ -912,6 +931,7 @@ async fn forwarded_headers_append_and_replace() {
         "api",
         vec![ResolvedServer {
             addr: echo.into(),
+            source: None,
             weight: 1,
             backup: false,
             priority: 0,
@@ -989,6 +1009,7 @@ async fn hot_reload_swaps_tls_material_on_the_kept_socket() {
         "api",
         vec![ResolvedServer {
             addr: echo.into(),
+            source: None,
             weight: 1,
             backup: false,
             priority: 0,
@@ -1024,6 +1045,7 @@ async fn hot_reload_swaps_tls_material_on_the_kept_socket() {
         "api",
         vec![ResolvedServer {
             addr: echo.into(),
+            source: None,
             weight: 1,
             backup: false,
             priority: 0,
@@ -1145,6 +1167,7 @@ async fn backend_tls_trust_rotation_applies_on_reload_without_restart() {
                 "api",
                 vec![ResolvedServer {
                     addr: backend_addr.into(),
+                    source: None,
                     weight: 1,
                     backup: false,
                     priority: 0,
@@ -1266,6 +1289,7 @@ async fn passive_detection_marks_5xx_server_down() {
             vec![
                 ResolvedServer {
                     addr: failing.into(),
+                    source: None,
                     weight: 1,
                     backup: false,
                     priority: 0,
@@ -1273,6 +1297,7 @@ async fn passive_detection_marks_5xx_server_down() {
                 },
                 ResolvedServer {
                     addr: healthy.into(),
+                    source: None,
                     weight: 1,
                     backup: false,
                     priority: 0,
@@ -1317,11 +1342,11 @@ async fn passive_detection_marks_5xx_server_down() {
         "after the mark every request must go to the healthy server: {responses:?}"
     );
     assert!(
-        !backend.balancer.is_up(failing),
+        !backend.balancer.is_up(&eqproxy_net::Endpoint::Tcp(failing)),
         "two 5xx exchanges with fall = 2 must mark the server DOWN"
     );
     assert!(
-        backend.balancer.is_up(healthy),
+        backend.balancer.is_up(&eqproxy_net::Endpoint::Tcp(healthy)),
         "the healthy server stays up"
     );
 
@@ -1348,6 +1373,7 @@ async fn http_expect_check_marks_5xx_server_down() {
             vec![
                 ResolvedServer {
                     addr: failing.into(),
+                    source: None,
                     weight: 1,
                     backup: false,
                     priority: 0,
@@ -1355,6 +1381,7 @@ async fn http_expect_check_marks_5xx_server_down() {
                 },
                 ResolvedServer {
                     addr: healthy.into(),
+                    source: None,
                     weight: 1,
                     backup: false,
                     priority: 0,
@@ -1384,10 +1411,13 @@ async fn http_expect_check_marks_5xx_server_down() {
     // With fall = 1 the failing backend is DOWN in ~1 check cycle.
     tokio::time::sleep(Duration::from_millis(600)).await;
     assert!(
-        !backend.balancer.is_up(failing),
+        !backend.balancer.is_up(&eqproxy_net::Endpoint::Tcp(failing)),
         "the 500-answering server must be DOWN for the http expect check"
     );
-    assert!(backend.balancer.is_up(healthy), "the 200 server stays up");
+    assert!(
+        backend.balancer.is_up(&eqproxy_net::Endpoint::Tcp(healthy)),
+        "the 200 server stays up"
+    );
 
     // Every request now lands on the healthy server.
     for _ in 0..4 {
@@ -1483,6 +1513,7 @@ async fn http_check_interops_with_keep_alive_origins() {
             vec![
                 ResolvedServer {
                     addr: cl.into(),
+                    source: None,
                     weight: 1,
                     backup: false,
                     priority: 0,
@@ -1490,6 +1521,7 @@ async fn http_check_interops_with_keep_alive_origins() {
                 },
                 ResolvedServer {
                     addr: chunked.into(),
+                    source: None,
                     weight: 1,
                     backup: false,
                     priority: 0,
@@ -1523,11 +1555,11 @@ async fn http_check_interops_with_keep_alive_origins() {
     // operational — no flapping.
     tokio::time::sleep(Duration::from_millis(700)).await;
     assert!(
-        backend.balancer.is_up(cl),
+        backend.balancer.is_up(&eqproxy_net::Endpoint::Tcp(cl)),
         "the Content-Length keep-alive origin must stay UP"
     );
     assert!(
-        backend.balancer.is_up(chunked),
+        backend.balancer.is_up(&eqproxy_net::Endpoint::Tcp(chunked)),
         "the chunked keep-alive origin must stay UP"
     );
 
@@ -1638,6 +1670,7 @@ async fn mtls_requires_a_certificate_issued_by_the_client_ca() {
         "api",
         vec![ResolvedServer {
             addr: echo.into(),
+            source: None,
             weight: 1,
             backup: false,
             priority: 0,

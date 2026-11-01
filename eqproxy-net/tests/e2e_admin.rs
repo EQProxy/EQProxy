@@ -45,6 +45,7 @@ fn backend(modes: &Arc<ServerModes>) -> Arc<ResolvedBackend> {
             vec![
                 ResolvedServer {
                     addr: ServerAddr::Ip(SERVER_A.parse().expect("addr a")),
+                    source: None,
                     weight: 1,
                     backup: false,
                     priority: 0,
@@ -52,6 +53,7 @@ fn backend(modes: &Arc<ServerModes>) -> Arc<ResolvedBackend> {
                 },
                 ResolvedServer {
                     addr: ServerAddr::Ip(SERVER_B.parse().expect("addr b")),
+                    source: None,
                     weight: 1,
                     backup: false,
                     priority: 0,
@@ -780,6 +782,7 @@ async fn drain_skips_new_requests_and_lets_the_in_flight_one_finish() {
             vec![
                 ResolvedServer {
                     addr: ServerAddr::Ip(slow),
+                    source: None,
                     weight: 1,
                     backup: false,
                     priority: 0,
@@ -787,6 +790,7 @@ async fn drain_skips_new_requests_and_lets_the_in_flight_one_finish() {
                 },
                 ResolvedServer {
                     addr: ServerAddr::Ip(fast),
+                    source: None,
                     weight: 1,
                     backup: false,
                     priority: 0,
@@ -885,6 +889,7 @@ async fn draining_every_server_yields_an_explicit_503() {
             BACKEND,
             vec![ResolvedServer {
                 addr: ServerAddr::Ip(origin),
+                source: None,
                 weight: 1,
                 backup: false,
                 priority: 0,

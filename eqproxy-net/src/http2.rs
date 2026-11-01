@@ -329,6 +329,13 @@ async fn exchange(
 fn refuse(respond: &mut h2::server::SendResponse<Bytes>, status: StatusCode) {
     let mut response = Response::new(());
     *response.status_mut() = status;
+    // The engine never sees this stream, so the product banner is set here.
+    response
+        .headers_mut()
+        .insert("server", HeaderValue::from_static("eqproxy"));
+    if let Ok(date) = HeaderValue::from_str(&crate::date::current_http_date()) {
+        response.headers_mut().insert("date", date);
+    }
     if let Ok(length) = HeaderValue::from_str("0") {
         response.headers_mut().insert("content-length", length);
     }

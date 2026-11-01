@@ -149,9 +149,9 @@ incrementos en `main`, un commit por casilla (`aa00ebf`, `c03ea75`, `daa0736`,
 ':(exclude)docs'` sale vacío, y lo único que cambia es este documento y su
 crudo, escritos después del run.
 
-Crudo: [`image.log`](v085-release-gates/raw/20261029T0110Z/image.log),
-[`release.log`](v085-release-gates/raw/20261029T0110Z/release.log),
-[`guard.log`](v085-release-gates/raw/20261029T0110Z/guard.log),
+Crudo: `image.log` (local-only: `v085-release-gates/raw/20261029T0110Z/image.log`),
+`release.log` (local-only: `v085-release-gates/raw/20261029T0110Z/release.log`),
+`guard.log` (local-only: `v085-release-gates/raw/20261029T0110Z/guard.log`),
 [`jobs.tsv`](v085-release-gates/raw/20261029T0110Z/jobs.tsv),
 [`image-steps.tsv`](v085-release-gates/raw/20261029T0110Z/image-steps.tsv),
 [`release-steps.tsv`](v085-release-gates/raw/20261029T0110Z/release-steps.tsv),
@@ -171,13 +171,13 @@ uid-gated skips as root: 2 printed, 2 declared in uid-skips.txt
 ok: every uid-gated skip of the root run is declared, with its reason
 ```
 
-Crudo: [`run-40776942154-guard.log`](v085-release-gates/raw/run-40776942154-guard.log),
+Crudo: `run-40776942154-guard.log` (local-only: `v085-release-gates/raw/run-40776942154-guard.log`),
 [`gates-summary.txt`](v085-release-gates/raw/gates-summary.txt),
 [`run-40776942154-jobs.json`](v085-release-gates/raw/run-40776942154-jobs.json).
 El `guard` del run 3 imprimió los mismos recuentos:
-[`guard.log`](v085-release-gates/raw/20261029T0110Z/guard.log).
+`guard.log` (local-only: `v085-release-gates/raw/20261029T0110Z/guard.log`).
 El run rojo conserva su log y sus jobs:
-[`run-40775542855-failed.log`](v085-release-gates/raw/run-40775542855-failed.log),
+`run-40775542855-failed.log` (local-only: `v085-release-gates/raw/run-40775542855-failed.log`),
 [`run-40775542855-jobs.json`](v085-release-gates/raw/run-40775542855-jobs.json).
 
 ## 6. Auditorías del incremento

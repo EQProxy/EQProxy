@@ -22,7 +22,7 @@ use rustls_pki_types::{CertificateDer, IpAddr, PrivateKeyDer, ServerName};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 /// Minimum accepted TLS version (1.0/1.1 do not exist in modern rustls).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum TlsVersion {
     /// TLS 1.2 at minimum (default).
     #[default]
@@ -330,13 +330,24 @@ impl std::fmt::Debug for ClientTls {
     }
 }
 
-fn protocol_versions(min: TlsVersion) -> &'static [&'static rustls::SupportedProtocolVersion] {
+/// Protocol versions offered for a `[min, max]` range (B-N16/B-I16:
+/// nginx `ssl_protocols`, HAProxy `ssl-min-ver`/`ssl-max-ver`).
+///
+/// `None` keeps the previous upper bound (TLS 1.3). Validation refuses a
+/// `max` lower than `min`, so the match has no impossible arms to report at
+/// runtime.
+fn protocol_versions(
+    min: TlsVersion,
+    max: Option<TlsVersion>,
+) -> &'static [&'static rustls::SupportedProtocolVersion] {
     const V12: &[&rustls::SupportedProtocolVersion] =
         &[&rustls::version::TLS13, &rustls::version::TLS12];
+    const V12_ONLY: &[&rustls::SupportedProtocolVersion] = &[&rustls::version::TLS12];
     const V13: &[&rustls::SupportedProtocolVersion] = &[&rustls::version::TLS13];
-    match min {
-        TlsVersion::V1_2 => V12,
-        TlsVersion::V1_3 => V13,
+    match (min, max) {
+        (TlsVersion::V1_2, Some(TlsVersion::V1_2)) => V12_ONLY,
+        (TlsVersion::V1_2, _) => V12,
+        (TlsVersion::V1_3, _) => V13,
     }
 }
 
@@ -375,7 +386,7 @@ pub fn server_config(
     alpn: &[String],
     min: TlsVersion,
 ) -> Result<ServerTls, TlsError> {
-    server_config_with_sni(cert_chain_pem, key_pem, &[], client_ca_pem, alpn, min)
+    server_config_with_sni_and_max(cert_chain_pem, key_pem, &[], client_ca_pem, alpn, min, None)
 }
 
 /// Builds the listener TLS acceptor with certificates selected by SNI
@@ -395,6 +406,21 @@ pub fn server_config_with_sni(
     client_ca_pem: Option<&[u8]>,
     alpn: &[String],
     min: TlsVersion,
+) -> Result<ServerTls, TlsError> {
+    server_config_with_sni_and_max(cert_chain_pem, key_pem, sni, client_ca_pem, alpn, min, None)
+}
+
+/// [`server_config_with_sni`] with an explicit TLS upper bound
+/// (`tls.max_version`). `None` leaves the previous behaviour (TLS 1.3).
+#[allow(clippy::too_many_arguments)]
+pub fn server_config_with_sni_and_max(
+    cert_chain_pem: &[u8],
+    key_pem: &[u8],
+    sni: &[SniCertPem],
+    client_ca_pem: Option<&[u8]>,
+    alpn: &[String],
+    min: TlsVersion,
+    max: Option<TlsVersion>,
 ) -> Result<ServerTls, TlsError> {
     let default = certified_key(cert_chain_pem, key_pem)?;
     let mut entries = Vec::with_capacity(sni.len());
@@ -428,7 +454,7 @@ pub fn server_config_with_sni(
         default: Arc::clone(&default),
     }));
     let resolver = Arc::clone(&hot) as Arc<dyn rustls::server::ResolvesServerCert>;
-    let builder = rustls::ServerConfig::builder_with_protocol_versions(protocol_versions(min));
+    let builder = rustls::ServerConfig::builder_with_protocol_versions(protocol_versions(min, max));
     let mut config = if let Some(client_ca_pem) = client_ca_pem {
         // mTLS (A15): clients must present a certificate issued by this CA.
         let ca_certs = parse_certs(client_ca_pem)?;
@@ -448,8 +474,9 @@ pub fn server_config_with_sni(
         builder.with_no_client_auth().with_cert_resolver(resolver)
     };
     config.alpn_protocols = alpn.iter().map(|proto| proto.as_bytes().to_vec()).collect();
-    let fingerprint = material_fingerprint(cert_chain_pem, key_pem, sni, client_ca_pem, alpn, min);
-    let non_certificate_fingerprint = fixed_material_fingerprint(client_ca_pem, alpn, min);
+    let fingerprint =
+        material_fingerprint(cert_chain_pem, key_pem, sni, client_ca_pem, alpn, min, max);
+    let non_certificate_fingerprint = fixed_material_fingerprint(client_ca_pem, alpn, min, max);
     let config = Arc::new(config);
     Ok(ServerTls {
         acceptor: TlsAcceptor::from(Arc::clone(&config)),
@@ -481,12 +508,14 @@ fn fixed_material_fingerprint(
     client_ca_pem: Option<&[u8]>,
     alpn: &[String],
     min: TlsVersion,
+    max: Option<TlsVersion>,
 ) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     client_ca_pem.hash(&mut hasher);
     alpn.hash(&mut hasher);
     (min == TlsVersion::V1_3).hash(&mut hasher);
+    max.hash(&mut hasher);
     hasher.finish()
 }
 
@@ -500,6 +529,7 @@ fn material_fingerprint(
     client_ca_pem: Option<&[u8]>,
     alpn: &[String],
     min: TlsVersion,
+    max: Option<TlsVersion>,
 ) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -513,6 +543,7 @@ fn material_fingerprint(
     client_ca_pem.hash(&mut hasher);
     alpn.hash(&mut hasher);
     (min == TlsVersion::V1_3).hash(&mut hasher);
+    max.hash(&mut hasher);
     hasher.finish()
 }
 
@@ -525,7 +556,25 @@ fn certified_key(
     let key = parse_key(key_pem)?;
     let signing = rustls::crypto::aws_lc_rs::sign::any_supported_type(&key)
         .map_err(|e| TlsError::Key(format!("unsupported private key: {e}")))?;
-    Ok(Arc::new(rustls::sign::CertifiedKey::new(certs, signing)))
+    // A certificate and a key from different pairs used to load and answer
+    // 200; the mismatch only surfaced as a failed handshake later. rustls
+    // compares the key's SPKI with the leaf certificate's, so a renewal with
+    // crossed files now fails closed at resolution time (ADR-0025).
+    let certified = rustls::sign::CertifiedKey::new(certs, signing);
+    match certified.keys_match() {
+        Ok(()) => Ok(Arc::new(certified)),
+        Err(rustls::Error::InconsistentKeys(rustls::InconsistentKeys::KeyMismatch)) => {
+            Err(TlsError::Key(
+                "the private key does not match the certificate's public key: \
+                 the files belong to different pairs"
+                    .to_owned(),
+            ))
+        }
+        Err(err) => Err(TlsError::Key(format!(
+            "the private key cannot be proven to match the certificate ({err}): \
+             use an RSA, ECDSA or Ed25519 key the TLS provider can identify"
+        ))),
+    }
 }
 
 /// Builds the TLS client to backends (A12).
@@ -539,7 +588,7 @@ pub fn client_config(
     alpn: &[String],
     min: TlsVersion,
 ) -> Result<ClientTls, TlsError> {
-    let versions = protocol_versions(min);
+    let versions = protocol_versions(min, None);
     let builder = rustls::ClientConfig::builder_with_protocol_versions(versions);
     let mut config = if verify {
         let mut roots = RootCertStore::empty();
@@ -798,6 +847,25 @@ mod tests {
 
     #[cfg_attr(miri, ignore = "uses rustls/aws-lc-rs (FFI not emulatable by miri)")]
     #[test]
+    fn server_config_rejects_a_key_from_another_pair() {
+        // A renewal that writes the wrong key must fail at resolution time,
+        // not answer 200 and break every later handshake (ADR-0025).
+        let err = server_config(ALPHA, BETA_KEY, None, &[], TlsVersion::V1_2)
+            .expect_err("a key from another pair must be rejected");
+        assert!(matches!(err, TlsError::Key(_)), "error: {err}");
+        assert!(
+            err.to_string().contains("does not match the certificate"),
+            "{err}"
+        );
+
+        // The matching pair still loads: this is a consistency check, not a
+        // new restriction on the material.
+        server_config(ALPHA, ALPHA_KEY, None, &[], TlsVersion::V1_2)
+            .expect("the matching pair must still be accepted");
+    }
+
+    #[cfg_attr(miri, ignore = "uses rustls/aws-lc-rs (FFI not emulatable by miri)")]
+    #[test]
     fn leaf_fingerprint_names_the_certificate_that_is_served() {
         let server =
             server_config(CERT, KEY, None, &[], TlsVersion::V1_2).expect("valid test cert/key");
@@ -841,6 +909,67 @@ mod tests {
         let mtls =
             server_config(BETA, BETA_KEY, Some(MTLS_CA), &alpn, TlsVersion::V1_2).expect("mtls");
         assert!(!live.can_adopt_certificates(&mtls));
+    }
+
+    #[cfg_attr(miri, ignore = "uses rustls/aws-lc-rs (FFI not emulatable by miri)")]
+    #[test]
+    fn protocol_range_caps_tls12_and_keeps_tls13_by_default() {
+        let versions = |min, max| {
+            protocol_versions(min, max)
+                .iter()
+                .map(|version| version.version)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            versions(TlsVersion::V1_2, Some(TlsVersion::V1_2)),
+            vec![rustls::ProtocolVersion::TLSv1_2],
+            "max_version = 1.2 must remove TLS 1.3, not just prefer it"
+        );
+        assert_eq!(
+            versions(TlsVersion::V1_2, None),
+            vec![
+                rustls::ProtocolVersion::TLSv1_3,
+                rustls::ProtocolVersion::TLSv1_2
+            ],
+            "an absent max keeps both versions"
+        );
+        assert_eq!(
+            versions(TlsVersion::V1_3, Some(TlsVersion::V1_3)),
+            vec![rustls::ProtocolVersion::TLSv1_3]
+        );
+    }
+
+    #[cfg_attr(miri, ignore = "uses rustls/aws-lc-rs (FFI not emulatable by miri)")]
+    #[test]
+    fn a_live_acceptor_does_not_adopt_a_changed_version_range() {
+        let live = server_config_with_sni_and_max(
+            CERT,
+            KEY,
+            &[],
+            None,
+            &[],
+            TlsVersion::V1_2,
+            Some(TlsVersion::V1_2),
+        )
+        .expect("live");
+        let capped = server_config_with_sni_and_max(
+            CERT,
+            KEY,
+            &[],
+            None,
+            &[],
+            TlsVersion::V1_2,
+            Some(TlsVersion::V1_2),
+        )
+        .expect("capped");
+        assert!(live.can_adopt_certificates(&capped));
+        let wider =
+            server_config_with_sni_and_max(CERT, KEY, &[], None, &[], TlsVersion::V1_2, None)
+                .expect("wider");
+        assert!(
+            !live.can_adopt_certificates(&wider),
+            "a live QUIC endpoint freezes the version range"
+        );
     }
 
     #[cfg_attr(miri, ignore = "uses rustls/aws-lc-rs (FFI not emulatable by miri)")]

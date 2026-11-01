@@ -1,0 +1,74 @@
+
+===== source nginx =====
+http {
+  server {
+    listen 80;
+    location / {
+      proxy_pass http://unix:/tmp/eqproxy-v091-unix.61bzCD/app.sock;
+    }
+  }
+}
+
+===== eqproxy config import =====
+import: /tmp/eqproxy-v091-unix.61bzCD/nginx.conf (nginx) → /tmp/eqproxy-v091-unix.61bzCD/imported.toml: 3 converted, 1 with notes, 0 rejected
+exit: 0
+
+===== imported eqproxy.toml =====
+# Generado por `eqproxy config import`.
+# Revise el informe de conversión antes de usarlo en producción.
+schema_version = 1
+
+[backend.backend_unix__tmp_eqproxy-v091-unix_61bzCD_app_sock]
+server = "unix:/tmp/eqproxy-v091-unix.61bzCD/app.sock"
+
+[listener.web__sin_server_name]
+listen = "0.0.0.0:80"
+mode = "http"
+backend = "backend_unix__tmp_eqproxy-v091-unix_61bzCD_app_sock"
+
+[[listener.web__sin_server_name.rules]]
+name = "server (sin server_name) location /"
+use_backend = "backend_unix__tmp_eqproxy-v091-unix_61bzCD_app_sock"
+path_prefix = "/"
+
+===== imported report (excerpt) =====
+# Informe de conversión nginx → EQProxy
+
+- Entrada: `/tmp/eqproxy-v091-unix.61bzCD/nginx.conf`
+- Salida: `/tmp/eqproxy-v091-unix.61bzCD/imported.toml`
+- Listeners generados: **1** · Backends generados: **1**
+- Directivas leídas: **4** · clasificadas: **4** — convertidas **3** · con aviso **1** · rechazadas **0**
+
+«Nunca se descarta en silencio»: cada directiva del origen aparece abajo. El fichero generado se ha parseado y validado con el propio parser de EQProxy (`schema_version = 1`) antes de escribirlo. La conversión es estática: no se ha ejecutado nada de la configuración de origen ni se ha medido tráfico.
+
+## Conversión generada
+
+| listener | escucha | modo | backend | TLS |
+|---|---|---|---|---|
+| `web__sin_server_name` | 0.0.0.0:80 | http | `backend_unix__tmp_eqproxy-v091-unix_61bzCD_app_sock` | no |
+
+| backend | servidores (peso) | balance | health check | PROXY | TLS backend |
+|---|---|---|---|---|---|
+| `backend_unix__tmp_eqproxy-v091-unix_61bzCD_app_sock` | unix:/tmp/eqproxy-v091-unix.61bzCD/app.sock (1) | roundrobin | — | none | no |
+
+## Detalle de la clasificación
+
+### ❌ no traducible (0)
+
+
+### ⛔ rechazado (sin equivalente en EQProxy) (0)
+
+
+### ⚠️ revisar (0)
+
+
+### ℹ️ informativo (1)
+
+- `listen 80` — *server (sin server_name)*: binding y TLS del listener: aplicados arriba en [listener.*.tls]
+
+### ✅ convertido (3)
+
+- `listen 80` — *server (sin server_name)*: listener de EQProxy en 80
+- `proxy_pass unix:/tmp/eqproxy-v091-unix.61bzCD/app.sock` — *server (sin server_name) location /*: origen literal convertido en backend «backend_unix__tmp_eqproxy-v091-unix_61bzCD_app_sock» (unix:/tmp/eqproxy-v091-unix.61bzCD/app.sock)
+- `proxy_pass http://unix:/tmp/eqproxy-v091-unix.61bzCD/app.sock` — *server (sin server_name) location /*: regla con use_backend = «backend_unix__tmp_eqproxy-v091-unix_61bzCD_app_sock»
+

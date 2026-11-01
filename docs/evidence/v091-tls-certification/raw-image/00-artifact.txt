@@ -1,0 +1,23 @@
+date: 2026-11-01T03:21:20Z
+host: Darwin 25.5.0 arm64
+docker: linux/arm64 engine=29.9.2
+image: eqproxy:v091-arm64
+image id: sha256:4a11955cac1c7e21ba27e5bd4791002f88599f28be7b58be2e3417c1e7ce36d4
+image platform: linux/arm64
+
+===== docker run --rm IMAGE --version =====
+eqproxy 0.8.5
+
+===== docker run --rm IMAGE --help (first lines) =====
+ExyonQ Proxy (EQProxy): reverse proxy and load balancer
+
+Usage: eqproxy <COMMAND>
+
+Commands:
+  run     Runs the dataplane with the given configuration
+  config  Configuration commands
+  doctor  Environment diagnostics (Phase 3): config gate, listener bind probes and the FD budget. With no `--config`, environment only
+
+===== packaged binary /opt/eqproxy =====
+/tmp/eqproxy-v091-image.A9qVQm/eqproxy-image: ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked, BuildID[sha1]=c9032e5a72ba70d633724e7900c735c35bf40e3e, not stripped
+sha256: fd453a8c9175ac2a73908ff18f2c5ab01eb89030aaaeee96403ec2ecf99d375b

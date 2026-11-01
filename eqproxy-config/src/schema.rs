@@ -184,8 +184,10 @@ pub enum ProxyProtocolMode {
     V2,
 }
 
-/// Minimum accepted TLS version (A11/A12).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, schemars::JsonSchema)]
+/// Accepted TLS version range (A11/A12).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Deserialize, schemars::JsonSchema,
+)]
 pub enum TlsVersion {
     /// TLS 1.2 (default; TLS 1.0/1.1 are never accepted).
     #[default]
@@ -236,6 +238,12 @@ pub struct TlsServerConfig {
     /// Minimum TLS version (default 1.2).
     #[serde(default)]
     pub min_version: TlsVersion,
+    /// Highest TLS version accepted. Absent = TLS 1.3, the previous
+    /// behaviour; `"1.2"` caps the listener at TLS 1.2 (`ssl_protocols
+    /// TLSv1.2`, HAProxy `ssl-max-ver TLSv1.2`). Must not be lower than
+    /// `min_version`.
+    #[serde(default)]
+    pub max_version: Option<TlsVersion>,
     /// Client CA PEM: present = mTLS (A15) — client certificates are
     /// required and verified against this bundle.
     pub client_ca: Option<String>,
@@ -264,8 +272,9 @@ pub struct TlsClientConfig {
     pub min_version: TlsVersion,
 }
 
-/// A parsed server address: a literal `IP:PORT` or a `HOSTNAME:PORT`
-/// that the dataplane resolves in the background (B-H13/B-N18/B-E15).
+/// A parsed server address: a literal `IP:PORT`, a `HOSTNAME:PORT`
+/// that the dataplane resolves in the background (B-H13/B-N18/B-E15), or a
+/// Unix-domain socket path (ADR-0043, B-H14/B-N15).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ServerTarget {
     /// Literal `IP:PORT` (v4 or bracketed v6): no DNS involved.
@@ -273,13 +282,49 @@ pub enum ServerTarget {
     /// `HOSTNAME:PORT`: resolved non-blockingly and re-resolved at the
     /// backend's `resolve_interval`.
     Name { host: String, port: u16 },
+    /// `unix:/absolute/path` (or `unix@/absolute/path`, normalised): a local
+    /// Unix-domain socket. No DNS, TLS, SNI or PROXY header applies.
+    Unix(std::path::PathBuf),
 }
+
+/// Longest Unix socket path accepted (macOS `sun_path` is 104 bytes, Linux
+/// 108, both including the terminating NUL; 100 keeps a margin).
+pub const MAX_UNIX_SOCKET_PATH: usize = 100;
 
 /// Parses a server address (Q1: the error names the cause and the fix).
 /// Accepts `IP:PORT`, `[IPv6]:PORT` and `HOSTNAME:PORT`; hostnames are
 /// lowercased (DNS is case-insensitive) and limited to letters, digits,
 /// `.`, `-` and `_`.
 pub fn parse_server_target(raw: &str) -> Result<ServerTarget, String> {
+    // ADR-0043: `unix:/path` (nginx) and `unix@/path` (HAProxy) name a local
+    // Unix-domain socket. Both are normalised to the same target.
+    if let Some(path) = raw
+        .strip_prefix("unix:")
+        .or_else(|| raw.strip_prefix("unix@"))
+    {
+        if path.is_empty() {
+            return Err(format!(
+                "\"{raw}\": the Unix socket path is empty (expected unix:/absolute/path)"
+            ));
+        }
+        if path.contains('\0') {
+            return Err(format!(
+                "\"{raw}\": the Unix socket path contains a NUL byte"
+            ));
+        }
+        let path = std::path::PathBuf::from(path);
+        if !path.is_absolute() {
+            return Err(format!(
+                "\"{raw}\": the Unix socket path must be absolute (expected unix:/run/app.sock)"
+            ));
+        }
+        if path.as_os_str().len() > MAX_UNIX_SOCKET_PATH {
+            return Err(format!(
+                "\"{raw}\": the Unix socket path exceeds {MAX_UNIX_SOCKET_PATH} bytes"
+            ));
+        }
+        return Ok(ServerTarget::Unix(path));
+    }
     if let Ok(ip) = raw.parse::<SocketAddr>() {
         return Ok(ServerTarget::Ip(ip));
     }
@@ -350,6 +395,11 @@ pub struct ServerConfig {
     #[serde(default)]
     #[schemars(range(min = 0, max = 255))]
     pub priority: u32,
+    /// Optional local source address for this server's outbound socket
+    /// (ADR-0043, HAProxy `source <addr>`): a literal `IP`, not a hostname.
+    /// Only meaningful for TCP targets; rejected on a Unix target.
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 /// One entry of a backend's server list, as declared (`server` or
@@ -363,6 +413,9 @@ pub struct ServerEntry<'a> {
     /// `0` = bounded only by the listener `maxconn` (see
     /// [`ServerConfig::maxconn`]).
     pub maxconn: u32,
+    /// Optional local source address (ADR-0043). The singular `server =`
+    /// shorthand has no place for it; use the `servers` array.
+    pub source: Option<&'a str>,
 }
 
 /// Active TCP health check (B11 TCP): `fall` consecutive failures drop the
@@ -453,6 +506,71 @@ pub struct LocalResponseConfig {
     pub content_type: String,
     /// Response body (bounded: [`MAX_LOCAL_RESPONSE_BYTES`]).
     pub body: String,
+}
+
+/// One custom error page (B-H15 · B-E18 · B-N14): the body or file that
+/// replaces a locally generated status, and optionally the matching upstream
+/// response.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ErrorPageConfig {
+    /// Status codes this page answers (400-599). One page may cover several.
+    pub codes: Vec<u16>,
+    /// Body file, relative to the config file (or absolute). Mutually
+    /// exclusive with `body`.
+    #[serde(default)]
+    pub file: Option<String>,
+    /// Inline body. Mutually exclusive with `file`.
+    #[serde(default)]
+    pub body: Option<String>,
+    /// Redirect target instead of a body (HAProxy `errorloc`): a path
+    /// starting with `/` or an absolute `http://`/`https://` URL. Mutually
+    /// exclusive with `file` and `body`; `status` must be a 3xx other than
+    /// 304, and defaults to 302.
+    #[serde(default)]
+    pub location: Option<String>,
+    /// `body` (default): the file is the payload. `raw`: the file is a
+    /// complete HTTP response (HAProxy `errorfile`), status line included.
+    #[serde(default)]
+    pub format: ErrorPageFormat,
+    /// Status to answer with instead of the one that fired (nginx
+    /// `error_page 404 =200 …`). Default: the code that fired.
+    #[serde(default)]
+    pub status: Option<u16>,
+    /// Content-Type of the payload (default `text/html; charset=utf-8`; a
+    /// `raw` file's own header wins).
+    #[serde(default = "default_error_page_content_type")]
+    pub content_type: String,
+    /// Also replace a matching **upstream** response with this page (nginx
+    /// `proxy_intercept_errors`, ingress-nginx `custom-http-errors`).
+    /// Default off: only responses EQProxy generates are replaced.
+    #[serde(default)]
+    pub intercept: bool,
+}
+
+/// Shape of an error-page file.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ErrorPageFormat {
+    /// Plain payload (the file is the body).
+    #[default]
+    Body,
+    /// A complete HTTP response: status line, headers, body.
+    Raw,
+}
+
+/// Highest number of pages one listener may declare.
+pub const MAX_ERROR_PAGES: usize = 32;
+
+/// Largest error-page payload accepted (bytes).
+///
+/// The whole page is served from memory, so the bound is what keeps the
+/// per-listener cost predictable; a larger file is a configuration error,
+/// never silently truncated.
+pub const MAX_ERROR_PAGE_BYTES: usize = 64 * 1024;
+
+fn default_error_page_content_type() -> String {
+    "text/html; charset=utf-8".to_owned()
 }
 
 /// Metrics options (D1): cardinality stays bounded; detailed per-server and
@@ -1048,6 +1166,9 @@ pub struct ListenerConfig {
     /// Custom response when no server is available (C9 minimal).
     #[serde(default)]
     pub local_response: Option<LocalResponseConfig>,
+    /// Custom error pages (B-H15/B-E18/B-N14). `http` mode only.
+    #[serde(default)]
+    pub error_pages: Vec<ErrorPageConfig>,
     /// Response compression (B-N6/H6): opt-in gzip/Brotli negotiated from the
     /// request's `Accept-Encoding`. `http` mode only.
     #[serde(default)]
@@ -1400,6 +1521,7 @@ impl BackendConfig {
                 backup: false,
                 priority: 0,
                 maxconn: 0,
+                source: None,
             }],
             (None, Some(servers)) => servers
                 .iter()
@@ -1409,6 +1531,7 @@ impl BackendConfig {
                     backup: s.backup,
                     priority: s.priority,
                     maxconn: s.maxconn,
+                    source: s.source.as_deref(),
                 })
                 .collect(),
             (None, None) => Vec::new(),

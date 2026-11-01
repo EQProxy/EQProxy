@@ -342,9 +342,45 @@ fn scalar_value(raw: &str) -> Result<Value, String> {
         if raw.len() < 2 || !raw.ends_with(quote) {
             return Err(format!("cadena sin cerrar: «{raw}»"));
         }
-        return Ok(Value::Scalar(raw[1..raw.len() - 1].to_owned()));
+        let inner = &raw[1..raw.len() - 1];
+        // YAML escapes only apply inside double quotes; a single-quoted
+        // scalar keeps its bytes (its only escape is `''`, below).
+        if quote == '"' {
+            return Ok(Value::Scalar(unescape_double(inner)?));
+        }
+        return Ok(Value::Scalar(inner.replace("''", "'")));
     }
     Ok(Value::Scalar(raw.to_owned()))
+}
+
+/// Resolves the YAML escapes of a double-quoted scalar.
+fn unescape_double(inner: &str) -> Result<String, String> {
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            Some('0') => out.push('\0'),
+            Some('b') => out.push('\u{8}'),
+            Some('f') => out.push('\u{c}'),
+            Some('"') => out.push('"'),
+            Some('\\') => out.push('\\'),
+            Some('/') => out.push('/'),
+            Some(other) => {
+                return Err(format!(
+                    "escape «\\{other}» no soportado en una cadena entre comillas dobles"
+                ));
+            }
+            None => return Err("cadena sin cerrar: termina en «\\»".to_owned()),
+        }
+    }
+    Ok(out)
 }
 
 fn split_flow(inner: &str) -> Vec<String> {
@@ -426,6 +462,22 @@ mod tests {
             Some("linea1\nlinea2")
         );
         assert_eq!(doc.get("next").and_then(Value::text), Some("1"));
+    }
+
+    #[test]
+    fn double_quoted_escapes_are_resolved_and_single_quotes_are_not() {
+        let doc = parse("body: \"linea 1\\nlinea 2\\tfin\"\nsingle: 'a\\nb'\nquote: 'it''s'\n");
+        assert_eq!(
+            doc.get("body").and_then(Value::text),
+            Some("linea 1\nlinea 2\tfin")
+        );
+        assert_eq!(
+            doc.get("single").and_then(Value::text),
+            Some("a\\nb"),
+            "single quotes carry their bytes; YAML does not unescape there"
+        );
+        assert_eq!(doc.get("quote").and_then(Value::text), Some("it's"));
+        assert!(documents("a: \"x\\qy\"\n").is_err(), "unknown escape");
     }
 
     #[test]

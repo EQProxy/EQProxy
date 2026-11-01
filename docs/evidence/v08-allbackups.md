@@ -58,38 +58,38 @@ servers = [
 ```
 
 - Selection still happens in the one function shared by `roundrobin`,
-  `leastconn`, affinity and retries ([balancer.rs:629](eqproxy-net/src/balancer.rs#L629)).
+  `leastconn`, affinity and retries ([balancer.rs:629](../../eqproxy-net/src/balancer.rs#L629)).
   Primaries (eligible: up, `ready`, `weight > 0`, resolved, not excluded by a
   retry) always outrank the backup tier — the pool is a backup tier, not a
-  union with the primaries ([balancer.rs:654](eqproxy-net/src/balancer.rs#L654)).
+  union with the primaries ([balancer.rs:654](../../eqproxy-net/src/balancer.rs#L654)).
 - With `all_backups = true` the tier predicate admits **every** eligible
-  backup ([balancer.rs:429](eqproxy-net/src/balancer.rs#L429)) and the rung
+  backup ([balancer.rs:429](../../eqproxy-net/src/balancer.rs#L429)) and the rung
   selection is skipped entirely, so the existing SWRR/leastconn code spreads
   the load by weight inside the pool. Retries, affinity and the drain/`weight
   = 0` rules keep working inside the pool unchanged; with the flag off the
   previous behaviour is untouched (the rung pick runs exactly as before).
 - Validation: `priority` + `all_backups` is an error naming
   `backend.api.servers[N].priority`
-  ([validate.rs:1469](eqproxy-config/src/validate.rs#L1469)), and
+  ([validate.rs:1469](../../eqproxy-config/src/validate.rs#L1469)), and
   `all_backups` in a backend with no `backup = true` slot is an error naming
-  `backend.api.all_backups` ([validate.rs:1480](eqproxy-config/src/validate.rs#L1480)).
+  `backend.api.all_backups` ([validate.rs:1480](../../eqproxy-config/src/validate.rs#L1480)).
   The public JSON Schema declares the field
-  ([schema.rs:1143](eqproxy-config/src/schema.rs#L1143), regenerated
+  ([schema.rs:1143](../../eqproxy-config/src/schema.rs#L1143), regenerated
   `eqproxy.schema.json`).
 - Observability: `GET /api/v1/status` publishes the live policy per backend
-  ([admin.rs:391](eqproxy-net/src/admin.rs#L391),
-  [admin.rs:1637](eqproxy-net/src/admin.rs#L1637)), `config explain` prints
-  `all_backups=true` when on ([main.rs:1660](eqproxy-cli/src/main.rs#L1660))
+  ([admin.rs:391](../../eqproxy-net/src/admin.rs#L391),
+  [admin.rs:1637](../../eqproxy-net/src/admin.rs#L1637)), `config explain` prints
+  `all_backups=true` when on ([main.rs:1660](../../eqproxy-cli/src/main.rs#L1660))
   and `config diff` reports the transition
-  ([main.rs:505](eqproxy-cli/src/main.rs#L505)).
+  ([main.rs:505](../../eqproxy-cli/src/main.rs#L505)).
 - The flag survives every balancer rebuild: `with_balance` and
   `with_server_modes` re-apply it
-  ([proxy.rs:153](eqproxy-net/src/proxy.rs#L153),
-  [proxy.rs:193](eqproxy-net/src/proxy.rs#L193)), and the CLI applies it to
-  the real topology ([main.rs:2481](eqproxy-cli/src/main.rs#L2481)). Startup
+  ([proxy.rs:153](../../eqproxy-net/src/proxy.rs#L153),
+  [proxy.rs:193](../../eqproxy-net/src/proxy.rs#L193)), and the CLI applies it to
+  the real topology ([main.rs:2481](../../eqproxy-cli/src/main.rs#L2481)). Startup
   and the hot write path build that topology through the same
-  `resolve_with` ([main.rs:2426](eqproxy-cli/src/main.rs#L2426) and
-  [main.rs:2192](eqproxy-cli/src/main.rs#L2192)), so a document `PUT` or
+  `resolve_with` ([main.rs:2426](../../eqproxy-cli/src/main.rs#L2426) and
+  [main.rs:2192](../../eqproxy-cli/src/main.rs#L2192)), so a document `PUT` or
   `SIGHUP` applies the policy too instead of only a restart.
 
 ## Tests in the suite

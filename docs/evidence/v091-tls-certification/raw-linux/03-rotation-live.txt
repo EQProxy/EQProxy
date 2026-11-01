@@ -1,0 +1,24 @@
+
+===== new default.pem leaf: 764aa4dbc7f8d7b4adcd8146a49978ddd8967e6f2a36309aba9d52d41f70002c (old: 915eeb24d6b8adc883732e1ada69ba43db99f824e7655a3a0847b3d639355d7a) =====
+
+===== POST /api/v1/certificates/reload =====
+{"certificates":[{"changed":true,"fingerprint":"sha256:764aa4dbc7f8d7b4adcd8146a49978ddd8967e6f2a36309aba9d52d41f70002c","listen":"127.0.0.1:58773","listener":"web","quic":false}],"elapsed_ms":0,"listeners":[{"listen":"127.0.0.1:58773","name":"web"}],"revision":"v3","summary":"listeners kept=1 added=0 removed=0"}
+http status: 200
+
+===== live keep-alive TLS connection (first before, second after the swap) =====
+first: HTTP/1.1 200 OK body=b'ok\n' connection=keep-alive
+second: HTTP/1.1 200 OK body=b'ok\n' connection=keep-alive
+
+===== new handshakes =====
+default served: 764aa4dbc7f8d7b4adcd8146a49978ddd8967e6f2a36309aba9d52d41f70002c
+beta served:    69f018c68e9350619643d1bfe7663e0550e3f92070d1bbac165c4c668490128c
+
+===== status fingerprint =====
+sha256:764aa4dbc7f8d7b4adcd8146a49978ddd8967e6f2a36309aba9d52d41f70002c
+
+===== process identity (PID and port must not change) =====
+pid: 90 (alive: yes)
+listen: 127.0.0.1:58773
+
+===== metrics =====
+config_reloads=2

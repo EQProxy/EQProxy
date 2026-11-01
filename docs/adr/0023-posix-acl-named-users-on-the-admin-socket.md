@@ -7,7 +7,7 @@ Language: **English**.
 - Related: [ADR-0021](0021-admin-unix-socket.md) (Unix endpoint),
   [ADR-0022](0022-admin-socket-group-and-peer-uid.md) (group mode and peer-uid
   allowlist), [ADR-0016](0016-wolfi-runtime-base.md) (static musl image),
-  [SPEC §9](../SPEC.md), [THREAT_MODEL.md](../../THREAT_MODEL.md)
+  [SPEC §9](../../SPEC.md), [THREAT_MODEL.md](../../THREAT_MODEL.md)
 
 ## Context
 

@@ -1,0 +1,21 @@
+
+===== new sni.pem leaf: 915eeb24d6b8adc883732e1ada69ba43db99f824e7655a3a0847b3d639355d7a (old: 69f018c68e9350619643d1bfe7663e0550e3f92070d1bbac165c4c668490128c) =====
+
+===== SIGHUP sent to PID 90 =====
+
+===== handshakes after the signal =====
+beta.example.test: 915eeb24d6b8adc883732e1ada69ba43db99f824e7655a3a0847b3d639355d7a
+default (no SNI):  764aa4dbc7f8d7b4adcd8146a49978ddd8967e6f2a36309aba9d52d41f70002c
+
+===== status fingerprint =====
+sha256:764aa4dbc7f8d7b4adcd8146a49978ddd8967e6f2a36309aba9d52d41f70002c
+
+===== metrics =====
+config_reloads=3
+
+===== proxy log =====
+INFO config reload applied: listeners kept=1 added=0 removed=0 in 7.041µs
+AUDIT {"event":"admin_write","ts_unix":1793503128,"remote":"127.0.0.1:59244","role":"operate","method":"POST","path":"/api/v1/certificates/reload","status":200,"backend":null,"server":null,"from":null,"to":null}
+ERROR config reload rejected: inconsistent configuration after validation: listener.web.tls: invalid PEM private key: the private key does not match the certificate's public key: the files belong to different pairs
+AUDIT {"event":"admin_write","ts_unix":1793503128,"remote":"127.0.0.1:59288","role":"operate","method":"POST","path":"/api/v1/certificates/reload","status":400,"backend":null,"server":null,"from":null,"to":null}
+INFO config reload applied: listeners kept=1 added=0 removed=0 in 15.667µs

@@ -4,11 +4,11 @@ Language: **English**.
 
 - State: **Accepted** (2026-10-25, roadmap v0.8 / PARITY D7)
 - Date: 2026-10-25
-- Related: [ADR-0011](0011-tls-and-certificates.md) (TLS stack),
+- Related: [SPEC §7.5](../../SPEC.md) (TLS stack),
   [ADR-0013](0013-http3-quic.md) (the QUIC endpoint),
   [ADR-0018](0018-first-write-path-server-state.md) (the write model),
   [ADR-0019](0019-hot-config-writes-via-admin-api.md) (single writer),
-  [SPEC §9](../SPEC.md), [THREAT_MODEL.md](../../THREAT_MODEL.md) (T10)
+  [SPEC §9](../../SPEC.md), [THREAT_MODEL.md](../../THREAT_MODEL.md) (T10)
 
 ## Context
 

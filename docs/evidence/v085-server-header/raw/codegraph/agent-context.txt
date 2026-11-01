@@ -1,0 +1,18 @@
+The Server header is stamped by the proxy itself, in the h1 head-rewrite helper `with_server_header` in `eqproxy-net/src/http1.rs:1720-1741`, plus a handful of local-response writers in the same file and the h2/h3 `refuse` helpers; the origin's own `Server` line is dropped, not passed through.
+
+**The main h1 path.** `with_server_header(head: &[u8]) -> Vec<u8>` (eqproxy-net/src/http1.rs:1720-1741) splits the raw response head on CRLF, keeps the status line, pushes `SERVER_HEADER` immediately after it, and then copies every other header line whose name is not `server` (matched case-insensitively via `eq_line[..name_end].eq_ignore_ascii_case(b"server")`). It then rejoins with `join_head_lines`. Its direct callers are `serve_http` and `serve_cached` (both eqproxy-net/src/http1.rs), so every proxied h1 response and every cache hit goes through this one function. The constant `SERVER_HEADER` expands to the literal text `Server: eqproxy`, as asserted at eqproxy-net/src/http1.rs:3661 and eqproxy-net/src/http1.rs:3705.
+
+**Locally generated h1 responses** build the header into the format string rather than going through the helper:
+- `write_error` — `"HTTP/1.1 {status} {reason}\r\n{SERVER_HEADER}\r\nconnection: close\r\ncontent-length: 0\r\n\r\n"` at eqproxy-net/src/http1.rs:1117-1119 (asserted at eqproxy-net/src/http1.rs:3700-3706).
+- `write_no_server` (local_response path) — eqproxy-net/src/http1.rs:1169-1176.
+- `write_rule_response` — starts the head with `SERVER_HEADER` at eqproxy-net/src/http1.rs:1213-1217 and explicitly skips any configured `response_headers` entry named `server` (eqproxy-net/src/http1.rs:1228-1238), so a rule can't add a second banner.
+
+**HTTP/2 and HTTP/3** set the header through the header map, in the refusal path only (the comment says "The engine never sees this stream, so the product banner is set here"):
+- `refuse` in eqproxy-net/src/http2.rs:329-342 — `response.headers_mut().insert("server", HeaderValue::from_static("eqproxy"))`.
+- `refuse` in eqproxy-net/src/http3.rs:946-959 — same insert.
+
+**Neighbouring code a change would have to account for.** `with_server_header` sits beside `append_response_headers` (order matters: rules append first, then the helper normalizes — see the test at eqproxy-net/src/http1.rs:3678-3697) and beside `join_head_lines`, which it uses. The h2 streaming relay `relay_response` (eqproxy-net/src/http2.rs:487-614) copies the backend head line by line for h2 streams, and `is_hop_by_hop`/the other `response_headers` helper it imports (via eqproxy-net/src/ws.rs:48) are the analogous h2 surfaces.
+
+**Tests that pin the current behaviour:** `server_header_replaces_the_origin_value_without_a_version` (eqproxy-net/src/http1.rs:3658-3675), `response_header_actions_cannot_add_a_second_a_banner` (eqproxy-net/src/http1.rs:3678-3697), `local_error_carries_the_product_server_header` (eqproxy-net/src/http1.rs:3700-3706), `rule_response_carries_the_product_server_header` (eqproxy-net/src/http1.rs:3709-3726), and the end-to-end `server_header_is_the_product_banner_not_the_origin` (eqproxy-net/tests/e2e_http1.rs:325-376); cache-side assertion at eqproxy-net/tests/e2e_cache.rs:413.
+
+**Gap:** I could not confirm the exact line that injects `Server: eqproxy` on the *successful* h2/h3 proxied path (only the `refuse` helpers are confirmed). The evidence suggests it lives in or near `relay_response` (eqproxy-net/src/http2.rs:487+) and the h3 `head` function, but the tool budget ran out before I could read those bodies — check there first if the change is meant to cover h2/h3 too.

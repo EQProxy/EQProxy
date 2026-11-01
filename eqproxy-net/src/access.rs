@@ -98,7 +98,7 @@ pub struct AccessEntry {
     pub status: u16,
     pub duration_ms: u64,
     pub backend: Option<String>,
-    pub server: Option<SocketAddr>,
+    pub server: Option<String>,
     pub referer: Option<String>,
     pub user_agent: Option<String>,
     /// Response body bytes when exactly known; `None` otherwise.
@@ -291,7 +291,7 @@ fn format_json(entry: &AccessEntry) -> String {
         status: entry.status,
         duration_ms: entry.duration_ms,
         backend: entry.backend.as_deref(),
-        server: entry.server.map(|addr| addr.to_string()),
+        server: entry.server.clone(),
         referer: entry.referer.as_deref(),
         user_agent: entry.user_agent.as_deref(),
         bytes: entry.bytes,
@@ -437,10 +437,12 @@ impl AccessRecord {
         }
     }
 
-    pub fn backend(&mut self, name: &str, server: SocketAddr) {
+    pub fn backend(&mut self, name: &str, server: &crate::balancer::Endpoint) {
         if let Some(entry) = self.entry.as_mut() {
             entry.backend = Some(name.to_owned());
-            entry.server = Some(server);
+            // The rendered server is the endpoint that served: an address or
+            // a `unix:/path` target (ADR-0043), never an invented one.
+            entry.server = Some(server.to_string());
         }
     }
 
@@ -482,10 +484,7 @@ mod tests {
             status: 200,
             duration_ms: 12,
             backend: Some("api".to_owned()),
-            server: Some(SocketAddr::new(
-                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
-                9000,
-            )),
+            server: Some("10.0.0.2:9000".to_owned()),
             referer: None,
             user_agent: Some("curl/8.7".to_owned()),
             bytes: Some(17),

@@ -4,7 +4,7 @@ Language: **English**.
 
 - State: **Accepted** (2026-10-24, first slice of roadmap v0.8 / SPEC §9)
 - Date: 2026-10-24
-- Related: [SPEC §9](../SPEC.md) (administration and web panel),
+- Related: [SPEC §9](../../SPEC.md) (administration and web panel),
   [THREAT_MODEL.md](../../THREAT_MODEL.md), [ADR-0002](0002-configuration-format.md)
   (configuration format)
 

@@ -1,0 +1,379 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 4.12kB 0.0s done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for cgr.dev/chainguard/wolfi-base:latest@sha256:360896efb0753a5701c48f860e17130c205eae5a264797aa3e7ea126ee2923a7
+#2 ...
+
+#3 [auth] library/rust:pull token for registry-1.docker.io
+#3 DONE 0.0s
+
+#4 [internal] load metadata for docker.io/library/rust:1.99.1-alpine
+#4 DONE 0.8s
+
+#2 [internal] load metadata for cgr.dev/chainguard/wolfi-base:latest@sha256:360896efb0753a5701c48f860e17130c205eae5a264797aa3e7ea126ee2923a7
+#2 DONE 1.0s
+
+#5 [internal] load .dockerignore
+#5 transferring context: 527B 0.0s done
+#5 DONE 0.0s
+
+#6 [builder  1/15] FROM docker.io/library/rust:1.99.1-alpine@sha256:7e9e2d068a107a2adafd19930011178d14a78326053cd4c3a9f7ad3fd049557d
+#6 resolve docker.io/library/rust:1.99.1-alpine@sha256:7e9e2d068a107a2adafd19930011178d14a78326053cd4c3a9f7ad3fd049557d 0.0s done
+#6 DONE 0.0s
+
+#7 [runtime 1/3] FROM cgr.dev/chainguard/wolfi-base:latest@sha256:360896efb0753a5701c48f860e17130c205eae5a264797aa3e7ea126ee2923a7
+#7 resolve cgr.dev/chainguard/wolfi-base:latest@sha256:360896efb0753a5701c48f860e17130c205eae5a264797aa3e7ea126ee2923a7 0.0s done
+#7 DONE 0.0s
+
+#8 [internal] load build context
+#8 transferring context: 23.81kB 0.0s done
+#8 DONE 0.0s
+
+#9 [builder  2/15] WORKDIR /src
+#9 CACHED
+
+#10 [builder  3/15] RUN apk add --no-cache musl-dev cmake make gcc g++ perl linux-headers     ca-certificates file
+#10 CACHED
+
+#11 [builder  4/15] COPY Cargo.toml Cargo.lock ./
+#11 CACHED
+
+#12 [builder  5/15] COPY eqproxy.schema.json ./
+#12 DONE 0.0s
+
+#13 [builder  6/15] COPY eqproxy-core/Cargo.toml eqproxy-core/Cargo.toml
+#13 DONE 0.0s
+
+#14 [builder  7/15] COPY eqproxy-config/Cargo.toml eqproxy-config/Cargo.toml
+#14 DONE 0.0s
+
+#15 [builder  8/15] COPY eqproxy-net/Cargo.toml eqproxy-net/Cargo.toml
+#15 DONE 0.0s
+
+#16 [builder  9/15] COPY eqproxy-cli/Cargo.toml eqproxy-cli/Cargo.toml
+#16 DONE 0.0s
+
+#17 [builder 10/15] RUN mkdir -p eqproxy-core/src eqproxy-config/src eqproxy-net/src eqproxy-cli/src     && echo "" > eqproxy-core/src/lib.rs     && echo "" > eqproxy-config/src/lib.rs     && echo "" > eqproxy-net/src/lib.rs     && echo "fn main() {}" > eqproxy-cli/src/main.rs     && cargo fetch --locked
+#17 1.333     Updating crates.io index
+#17 9.530  Downloading crates ...
+#17 9.640   Downloaded windows-link v0.2.1
+#17 9.657   Downloaded errno v0.3.14
+#17 9.665   Downloaded unicode-ident v1.0.27
+#17 9.674   Downloaded tokio-macros v2.7.2
+#17 9.690   Downloaded windows-targets v0.52.6
+#17 9.701   Downloaded futures-sink v0.3.34
+#17 9.719   Downloaded itoa v1.0.18
+#17 9.726   Downloaded thiserror v2.0.21
+#17 9.763   Downloaded wasm-bindgen-shared v0.2.129
+#17 9.768   Downloaded wasm-bindgen-macro v0.2.129
+#17 9.770   Downloaded adler2 v2.0.1
+#17 9.773   Downloaded wasmtime-internal-component-util v50.0.1
+#17 9.777   Downloaded leb128fmt v0.1.0
+#17 9.779   Downloaded embedded-io v0.6.1
+#17 9.784   Downloaded futures-macro v0.3.34
+#17 9.787   Downloaded cobs v0.3.0
+#17 9.791   Downloaded embedded-io v0.4.0
+#17 9.794   Downloaded wasmtime-internal-versioned-export-macros v50.0.1
+#17 9.796   Downloaded winapi-util v0.1.11
+#17 9.799   Downloaded cfg-if v1.0.5
+#17 9.802   Downloaded futures-task v0.3.34
+#17 9.804   Downloaded mimalloc v0.1.52
+#17 9.808   Downloaded equivalent v1.0.3
+#17 9.811   Downloaded crypto-common v0.1.7
+#17 9.813   Downloaded futures-io v0.3.34
+#17 9.815   Downloaded ref-cast-impl v1.0.27
+#17 9.820   Downloaded futures-core v0.3.34
+#17 9.824   Downloaded cranelift-bitset v0.137.1
+#17 9.839   Downloaded xattr v1.6.1
+#17 9.850   Downloaded quote v1.0.47
+#17 9.855   Downloaded signal-hook-registry v1.4.8
+#17 9.863   Downloaded anstyle-wincon v3.0.11
+#17 9.871   Downloaded ref-cast v1.0.27
+#17 9.877   Downloaded fnv v1.0.7
+#17 9.881   Downloaded block-buffer v0.10.4
+#17 9.889   Downloaded generic-array v0.14.7
+#17 9.897   Downloaded jobserver v0.1.35
+#17 9.906   Downloaded version_check v0.9.5
+#17 9.909   Downloaded simd-adler32 v0.3.10
+#17 9.916   Downloaded zmij v1.0.23
+#17 9.920   Downloaded rustc-hash v2.1.3
+#17 9.923   Downloaded wasmtime-internal-unwinder v50.0.1
+#17 9.926   Downloaded rustc-demangle v0.1.28
+#17 9.931   Downloaded find-msvc-tools v0.1.14
+#17 9.934   Downloaded slab v0.4.12
+#17 9.939   Downloaded zeroize v1.9.1
+#17 9.942   Downloaded target-lexicon v0.13.5
+#17 9.971   Downloaded web-time v1.1.0
+#17 9.975   Downloaded wasmtime-internal-jit-debug v50.0.1
+#17 9.978   Downloaded rlimit v0.10.2
+#17 9.984   Downloaded shlex v2.0.1
+#17 9.988   Downloaded termcolor v1.4.1
+#17 9.990   Downloaded pulley-macros v50.0.1
+#17 9.992   Downloaded cranelift-srcgen v0.137.1
+#17 9.994   Downloaded cranelift-native v0.137.1
+#17 9.996   Downloaded rustversion v1.0.23
+#17 10.00   Downloaded foldhash v0.2.0
+#17 10.00   Downloaded cranelift-codegen-shared v0.137.1
+#17 10.01   Downloaded is_terminal_polyfill v1.70.2
+#17 10.01   Downloaded memfd v0.6.6
+#17 10.01   Downloaded anstream v1.0.0
+#17 10.02   Downloaded schemars_derive v1.2.3
+#17 10.02   Downloaded anstyle v1.0.14
+#17 10.02   Downloaded utf8parse v0.2.2
+#17 10.03   Downloaded colorchoice v1.0.5
+#17 10.03   Downloaded anstyle-query v1.1.5
+#17 10.03   Downloaded clap_lex v1.1.1
+#17 10.03   Downloaded dyn-clone v1.0.20
+#17 10.04   Downloaded strsim v0.11.1
+#17 10.04   Downloaded pin-project-lite v0.2.17
+#17 10.05   Downloaded once_cell v1.21.4
+#17 10.06   Downloaded smallvec v1.16.4
+#17 10.06   Downloaded cranelift-control v0.137.1
+#17 10.06   Downloaded heck v0.5.0
+#17 10.07   Downloaded postcard v1.1.3
+#17 10.07   Downloaded rand_core v0.10.1
+#17 10.08   Downloaded wasmtime-internal-jit-icache-coherence v50.0.1
+#17 10.08   Downloaded futures-channel v0.3.34
+#17 10.09   Downloaded dunce v1.0.5
+#17 10.09   Downloaded alloc-stdlib v0.3.0
+#17 10.10   Downloaded subtle v2.6.1
+#17 10.10   Downloaded semver v1.0.28
+#17 10.12   Downloaded toml_datetime v0.6.11
+#17 10.12   Downloaded proc-macro2 v1.0.107
+#17 10.13   Downloaded socket2 v0.6.5
+#17 10.13   Downloaded serde_derive_internals v0.30.0
+#17 10.13   Downloaded anstyle-parse v1.0.0
+#17 10.14   Downloaded untrusted v0.9.0
+#17 10.14   Downloaded wasi v0.11.1+wasi-snapshot-preview1
+#17 10.15   Downloaded rustls-pki-types v1.15.1
+#17 10.15   Downloaded bitflags v2.13.2
+#17 10.16   Downloaded getrandom v0.4.3
+#17 10.17   Downloaded anyhow v1.0.104
+#17 10.18   Downloaded rand_pcg v0.10.2
+#17 10.18   Downloaded wasmtime-internal-core v50.0.1
+#17 10.23   Downloaded atomic-waker v1.1.2
+#17 10.25   Downloaded serde_core v1.0.229
+#17 10.26   Downloaded h3-quinn v0.0.10
+#17 10.26   Downloaded serde_derive v1.0.229
+#17 10.27   Downloaded wasmprinter v0.261.0
+#17 10.40   Downloaded untrusted v0.7.1
+#17 10.62   Downloaded cfg_aliases v0.2.2
+#17 10.79   Downloaded allocator-api2 v0.2.21
+#17 10.87   Downloaded r-efi v6.0.0
+#17 10.88   Downloaded thiserror-impl v2.0.21
+#17 10.91   Downloaded miniz_oxide v0.9.1
+#17 10.92   Downloaded bytes v1.12.1
+#17 10.94   Downloaded clap v4.6.7
+#17 10.98   Downloaded serde v1.0.229
+#17 11.02   Downloaded wasm-encoder v0.261.0
+#17 11.04   Downloaded wasm-bindgen v0.2.129
+#17 11.06   Downloaded crc32fast v1.5.3
+#17 11.09   Downloaded md-5 v0.10.6
+#17 11.12   Downloaded flate2 v1.1.10
+#17 11.16   Downloaded cpufeatures v0.3.1
+#17 11.29   Downloaded bumpalo v3.20.3
+#17 11.31   Downloaded indexmap v2.14.2
+#17 11.32   Downloaded memchr v2.8.3
+#17 11.42   Downloaded serde_spanned v0.6.9
+#17 11.48   Downloaded lru-slab v0.1.3
+#17 11.53   Downloaded toml_write v0.1.2
+#17 11.55   Downloaded alloc-no-stdlib v3.0.0
+#17 11.55   Downloaded mio v1.2.4
+#17 11.61   Downloaded once_cell_polyfill v1.70.2
+#17 11.62   Downloaded cpufeatures v0.2.17
+#17 11.66   Downloaded cc v1.8.0
+#17 11.67   Downloaded cranelift-entity v0.137.1
+#17 11.71   Downloaded wasm-bindgen-macro-support v0.2.129
+#17 11.71   Downloaded digest v0.10.7
+#17 11.71   Downloaded futures-executor v0.3.34
+#17 11.75   Downloaded stable_deref_trait v1.2.1
+#17 11.75   Downloaded either v1.19.0
+#17 11.82   Downloaded fastrand v2.5.0
+#17 11.85   Downloaded pkg-config v0.3.34
+#17 11.85   Downloaded js-sys v0.3.106
+#17 11.94   Downloaded tokio-rustls v0.26.6
+#17 11.95   Downloaded hashbrown v0.17.1
+#17 11.98   Downloaded serde_path_to_error v0.1.20
+#17 12.04   Downloaded fs_extra v1.3.0
+#17 12.04   Downloaded libm v0.2.16
+#17 12.06   Downloaded futures-util v0.3.34
+#17 12.17   Downloaded cranelift-bforest v0.137.1
+#17 12.17   Downloaded sha2 v0.10.9
+#17 12.18   Downloaded cranelift-assembler-x64 v0.137.1
+#17 12.19   Downloaded wasmtime-internal-fiber v50.0.1
+#17 12.22   Downloaded serde_json v1.0.154
+#17 12.24   Downloaded mach2 v0.6.0
+#17 12.24   Downloaded getrandom v0.2.17
+#17 12.25   Downloaded async-trait v0.1.92
+#17 12.26   Downloaded clap_builder v4.6.7
+#17 12.28   Downloaded toml v0.8.23
+#17 12.30   Downloaded quinn-udp v0.5.16
+#17 12.34   Downloaded zlib-rs v0.6.8
+#17 12.36   Downloaded cmake v0.1.58
+#17 12.39   Downloaded webpki-roots v1.0.10
+#17 12.42   Downloaded chacha20 v0.10.2
+#17 12.48   Downloaded clap_derive v4.6.7
+#17 12.49   Downloaded log v0.4.34
+#17 12.52   Downloaded arbitrary v1.5.0
+#17 12.53   Downloaded cranelift-assembler-x64-meta v0.137.1
+#17 12.54   Downloaded cranelift-frontend v0.137.1
+#17 12.56   Downloaded tinyvec v1.13.3
+#17 12.64   Downloaded futures v0.3.34
+#17 12.67   Downloaded addr2line v0.26.1
+#17 12.76   Downloaded pulley-interpreter v50.0.1
+#17 12.77   Downloaded tracing-core v0.1.36
+#17 12.79   Downloaded toml_edit v0.22.27
+#17 12.80   Downloaded wasmparser v0.261.0
+#17 12.82   Downloaded syn v3.0.9
+#17 12.93   Downloaded cpp_demangle v0.5.1
+#17 12.97   Downloaded quinn v0.11.12
+#17 12.98   Downloaded schemars v1.2.3
+#17 13.03   Downloaded base64 v0.22.1
+#17 13.09   Downloaded cranelift-codegen-meta v0.137.1
+#17 13.10   Downloaded cranelift-isle v0.137.1
+#17 13.11   Downloaded wasmtime-environ v50.0.1
+#17 13.15   Downloaded rustls-webpki v0.103.16
+#17 13.18   Downloaded typenum v1.20.1
+#17 13.20   Downloaded rand v0.10.3
+#17 13.23   Downloaded http v1.5.0
+#17 13.32   Downloaded h3 v0.0.8
+#17 13.34   Downloaded windows_x86_64_gnullvm v0.52.6
+#17 13.43   Downloaded windows_aarch64_gnullvm v0.52.6
+#17 13.56   Downloaded rustix v1.1.5
+#17 13.66   Downloaded regalloc2 v0.15.2
+#17 13.67   Downloaded hashbrown v0.16.1
+#17 13.87   Downloaded windows_i686_gnullvm v0.52.6
+#17 14.04   Downloaded regex v1.13.1
+#17 14.15   Downloaded tokio-util v0.7.20
+#17 14.19   Downloaded itertools v0.14.0
+#17 14.21   Downloaded libmimalloc-sys v0.1.49
+#17 14.38   Downloaded h2 v0.4.20
+#17 14.43   Downloaded winnow v0.7.15
+#17 14.49   Downloaded aho-corasick v1.1.5
+#17 14.96   Downloaded aws-lc-rs v1.18.2
+#17 15.04   Downloaded brotli-decompressor v6.0.1
+#17 15.12   Downloaded wasmtime-internal-cranelift v50.0.1
+#17 15.17   Downloaded quinn-proto v0.11.19
+#17 15.39   Downloaded gimli v0.33.0
+#17 15.62   Downloaded rustls v0.23.46
+#17 15.65   Downloaded regex-syntax v0.8.11
+#17 15.73   Downloaded object v0.40.0
+#17 15.79   Downloaded windows_x86_64_gnu v0.52.6
+#17 16.06   Downloaded tracing v0.1.44
+#17 16.12   Downloaded windows_aarch64_msvc v0.52.6
+#17 16.24   Downloaded windows_i686_gnu v0.52.6
+#17 16.42   Downloaded libc v0.2.190
+#17 16.54   Downloaded windows_x86_64_msvc v0.52.6
+#17 16.64   Downloaded windows_i686_msvc v0.52.6
+#17 16.76   Downloaded tokio v1.53.3
+#17 16.85   Downloaded regex-automata v0.4.18
+#17 16.88   Downloaded wasmtime v50.0.1
+#17 16.95   Downloaded brotli v9.0.0
+#17 17.92   Downloaded cranelift-codegen v0.137.1
+#17 18.41   Downloaded ring v0.17.14
+#17 19.15   Downloaded windows-sys v0.61.2
+#17 19.36   Downloaded windows-sys v0.52.0
+#17 19.55   Downloaded linux-raw-sys v0.12.1
+#17 23.56   Downloaded aws-lc-sys v0.46.0
+#17 DONE 25.1s
+
+#18 [builder 11/15] COPY eqproxy-core eqproxy-core
+#18 DONE 0.1s
+
+#19 [builder 12/15] COPY eqproxy-config eqproxy-config
+#19 DONE 0.0s
+
+#20 [builder 13/15] COPY eqproxy-net eqproxy-net
+#20 DONE 0.0s
+
+#21 [builder 14/15] COPY eqproxy-cli eqproxy-cli
+#21 DONE 0.0s
+
+#22 [builder 15/15] RUN cargo build --release --locked -p eqproxy-cli     && cp target/release/eqproxy /opt/eqproxy     && file /opt/eqproxy | grep -Eq 'statically linked|static-pie linked'
+#22 1.095    Compiling proc-macro2 v1.0.107
+#22 1.096    Compiling unicode-ident v1.0.27
+#22 1.097    Compiling quote v1.0.47
+#22 1.097    Compiling libc v0.2.190
+#22 1.097    Compiling serde_core v1.0.229
+#22 1.097    Compiling serde v1.0.229
+#22 1.098    Compiling libm v0.2.16
+#22 1.098    Compiling foldhash v0.2.0
+#22 1.098    Compiling shlex v2.0.1
+#22 1.098    Compiling find-msvc-tools v0.1.14
+#22 4.703    Compiling cfg-if v1.0.5
+#22 5.792    Compiling log v0.4.34
+#22 6.220    Compiling memchr v2.8.3
+#22 6.431    Compiling version_check v0.9.5
+#22 6.454    Compiling pin-project-lite v0.2.17
+#22 6.472    Compiling thiserror v2.0.21
+#22 6.492    Compiling typenum v1.20.1
+#22 8.630    Compiling wasmtime-internal-core v50.0.1
+#22 10.51    Compiling equivalent v1.0.3
+#22 10.54    Compiling generic-array v0.14.7
+#22 12.14    Compiling cranelift-srcgen v0.137.1
+#22 13.62    Compiling jobserver v0.1.35
+#22 21.72    Compiling cranelift-assembler-x64-meta v0.137.1
+#22 24.62    Compiling hashbrown v0.17.1
+#22 24.71    Compiling pkg-config v0.3.34
+#22 27.04    Compiling cc v1.8.0
+#22 28.85    Compiling fs_extra v1.3.0
+#22 32.49    Compiling syn v3.0.9
+#22 39.85    Compiling dunce v1.0.5
+#22 41.54    Compiling crypto-common v0.1.7
+#22 41.71    Compiling block-buffer v0.10.4
+#22 43.00    Compiling bytes v1.12.1
+#22 45.20    Compiling heck v0.5.0
+#22 48.18    Compiling cmake v0.1.58
+#22 49.77    Compiling indexmap v2.14.2
+#22 50.19    Compiling digest v0.10.7
+#22 50.44    Compiling errno v0.3.14
+#22 52.53    Compiling cranelift-bitset v0.137.1
+#22 53.51    Compiling socket2 v0.6.5
+#22 53.65    Compiling cranelift-isle v0.137.1
+#22 53.84    Compiling rustc-hash v2.1.3
+#22 59.80    Compiling aws-lc-sys v0.46.0
+#22 61.00    Compiling once_cell v1.21.4
+#22 61.71    Compiling signal-hook-registry v1.4.8
+#22 62.08    Compiling mio v1.2.4
+#22 62.53    Compiling bitflags v2.13.2
+#22 63.11    Compiling aws-lc-rs v1.18.2
+#22 66.36    Compiling cranelift-codegen-shared v0.137.1
+#22 66.75    Compiling fnv v1.0.7
+#22 68.25    Compiling zeroize v1.9.1
+#22 68.29    Compiling target-lexicon v0.13.5
+#22 69.83    Compiling serde_derive v1.0.229
+#22 70.96    Compiling thiserror-impl v2.0.21
+#22 71.43    Compiling pulley-macros v50.0.1
+#22 72.26    Compiling tokio-macros v2.7.2
+#22 72.79    Compiling cranelift-assembler-x64 v0.137.1
+#22 74.32    Compiling itoa v1.0.18
+#22 75.78    Compiling slab v0.4.12
+#22 76.53    Compiling allocator-api2 v0.2.21
+#22 79.76    Compiling crc32fast v1.5.3
+#22 79.81    Compiling pulley-interpreter v50.0.1
+#22 81.19    Compiling tokio v1.53.3
+#22 82.28    Compiling futures-core v0.3.34
+#22 82.34    Compiling futures-sink v0.3.34
+#22 82.71    Compiling hashbrown v0.16.1
+#22 84.24    Compiling bumpalo v3.20.3
+#22 84.96    Compiling cobs v0.3.0
+#22 86.22    Compiling cranelift-codegen-meta v0.137.1
+#22 86.42    Compiling rustls-pki-types v1.15.1
+#22 86.93    Compiling arbitrary v1.5.0
+#22 88.86    Compiling gimli v0.33.0
+#22 89.21    Compiling anyhow v1.0.104
+#22 90.05    Compiling rand_core v0.10.1
+#22 92.47    Compiling smallvec v1.16.4
+#22 92.67    Compiling postcard v1.1.3
+#22 92.89    Compiling cpufeatures v0.2.17
+#22 94.31    Compiling untrusted v0.7.1
+#22 94.89    Compiling cfg_aliases v0.2.2
+#22 95.23    Compiling sha2 v0.10.9
+#22 97.24    Compiling cranelift-codegen v0.137.1
+#22 98.78    Compiling regalloc2 v0.15.2
+#22 98.85    Compiling cranelift-control v0.137.1
+#22 101.6    Compiling tracing-core v0.1.36
+#22 103.5    Compiling cranelift-entity v0.137.1

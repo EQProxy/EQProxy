@@ -160,7 +160,7 @@ max_stream_duration = "0s"
 # Certificates of a live listener — QUIC included — are renewed in place:
 # write the new files where this section points and call
 # `POST /api/v1/certificates/reload` on the admin plane (ADR-0025). ALPN,
-# client_ca and min_version still need a restart on a QUIC listener.
+# client_ca and min_version/max_version still need a restart on a QUIC listener.
 #quic = true
 
 # TLS termination (A11): optional. Without this section the listener is plain TCP.
@@ -169,6 +169,7 @@ max_stream_duration = "0s"
 #key = "certs/privkey.pem"     # PEM private key (PKCS#8/PKCS#1/SEC1)
 #alpn = ["http/1.1"]           # offered ALPN (A14); empty = no ALPN
 #min_version = "1.2"           # "1.2" (default) or "1.3"
+#max_version = "1.3"           # optional cap: "1.2" = TLS 1.2 only (never below min_version)
 #client_ca = "certs/client-ca.pem"  # mTLS (A15): client certs must chain to this CA
 
 # Additional certificates selected by SNI (B-I2/B-H10/B-E9): the cert/key
@@ -198,6 +199,37 @@ max_stream_duration = "0s"
 #status = 503
 #content_type = "text/plain"
 #body = "back soon"
+
+# Custom error pages (B-H15/B-E18/B-N14, http mode, ADR-0045). One page per
+# status: `codes` may list several, and a code repeated across pages is a
+# configuration error. Exactly one of `file` (relative to this file),
+# `body` and `location` (a 3xx redirect) is required. Without `intercept` a
+# page answers only the statuses
+# EQProxy generates itself (no server, connect failure, header timeout,
+# rejected request); `intercept = true` also replaces a matching response of
+# the backend, whatever its body was.
+#[[listener.web.error_pages]]
+#codes = [502, 503, 504]
+#file = "errors/50x.html"
+#content_type = "text/html; charset=utf-8"   # default
+#status = 503                               # answer with another status (200-599)
+#intercept = false                          # true = also a backend response
+#
+## HAProxy `errorfile` files are complete HTTP responses: format = "raw"
+## parses the status line, Content-Type and body at load, and refuses a
+## Content-Length that disagrees with the file.
+#[[listener.web.error_pages]]
+#codes = [502]
+#file = "errors/502.http"
+#format = "raw"
+#
+## HAProxy `errorloc`: a 3xx redirect instead of a body. `location` is a
+## static path or absolute http(s) URL, exclusive with file/body; status
+## defaults to 302 and must be 3xx (304 is refused).
+#[[listener.web.error_pages]]
+#codes = [503]
+#location = "https://status.example.com/maintenance"
+#status = 302
 
 # Routing rules (B-H3/B-H4; mode = "http" only): ordered, first match
 # wins; the listener's `backend` is the fallback when no rule matches.
@@ -327,11 +359,19 @@ max_stream_duration = "0s"
 # One server (compat 0.1.0) …
 server = "127.0.0.1:9000"
 # … or several with weights (B1/B7). `server` and `servers` are mutually exclusive.
-# Each `addr` is `IP:PORT` or `HOSTNAME:PORT` (B-H13/B-N18/B-E15): names
-# are resolved in the background — the listeners never block on DNS and a
-# name that is not resolved yet answers an explicit 503 (counted).
+# Each `addr` is `IP:PORT`, `HOSTNAME:PORT` (B-H13/B-N18/B-E15) or
+# `unix:/absolute/path` (ADR-0043): names are resolved in the background —
+# the listeners never block on DNS and a name that is not resolved yet answers
+# an explicit 503 (counted). A Unix target is local: no DNS, TLS or PROXY
+# header applies, and `source` is refused on it.
 #servers = [
 #  { addr = "10.0.0.1:9000", weight = 3 },   # weight 0..=256; 0 = drained
+#  { addr = "unix:/run/app.sock", weight = 1 },  # local app server (ADR-0043)
+#  { addr = "10.0.0.2:9000", weight = 1, source = "10.0.0.5" },
+#                               # ADR-0043 `source`: bind the outbound socket to
+#                               # this local IP before connecting (multi-homed
+#                               # egress); a bind failure is an explicit connect
+#                               # failure, never a silent fallback
 #  { addr = "10.0.0.2:9000", weight = 1 },
 #  { addr = "10.0.0.3:9000", weight = 1, backup = true },  # B8: only when no
 #                               # primary is eligible (checked while unused)

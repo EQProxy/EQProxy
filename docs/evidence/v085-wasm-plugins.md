@@ -1,7 +1,7 @@
 # v0.8.5 — plugins WASM de filtro de petición (B-I5 · B-E4 · B-N17)
 
 **Fecha:** 2026-10-29 · **Casillas:** §1 «Plugins WASM» y §4 «Plugin que excede
-límites…» del [roadmap 0.8.5](../../ROADMAP%20EQPROXY/ROADMAP/Roadmap%200.8.5.md).
+límites…» del roadmap 0.8.5 (local-only: `../../ROADMAP%20EQPROXY/ROADMAP/Roadmap%200.8.5.md`).
 **Estado:** implementada y verificada E2E con el binario final; S-PLG-01 medido.
 La fase de respuesta y el acceso al cuerpo **no** están en ABI v1 (§6).
 
@@ -199,8 +199,8 @@ las cifras son indicativas, no una comparación contra HAProxy.
 
 | Pata | Comando | Resultado | Evidencia |
 |---|---|---|---|
-| Veyra Proof | `veyra audit . --profile standard` | **ACCEPTED**, exit 0; 11 herramientas OK; `dylint` y `cargo-semver-checks` skipped y `cargo-geiger` INCONCLUSIVE, ambos por la razón del ADR-0030 | [`.veyra/evidence/20261029T190213Z/report.md`](../../.veyra/evidence/20261029T190213Z/report.md) |
-| Rust Audit | `python3.13 <rust-ai-audit>/scripts/rust_audit.py scan . --format md --out report --fail-on high` | exit 0; **0 critical / 0 high**; 242 medium, 93 low (0.2.7) | [`report/rust-audit-20261029-195132.md`](../../report/rust-audit-20261029-195132.md) |
+| Veyra Proof | `veyra audit . --profile standard` | **ACCEPTED**, exit 0; 11 herramientas OK; `dylint` y `cargo-semver-checks` skipped y `cargo-geiger` INCONCLUSIVE, ambos por la razón del ADR-0030 | `.veyra/evidence/20261029T190213Z/report.md` (local-only: `../../.veyra/evidence/20261029T190213Z/report.md`) |
+| Rust Audit | `python3.13 <rust-ai-audit>/scripts/rust_audit.py scan . --format md --out report --fail-on high` | exit 0; **0 critical / 0 high**; 242 medium, 93 low (0.2.7) | `report/rust-audit-20261029-195132.md` (local-only: `../../report/rust-audit-20261029-195132.md`) |
 | CodeGraph Rust | `codegraph-rust index . --stats-json /tmp/cg-index-fresh.json --batch-size 16` + `agent impact` / `agent context` | exit 0; 68 ficheros, 65 175 líneas, 7 365 nodos, 13 272 aristas, `graph_complete: true`, `vector_index_ready: true`, `index_ms: 1 066 459`; las dos consultas resuelven el módulo y sus líneas se comprobaron en el fuente; **una afirmación refutada** (ver abajo) | [`raw/codegraph-20261029T211650Z/`](v085-wasm-plugins/raw/codegraph-20261029T211650Z) |
 | Hindsight | `hindsight-note --title ... --project EQProxy --tags v0.8.5 wasm-plugins` | nota guardada en el banco `eqproxy` (HTTP 200) | banco `eqproxy`, `http://localhost:8888/mcp/eqproxy/` |
 

@@ -2,8 +2,8 @@
 
 - State: **Accepted** (2026-10-30, roadmap v0.8.5, box B-N7/H1)
 - Date: 2026-10-30
-- Related: [roadmap v0.8.5](../../ROADMAP%20EQPROXY/ROADMAP/Roadmap%200.8.5.md)
-  (§1, §4), [H1 in informe-criticas-haproxy](../../ROADMAP%20EQPROXY/informe-criticas-haproxy.md),
+- Related: roadmap v0.8.5 (local-only: `../../ROADMAP EQPROXY/ROADMAP/Roadmap 0.8.5.md`)
+  (§1, §4), H1 in informe-criticas-haproxy (local-only: `../../ROADMAP EQPROXY/informe-criticas-haproxy.md`),
   [v085-http-cache](../evidence/v085-http-cache.md), [ADR-0010](0010-response-compression.md)
   (compression interplay)
 

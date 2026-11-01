@@ -6,7 +6,7 @@ Language: **English**.
 - Date: 2026-10-24
 - Related: [ADR-0017](0017-read-only-admin-plane.md) (the read-only plane this
   extends), [ADR-0015](0015-backend-idle-pool-sizing.md) (idle pool),
-  [SPEC §9](../SPEC.md), [THREAT_MODEL.md](../../THREAT_MODEL.md)
+  [SPEC §9](../../SPEC.md), [THREAT_MODEL.md](../../THREAT_MODEL.md)
 
 ## Context
 

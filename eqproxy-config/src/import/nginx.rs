@@ -46,7 +46,7 @@ fn supported_manually(name: &str) -> Option<&'static str> {
         "satisfy" => "combinación de auth.url + auth.users",
         "proxy_next_upstream" | "proxy_next_upstream_tries" => "[backend.*].retries",
         "proxy_intercept_errors" | "error_page" => {
-            "respuestas locales [[listener.*.rules]].direct_response"
+            "[[listener.*.error_pages]] (el conversor solo traduce los declarados en `server`)"
         }
         "real_ip_header" | "real_ip_recursive" | "set_real_ip_from" => {
             "[listener.*].proxy_receive + proxy_allow (PROXY v1 desde orígenes de confianza)"
@@ -785,7 +785,7 @@ fn upstream(conv: &mut Conv, up: &Node) -> Result<(), ImportError> {
                         );
                     }
                 }
-                if let Some(addr) = normalize_addr(conv, raw, Some(80), &text, &context) {
+                if let Some(addr) = normalize_addr(conv, raw, Some(80), &text, &context, true) {
                     let rendered = addr.clone();
                     backend.servers.push(super::Server {
                         addr,
@@ -926,6 +926,7 @@ fn server(
         Some(if ssl { 443 } else { 80 }),
         &format!("listen {raw_listen}"),
         &context,
+        false,
     ) else {
         conv.reject(
             1,
@@ -967,6 +968,7 @@ fn server(
                         Vec::new()
                     },
                     min_version: None,
+                    max_version: None,
                     client_ca: None,
                 });
                 conv.done(
@@ -985,19 +987,52 @@ fn server(
         }
     }
     if let Some(protocols) = first(node, "ssl_protocols") {
-        let joined = protocols.args.join(" ");
+        let has = |wanted: &str| {
+            protocols
+                .args
+                .iter()
+                .any(|arg| arg.eq_ignore_ascii_case(wanted))
+        };
+        let has_12 = has("TLSv1.2");
+        let has_13 = has("TLSv1.3");
+        let has_legacy = ["TLSv1.1", "TLSv1", "SSLv3", "SSLv2"]
+            .iter()
+            .any(|legacy| has(legacy));
         if let Some(tls) = tls.as_mut() {
-            if joined.contains("TLSv1.3") && !joined.contains("TLSv1.2") {
-                tls.min_version = Some("1.3");
-            } else if joined.contains("TLSv1.2") {
-                tls.min_version = Some("1.2");
+            match (has_12, has_13) {
+                (true, true) => {
+                    tls.min_version = Some("1.2");
+                    tls.max_version = None;
+                }
+                (true, false) => {
+                    tls.min_version = Some("1.2");
+                    tls.max_version = Some("1.2");
+                }
+                (false, true) => {
+                    tls.min_version = Some("1.3");
+                    tls.max_version = Some("1.3");
+                }
+                (false, false) => conv.review(
+                    1,
+                    directive(protocols),
+                    &context,
+                    "ssl_protocols no incluye TLSv1.2/1.3: EQProxy no puede desactivar ambos",
+                ),
             }
+        }
+        if has_legacy {
+            conv.info(
+                1,
+                directive(protocols),
+                &context,
+                "TLS 1.0/1.1 y SSL nunca se aceptan en EQProxy (se ignoran)",
+            );
         }
         conv.done(
             1,
             directive(protocols),
             &context,
-            "[listener.*.tls].min_version (EQProxy nunca acepta TLS 1.0/1.1)",
+            "[listener.*.tls].min_version/max_version (EQProxy nunca acepta TLS 1.0/1.1)",
         );
     }
     if let Some(ca) = first(node, "ssl_client_certificate") {
@@ -1050,6 +1085,10 @@ fn server(
     let mut server_headers: Vec<HeaderOp> = Vec::new();
     let mut forwarded = false;
     let mut cache = defaults.cache;
+    // Custom error pages (B-N14 · B-E18): server-level `error_page` covers
+    // every location of the block, which is EQProxy's listener scope.
+    let mut error_pages: Vec<super::ErrorPageIr> = Vec::new();
+    let mut intercept_errors = false;
 
     for child in &node.children {
         let before = conv.notes.len();
@@ -1169,6 +1208,135 @@ fn server(
                 &context,
                 "[[listener.*.rules]].auth.users (htpasswd inline): el fichero no se lee, copie las líneas",
             ),
+            "error_page" => {
+                let Some((target, modifiers)) = child.args.split_last() else {
+                    conv.review(1, &text, &context, "error_page sin argumentos: se ignora");
+                    continue;
+                };
+                let mut codes: Vec<u16> = Vec::new();
+                let mut status = None;
+                let mut invalid = None;
+                for arg in modifiers {
+                    if let Some(raw) = arg.strip_prefix('=') {
+                        match raw.parse::<u16>() {
+                            Ok(code) => status = Some(code),
+                            Err(_) if raw.is_empty() => invalid = Some(
+                                "error_page «=» sin código: nginx usa el estado del destino interno \
+                                 y el conversor no lo resuelve; fije status a mano"
+                                    .to_owned(),
+                            ),
+                            Err(_) => invalid = Some(format!("«{arg}» no es «=NNN»")),
+                        }
+                    } else if let Ok(code) = arg.parse::<u16>() {
+                        codes.push(code);
+                    } else {
+                        invalid = Some(format!("«{arg}» no es un código de estado"));
+                    }
+                }
+                if let Some(reason) = invalid {
+                    conv.review(1, &text, &context, reason);
+                    continue;
+                }
+                if codes.is_empty() {
+                    conv.review(1, &text, &context, "error_page sin código: se ignora");
+                    continue;
+                }
+                if target.starts_with('@') {
+                    conv.gap(
+                        1,
+                        &text,
+                        &context,
+                        format!(
+                            "destino «{target}»: EQProxy no tiene named locations; declare la página \
+                             con [[listener.*.error_pages]]"
+                        ),
+                    );
+                    continue;
+                }
+                if target.contains("://") {
+                    conv.review(
+                        1,
+                        &text,
+                        &context,
+                        format!(
+                            "destino externo «{target}»: nginx responde 302; use \
+                             [[listener.*.rules]].redirect"
+                        ),
+                    );
+                    continue;
+                }
+                // nginx resolves this URI against `root`/`alias`; EQProxy
+                // resolves `file` against the TOML's directory. The leading
+                // slash becomes a relative path and the note tells the
+                // operator to copy the file there (a leading slash would be
+                // read as an absolute filesystem path that nginx never used).
+                let file = target.trim_start_matches('/');
+                if file.is_empty() {
+                    conv.review(
+                        1,
+                        &text,
+                        &context,
+                        "error_page apunta a «/»: no hay fichero que servir",
+                    );
+                    continue;
+                }
+                // nginx replaces a code's page when a later `error_page`
+                // names it, but the other codes of the earlier directive must
+                // keep their page: remove only the overlapping codes, then
+                // drop pages left with none.
+                for page in &mut error_pages {
+                    page.codes.retain(|code| !codes.contains(code));
+                }
+                error_pages.retain(|page| !page.codes.is_empty());
+                error_pages.push(super::ErrorPageIr {
+                    codes: codes.clone(),
+                    file: Some(file.to_owned()),
+                    body: None,
+                    location: None,
+                    raw: false,
+                    status,
+                    intercept: false,
+                });
+                let list = codes
+                    .iter()
+                    .map(u16::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                conv.done(
+                    1,
+                    &text,
+                    &context,
+                    format!(
+                        "[[listener.*.error_pages]] codes = [{list}], file = \"{file}\"{}: la ruta se \
+                         resuelve contra el directorio del TOML, no contra el root de nginx",
+                        status.map(|s| format!(", status = {s}")).unwrap_or_default()
+                    ),
+                );
+            }
+            "proxy_intercept_errors" => match child.args.first().map(String::as_str) {
+                Some("on") => {
+                    intercept_errors = true;
+                    conv.done(
+                        1,
+                        &text,
+                        &context,
+                        "intercept = true en las páginas error_page de este server (también \
+                         sustituyen respuestas del backend)",
+                    );
+                }
+                Some("off") => conv.info(
+                    1,
+                    &text,
+                    &context,
+                    "errores del backend pasan tal cual: las páginas solo cubren códigos locales",
+                ),
+                _ => conv.review(
+                    1,
+                    &text,
+                    &context,
+                    "proxy_intercept_errors sin on/off: se trata como off",
+                ),
+            },
             "gzip" | "gzip_types" | "gzip_min_length" | "gzip_comp_level" => conv.review(
                 1,
                 &text,
@@ -1264,6 +1432,14 @@ fn server(
     listener.server_header_timeout = defaults.server_header_timeout.clone();
     listener.client_header_timeout = defaults.client_header_timeout.clone();
     listener.cache = cache;
+    if intercept_errors {
+        // nginx applies the flag to every error_page of the server, whatever
+        // the order of the directives.
+        for page in &mut error_pages {
+            page.intercept = true;
+        }
+    }
+    listener.error_pages = error_pages;
     if forwarded {
         listener.forwarded_headers = Some("append");
     }
@@ -1362,9 +1538,20 @@ fn location(
                     continue;
                 }
                 let without_scheme = target.split_once("//").map(|(_, rest)| rest).unwrap_or(target);
-                let (authority, uri) = match without_scheme.split_once('/') {
-                    Some((authority, uri)) => (authority.to_owned(), Some(uri.to_owned())),
-                    None => (without_scheme.to_owned(), None),
+                // ADR-0043: `http://unix:/run/app.sock` (optionally followed
+                // by `:/uri`) is one target, not an authority plus a path.
+                let (authority, uri) = match without_scheme.strip_prefix("unix:") {
+                    Some(rest) => match rest.find(":/") {
+                        Some(pos) => (
+                            format!("unix:{}", &rest[..pos]),
+                            Some(rest[pos + 1..].to_owned()),
+                        ),
+                        None => (format!("unix:{rest}"), None),
+                    },
+                    None => match without_scheme.split_once('/') {
+                        Some((authority, uri)) => (authority.to_owned(), Some(uri.to_owned())),
+                        None => (without_scheme.to_owned(), None),
+                    },
                 };
                 if let Some(uri) = uri.as_deref() {
                     conv.review(
@@ -1388,6 +1575,13 @@ fn location(
                     );
                 }
             }
+            "error_page" | "proxy_intercept_errors" => conv.review(
+                1,
+                &text,
+                &context,
+                "página de error por location: EQProxy las declara por listener y cubren todas las \
+                 rutas; muévala al bloque server o a [[listener.*.error_pages]] a mano",
+            ),
             "proxy_set_header" => {
                 let (Some(name), Some(value)) = (child.args.first(), child.args.get(1)) else {
                     conv.review(1, &text, &context, "proxy_set_header incompleto: se ignora");
@@ -1525,6 +1719,7 @@ fn resolve_backend(conv: &mut Conv, authority: &str, context: &str) -> Option<St
         Some(80),
         &format!("proxy_pass {authority}"),
         context,
+        true,
     )?;
     let name = conv.free_backend_name(&format!("backend_{}", sanitize_name(authority)));
     let mut backend = super::Backend::default();
@@ -1598,7 +1793,7 @@ fn stream(conv: &mut Conv, stream: &Node) -> Result<(), ImportError> {
             let text = directive(child);
             if child.name == "server" {
                 if let Some(raw) = child.args.first() {
-                    if let Some(addr) = normalize_addr(conv, raw, None, &text, &context) {
+                    if let Some(addr) = normalize_addr(conv, raw, None, &text, &context, false) {
                         backend.servers.push(super::Server {
                             addr,
                             weight: 1,
@@ -1640,7 +1835,8 @@ fn stream(conv: &mut Conv, stream: &Node) -> Result<(), ImportError> {
             conv.reject(1, "listen", &context, "listen sin dirección: se omite");
             continue;
         };
-        let Some(addr) = normalize_addr(conv, raw, None, &directive(listen), &context) else {
+        let Some(addr) = normalize_addr(conv, raw, None, &directive(listen), &context, false)
+        else {
             continue;
         };
         let Some(pass) = first(srv, "proxy_pass") else {
@@ -1744,6 +1940,28 @@ mod tests {
     }
 
     #[test]
+    fn ssl_protocols_becomes_a_min_max_version_range() {
+        // nginx `ssl_protocols TLSv1.2` means exactly 1.2; with both versions
+        // the default upper bound (1.3) stays. B-N16.
+        let only_12 = "http {\n  server {\n    listen 443 ssl;\n    ssl_certificate /etc/c.pem;\n    ssl_certificate_key /etc/k.pem;\n    ssl_protocols TLSv1.2;\n    location / { proxy_pass http://127.0.0.1:8080; }\n  }\n}\n";
+        let outcome = super::super::convert(super::super::Source::Nginx, only_12).expect("convert");
+        assert!(
+            outcome.toml.contains("min_version = \"1.2\"")
+                && outcome.toml.contains("max_version = \"1.2\""),
+            "TLSv1.2 only must cap the range:\n{}",
+            outcome.toml
+        );
+
+        let both = only_12.replace("ssl_protocols TLSv1.2;", "ssl_protocols TLSv1.2 TLSv1.3;");
+        let outcome = super::super::convert(super::super::Source::Nginx, &both).expect("convert");
+        assert!(
+            outcome.toml.contains("min_version = \"1.2\"") && !outcome.toml.contains("max_version"),
+            "both versions keep the default upper bound:\n{}",
+            outcome.toml
+        );
+    }
+
+    #[test]
     fn upstream_max_conns_becomes_the_per_server_cap() {
         // nginx `server … max_conns=N` (B-H16): translated, and a value past
         // the schema ceiling is clipped with a note instead of producing an
@@ -1768,6 +1986,77 @@ mod tests {
             "and the clipping is named in the report:\n{}",
             outcome.report
         );
+    }
+
+    #[test]
+    fn error_page_and_intercept_errors_become_a_listener_page() {
+        // B-N14: a server-level `error_page` covers every location, exactly
+        // EQProxy's listener scope; `proxy_intercept_errors on` also replaces
+        // a matching backend response.
+        let source = "http {\n  server {\n    listen 80;\n    proxy_intercept_errors on;\n    error_page 502 503 =200 /errors/50x.html;\n    location / { proxy_pass http://app; }\n  }\n  upstream app { server 10.0.0.1:8080; }\n}\n";
+        let outcome = super::super::convert(super::super::Source::Nginx, source)
+            .expect("error_page must convert");
+        assert!(
+            outcome.toml.contains("codes = [502, 503]"),
+            "every code of the directive must be kept:\n{}",
+            outcome.toml
+        );
+        assert!(
+            outcome.toml.contains("status = 200") && outcome.toml.contains("intercept = true"),
+            "`=200` and proxy_intercept_errors must survive:\n{}",
+            outcome.toml
+        );
+        assert!(
+            outcome.toml.contains("file = \"errors/50x.html\""),
+            "nginx's URI becomes a config-relative path:\n{}",
+            outcome.toml
+        );
+        assert!(
+            outcome.report.contains("no contra el root de nginx"),
+            "the root-vs-config-directory difference must be named:\n{}",
+            outcome.report
+        );
+        let parsed = crate::parse_str(&outcome.toml, std::path::Path::new("nginx.conf"))
+            .expect("generated TOML parses");
+        let check =
+            crate::validate::check(&parsed, &outcome.toml, std::path::Path::new("nginx.conf"));
+        assert!(check.is_valid(), "{check:?}");
+
+        // A location-scoped error_page cannot be represented: the page is
+        // per listener, so the converter says so instead of widening it.
+        let scoped = "http {\n  server {\n    listen 80;\n    location / {\n      error_page 500 /500.html;\n      proxy_pass http://10.0.0.1:8080;\n    }\n  }\n}\n";
+        let outcome = super::super::convert(super::super::Source::Nginx, scoped)
+            .expect("location error_page is classified");
+        assert!(!outcome.toml.contains("error_pages"), "{}", outcome.toml);
+        assert!(
+            outcome.report.contains("página de error por location"),
+            "the location scope must be explained:\n{}",
+            outcome.report
+        );
+    }
+
+    #[test]
+    fn later_error_page_codes_do_not_erase_the_other_codes_of_an_earlier_page() {
+        // nginx last-wins per code, not per directive: `error_page 500 /b`
+        // replaces 500 but 502 keeps the page from `error_page 500 502 /a`.
+        let source = "http {\n  server {\n    listen 80;\n    error_page 500 502 /a.html;\n    error_page 500 /b.html;\n    location / { proxy_pass http://app; }\n  }\n  upstream app { server 10.0.0.1:8080; }\n}\n";
+        let outcome = super::super::convert(super::super::Source::Nginx, source)
+            .expect("overlapping error pages must convert");
+        assert!(
+            outcome.toml.contains("codes = [502]") && outcome.toml.contains("file = \"a.html\""),
+            "502 must keep the first page:\n{}",
+            outcome.toml
+        );
+        assert!(
+            outcome.toml.contains("codes = [500]") && outcome.toml.contains("file = \"b.html\""),
+            "500 must take the later page:\n{}",
+            outcome.toml
+        );
+        let parsed = crate::parse_str(&outcome.toml, std::path::Path::new("nginx.conf"))
+            .expect("generated TOML parses");
+        let check =
+            crate::validate::check(&parsed, &outcome.toml, std::path::Path::new("nginx.conf"));
+        assert!(check.is_valid(), "{check:?}");
     }
 
     #[test]

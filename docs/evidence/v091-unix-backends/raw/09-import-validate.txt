@@ -1,0 +1,5 @@
+
+===== eqproxy config validate (imported) =====
+warning: listener "web__sin_server_name" listens on 0.0.0.0:80 without TLS: expose it only on trusted networks or enable [listener.web__sin_server_name.tls]
+config OK: 1 listener(s), 1 backend(s) in /tmp/eqproxy-v091-unix.orfB6k/imported.toml
+exit: 0

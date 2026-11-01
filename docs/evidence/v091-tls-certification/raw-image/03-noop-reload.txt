@@ -1,0 +1,13 @@
+
+===== POST /api/v1/certificates/reload =====
+{"certificates":[{"changed":false,"fingerprint":"sha256:915eeb24d6b8adc883732e1ada69ba43db99f824e7655a3a0847b3d639355d7a","listen":"0.0.0.0:50622","listener":"web","quic":false}],"elapsed_ms":0,"listeners":[{"listen":"0.0.0.0:50622","name":"web"}],"revision":"v2","summary":"listeners kept=1 added=0 removed=0"}
+http status: 200
+
+===== status fingerprint after the renewal =====
+sha256:915eeb24d6b8adc883732e1ada69ba43db99f824e7655a3a0847b3d639355d7a
+
+===== served leaf after the renewal =====
+915eeb24d6b8adc883732e1ada69ba43db99f824e7655a3a0847b3d639355d7a
+
+===== metrics =====
+config_reloads=1

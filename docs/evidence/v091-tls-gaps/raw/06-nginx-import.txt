@@ -1,0 +1,87 @@
+
+===== nginx: import exit 0 =====
+import: /tmp/eqproxy-v091-tls.7VcUON/nginx.conf (nginx) → /tmp/eqproxy-v091-tls.7VcUON/nginx.eqproxy.toml: 5 converted, 4 with notes, 0 rejected
+
+===== generated TOML =====
+# Generado por `eqproxy config import`.
+# Revise el informe de conversión antes de usarlo en producción.
+schema_version = 1
+
+[backend.app]
+server = "127.0.0.1:9000"
+
+[listener.web__sin_server_name]
+listen = "0.0.0.0:18444"
+mode = "http"
+backend = "app"
+
+[listener.web__sin_server_name.tls]
+cert = "/tmp/eqproxy-v091-tls.7VcUON/c.pem"
+key = "/tmp/eqproxy-v091-tls.7VcUON/k.pem"
+min_version = "1.2"
+max_version = "1.2"
+
+[[listener.web__sin_server_name.rules]]
+name = "server (sin server_name) location /"
+use_backend = "app"
+path_prefix = "/"
+
+===== conversion report =====
+# Informe de conversión nginx → EQProxy
+
+- Entrada: `/tmp/eqproxy-v091-tls.7VcUON/nginx.conf`
+- Salida: `/tmp/eqproxy-v091-tls.7VcUON/nginx.eqproxy.toml`
+- Listeners generados: **1** · Backends generados: **1**
+- Directivas leídas: **9** · clasificadas: **9** — convertidas **5** · con aviso **4** · rechazadas **0**
+
+«Nunca se descarta en silencio»: cada directiva del origen aparece abajo. El fichero generado se ha parseado y validado con el propio parser de EQProxy (`schema_version = 1`) antes de escribirlo. La conversión es estática: no se ha ejecutado nada de la configuración de origen ni se ha medido tráfico.
+
+## Conversión generada
+
+| listener | escucha | modo | backend | TLS |
+|---|---|---|---|---|
+| `web__sin_server_name` | 0.0.0.0:18444 | http | `app` | sí |
+
+| backend | servidores (peso) | balance | health check | PROXY | TLS backend |
+|---|---|---|---|---|---|
+| `app` | 127.0.0.1:9000 (1) | roundrobin | — | none | no |
+
+## Detalle de la clasificación
+
+### ❌ no traducible (0)
+
+
+### ⛔ rechazado (sin equivalente en EQProxy) (0)
+
+
+### ⚠️ revisar (0)
+
+
+### ℹ️ informativo (4)
+
+- `listen 18444 ssl` — *server (sin server_name)*: binding y TLS del listener: aplicados arriba en [listener.*.tls]
+- `ssl_certificate /tmp/eqproxy-v091-tls.7VcUON/c.pem` — *server (sin server_name)*: binding y TLS del listener: aplicados arriba en [listener.*.tls]
+- `ssl_certificate_key /tmp/eqproxy-v091-tls.7VcUON/k.pem` — *server (sin server_name)*: binding y TLS del listener: aplicados arriba en [listener.*.tls]
+- `ssl_protocols TLSv1.2` — *server (sin server_name)*: binding y TLS del listener: aplicados arriba en [listener.*.tls]
+
+### ✅ convertido (5)
+
+- `server 127.0.0.1:9000` — *upstream app*: servidor 127.0.0.1:9000 (peso 1) en el upstream
+- `listen 18444` — *server (sin server_name)*: listener de EQProxy en 18444 con TLS
+- `ssl_certificate / ssl_certificate_key` — *server (sin server_name)*: [listener.*.tls] cert = «/tmp/eqproxy-v091-tls.7VcUON/c.pem», key = «/tmp/eqproxy-v091-tls.7VcUON/k.pem»
+- `ssl_protocols TLSv1.2` — *server (sin server_name)*: [listener.*.tls].min_version/max_version (EQProxy nunca acepta TLS 1.0/1.1)
+- `proxy_pass http://app` — *server (sin server_name) location /*: regla con use_backend = «app»
+
+## Qué no se ha traducido
+
+Ninguna: todas las directivas del origen tienen destino o son informativas.
+
+## Siguiente paso
+
+1. `eqproxy config validate --config <salida>` — el mismo gate que usa el binario.
+2. Leer las secciones «revisar» y «rechazado» de arriba y corregir a mano lo que falte.
+3. `eqproxy config diff --help` para comparar con la configuración actual antes de `config apply`.
+
+===== config validate =====
+config OK: 1 listener(s), 1 backend(s) in /tmp/eqproxy-v091-tls.7VcUON/nginx.eqproxy.toml
+validate exit: 0

@@ -2,7 +2,7 @@
 
 **Fecha:** 2026-10-30 · **Casilla:** §1 «Caché HTTP» y criterio de §4
 («test de sesiones concurrentes + revalidación ETag/304») del
-[roadmap 0.8.5](../../ROADMAP%20EQPROXY/ROADMAP/Roadmap%200.8.5.md).
+roadmap 0.8.5 (local-only: `../../ROADMAP%20EQPROXY/ROADMAP/Roadmap%200.8.5.md`).
 **Estado:** implementada y verificada E2E con sockets reales; cierra además
 **H1** (caché honesta). Lo fuera de v1 (`stale-while-revalidate`,
 `stale-if-error`, `only-if-cached`, `Pragma`, `If-Modified-Since` de
@@ -148,8 +148,8 @@ socket ACL E2E` (nativo amd64 y arm64) y `Evidence test citations`.
 
 | Pata | Comando | Resultado | Evidencia |
 |---|---|---|---|
-| Veyra Proof | `veyra audit . --profile standard` | **ACCEPTED**, exit 0; sin problems; `dylint` y `cargo-semver-checks` skipped y `cargo-geiger` INCONCLUSIVE, los tres por la razón del ADR-0030 | [`.veyra/evidence/20261030T160420Z/report.md`](../../.veyra/evidence/20261030T160420Z/report.md) |
-| Rust Audit | `python3.13 <rust-ai-audit>/scripts/rust_audit.py scan . --format md --out report --fail-on high` (0.2.7) | exit 0; **0 critical / 3 high**; los 3 high son R16 falsos positivos (ver abajo) | [`report/rust-audit-20261030-170843.md`](../../report/rust-audit-20261030-170843.md) |
+| Veyra Proof | `veyra audit . --profile standard` | **ACCEPTED**, exit 0; sin problems; `dylint` y `cargo-semver-checks` skipped y `cargo-geiger` INCONCLUSIVE, los tres por la razón del ADR-0030 | `.veyra/evidence/20261030T160420Z/report.md` (local-only: `../../.veyra/evidence/20261030T160420Z/report.md`) |
+| Rust Audit | `python3.13 <rust-ai-audit>/scripts/rust_audit.py scan . --format md --out report --fail-on high` (0.2.7) | **exit 1**; **0 critical / 3 high** — `--fail-on high` falla con cualquier high, y los 3 están revisados abajo como R16 falsos positivos; la celda decía `exit 0`, corregida el 2026-10-31 con una repetición del scan (`report/rust-audit-20261031-225405.md`: 7 high → exit 1) | `report/rust-audit-20261030-170843.md` (local-only: `../../report/rust-audit-20261030-170843.md`) |
 | CodeGraph Rust | `codegraph-rust index . --stats-json /tmp/cg-index-cache.json --batch-size 16` + `agent impact` / `agent context` | exit 0; 70 ficheros, 68 556 líneas, 7 676 nodos, 13 651 aristas, `graph_complete: true`, `vector_index_ready: true`, `errors: 0`, `index_ms: 1 022 904`; las dos consultas resuelven el módulo y sus líneas se comprobaron en el fuente | [`raw/codegraph-20261030T163000Z/`](v085-http-cache/raw/codegraph-20261030T163000Z) |
 | Hindsight | `hindsight-note --title ... --project EQProxy --tags v0.8.5 http-cache` | TBD tras el push (la nota cita el run de CI) | banco `eqproxy` |
 

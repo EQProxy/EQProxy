@@ -1,0 +1,34 @@
+
+===== config =====
+schema_version = 1
+
+[listener.web]
+listen = "127.0.0.1:60993"
+mode = "http"
+backend = "app"
+connect_timeout = "300ms"
+
+[backend.app]
+server = "127.0.0.1:60971"
+
+[[listener.web.error_pages]]
+codes = [502]
+status = 503
+body = "mantenimiento programado\n"
+
+===== GET (the page answers 503, not the fired 502) =====
+HTTP/1.1 503 service unavailable
+Server: eqproxy
+connection: close
+content-type: text/html; charset=utf-8
+content-length: 25
+
+mantenimiento programado
+
+===== HEAD (same status and length, no body) =====
+HTTP/1.1 503 service unavailable
+Server: eqproxy
+connection: close
+content-type: text/html; charset=utf-8
+content-length: 25
+

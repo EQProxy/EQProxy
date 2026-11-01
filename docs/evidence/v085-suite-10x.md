@@ -1,6 +1,6 @@
 # v0.8.5 — the whole suite ten times under load, in both tiers
 
-Casilla de §4 del [roadmap 0.8.5](../../ROADMAP%20EQPROXY/ROADMAP/Roadmap%200.8.5.md):
+Casilla de §4 del roadmap 0.8.5 (local-only: `../../ROADMAP%20EQPROXY/ROADMAP/Roadmap%200.8.5.md`):
 **«Suite completa 10× bajo carga en los dos tiers (uid 501 y root) sin un
 solo fallo, sin SKIP nuevos sin declarar y con el límite de descriptores
 impreso en el log root; los dos tiers cierran con el mismo recuento»**.
@@ -198,8 +198,8 @@ reps=20 passed=11920 failed=0 nonzero_exit=0
 
 | Pata | Comando | Resultado | Evidencia |
 |---|---|---|---|
-| Veyra Proof | `veyra audit . --profile standard` | **ACCEPTED**, exit `0`; 11 herramientas OK (`rustfmt`, `cargo check`, `clippy`, `cargo test`, `cargo-audit`, `veyra-anti-theater`, `cargo-nextest`, `cargo-llvm-cov`, `cargo-deny`, `cargo-machete`, `veyra-e2e`), 626 s; `dylint` y `cargo-semver-checks` no ejecutan por política (ADR-0030) y `cargo-geiger` sale INCONCLUSIVE, también explicado en el ADR | [`.veyra/evidence/20261029T233039Z/`](../../.veyra/evidence/20261029T233039Z/report.md) |
-| Rust Audit | `python3.13 <rust-ai-audit>/scripts/rust_audit.py scan . --format md --out report --fail-on high` | exit `0`; **0 critical / 0 high**; 242 medium, 93 low. En la superficie tocada solo un aviso **low** `R02` en [`e2e_http2.rs:707`](../../eqproxy-net/tests/e2e_http2.rs#L707) por los números literales del test (400 streams, 750 ms), que son el contrato que afirma | [`report/rust-audit-20261030-003021.md`](../../report/rust-audit-20261030-003021.md) |
+| Veyra Proof | `veyra audit . --profile standard` | **ACCEPTED**, exit `0`; 11 herramientas OK (`rustfmt`, `cargo check`, `clippy`, `cargo test`, `cargo-audit`, `veyra-anti-theater`, `cargo-nextest`, `cargo-llvm-cov`, `cargo-deny`, `cargo-machete`, `veyra-e2e`), 626 s; `dylint` y `cargo-semver-checks` no ejecutan por política (ADR-0030) y `cargo-geiger` sale INCONCLUSIVE, también explicado en el ADR | `.veyra/evidence/20261029T233039Z/` (local-only: `../../.veyra/evidence/20261029T233039Z/report.md`) |
+| Rust Audit | `python3.13 <rust-ai-audit>/scripts/rust_audit.py scan . --format md --out report --fail-on high` | exit `0`; **0 critical / 0 high**; 242 medium, 93 low. En la superficie tocada solo un aviso **low** `R02` en [`e2e_http2.rs:707`](../../eqproxy-net/tests/e2e_http2.rs#L707) por los números literales del test (400 streams, 750 ms), que son el contrato que afirma | `report/rust-audit-20261030-003021.md` (local-only: `../../report/rust-audit-20261030-003021.md`) |
 | CodeGraph Rust | `codegraph-rust index . --stats-json … --batch-size 16`, después `agent impact` y `agent context` | exit `0`; 68 ficheros, 65 193 líneas, 7 366 nodos, 13 277 aristas, `graph_complete: true`, `vector_index_ready: true`, `errors: 0`, `index_ms: 900 288`. Las respuestas se contrastaron con el fuente (ver abajo) | [`codegraph/`](v085-suite-10x/codegraph) |
 | Hindsight | `hindsight-note --project EQProxy --tags v0.8.5 suite flakes` | nota guardada en el banco `eqproxy`, `memory_id 5ba12e80-b763-4203-bf31-78937f24ee39` | banco `eqproxy` |
 

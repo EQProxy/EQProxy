@@ -1,0 +1,19 @@
+
+===== config =====
+schema_version = 1
+
+[listener.web]
+listen = "127.0.0.1:61723"
+mode = "http"
+backend = "app"
+
+[backend.app]
+server = "127.0.0.1:60971"
+
+[[listener.web.error_pages]]
+codes = [502]
+file = "errors/does-not-exist.html"
+
+===== run (must exit before serving) =====
+error: inconsistent configuration after validation: listener.web.error_pages[0].file "errors/does-not-exist.html": could not read /tmp/eqproxy-v091-errors.YkzOCD/errors/does-not-exist.html — No such file or directory (os error 2)
+exit: 1

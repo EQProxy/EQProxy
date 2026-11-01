@@ -126,6 +126,76 @@ async fn echo_roundtrip_through_proxy_updates_metrics() {
         .expect("serve task without panic");
 }
 
+/// A6: an IPv6 listener reaches an IPv6 backend over real sockets. The
+/// reference's `bind ... v4v6` keyword has no direct equivalent (EQProxy
+/// binds the literal family and the OS decides dual-stack), but the v6 path
+/// itself must work: a v6 bind, a v6 dial and a byte-exact echo.
+#[cfg_attr(
+    miri,
+    ignore = "needs TCP sockets: miri does not support networking (rust-lang/miri#3449)"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_ipv6_listener_proxies_to_an_ipv6_backend() {
+    let origin = TcpListener::bind("[::1]:0").await.expect("bind v6 echo");
+    let backend = origin.local_addr().expect("v6 echo addr");
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = origin.accept().await {
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 4096];
+                loop {
+                    match socket.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if socket.write_all(&buf[..n]).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+
+    let metrics = Arc::new(Metrics::default());
+    let cfg = listener_cfg(
+        "web-v6",
+        "[::1]:0".parse().expect("v6 listener"),
+        backend,
+        64,
+        Duration::from_secs(2),
+        Duration::from_secs(5),
+    );
+    let (proxy_addr, handle, serve) = start_proxy(cfg, Arc::clone(&metrics), WAIT).await;
+    assert!(proxy_addr.is_ipv6(), "the listener must keep its v6 family");
+
+    let mut client = tokio::time::timeout(WAIT, TcpStream::connect(proxy_addr))
+        .await
+        .expect("connect in time")
+        .expect("connect to the v6 proxy");
+    let payload = vec![0x5Au8; 2048];
+    client.write_all(&payload).await.expect("write");
+    let mut received = vec![0u8; payload.len()];
+    tokio::time::timeout(WAIT, client.read_exact(&mut received))
+        .await
+        .expect("echo in time")
+        .expect("full v6 echo");
+    assert_eq!(received, payload, "v6 echo must be byte for byte");
+
+    drop(client);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let snap = metrics.snapshot();
+    assert_eq!(snap.connections_accepted, 1);
+    assert_eq!(snap.connect_failures, 0);
+    assert_eq!(snap.bytes_client_to_backend, 2048);
+    assert_eq!(snap.bytes_backend_to_client, 2048);
+
+    handle.trigger();
+    tokio::time::timeout(WAIT, serve)
+        .await
+        .expect("serve finishes")
+        .expect("serve task without panic");
+}
+
 /// A TCP origin that announces its identity on accept: a tunnel has no HTTP
 /// label to tell servers apart, so the banner is what a test reads.
 async fn start_banner(label: &'static str) -> SocketAddr {
@@ -182,6 +252,7 @@ async fn a_tcp_tunnel_fails_over_to_the_backup_server() {
         vec![
             ResolvedServer {
                 addr: ServerAddr::Ip(primary),
+                source: None,
                 weight: 1,
                 backup: false,
                 priority: 0,
@@ -189,6 +260,7 @@ async fn a_tcp_tunnel_fails_over_to_the_backup_server() {
             },
             ResolvedServer {
                 addr: ServerAddr::Ip(backup),
+                source: None,
                 weight: 1,
                 backup: true,
                 priority: 0,
@@ -210,13 +282,17 @@ async fn a_tcp_tunnel_fails_over_to_the_backup_server() {
     let (proxy_addr, handle, serve) = start_proxy(cfg, Arc::clone(&metrics), WAIT).await;
 
     assert_eq!(banner(proxy_addr).await, "primary");
-    backend.balancer.report_fail(primary);
+    backend
+        .balancer
+        .report_fail(&eqproxy_net::Endpoint::Tcp(primary));
     assert_eq!(
         banner(proxy_addr).await,
         "backup",
         "the tunnel must reach the backup server"
     );
-    backend.balancer.report_ok(primary);
+    backend
+        .balancer
+        .report_ok(&eqproxy_net::Endpoint::Tcp(primary));
     assert_eq!(banner(proxy_addr).await, "primary");
 
     handle.trigger();

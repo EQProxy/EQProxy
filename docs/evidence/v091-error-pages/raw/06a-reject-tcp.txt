@@ -1,0 +1,18 @@
+
+===== config =====
+schema_version = 1
+[backend.app]
+server = "127.0.0.1:9000"
+[listener.tunnel]
+listen = "127.0.0.1:18080"
+mode = "tcp"
+backend = "app"
+[[listener.tunnel.error_pages]]
+codes = [502]
+body = "x"
+
+===== eqproxy config validate =====
+configuration error in /tmp/eqproxy-v091-errors.YkzOCD/tcp-pages.toml:4 — field `listener.tunnel.error_pages`: error_pages is only meaningful in mode = "http"
+  example: mode = "http" or remove [[listener.<name>.error_pages]]
+invalid config: 1 error(s) in /tmp/eqproxy-v091-errors.YkzOCD/tcp-pages.toml
+exit: 1

@@ -2,7 +2,7 @@
 
 **Fecha:** 2026-10-30 · **Casilla:** §1 «Secretos TLS en caliente
 (equivalente a SDS) y multi-instancia con drift» del
-[roadmap 0.8.5](../../ROADMAP%20EQPROXY/ROADMAP/Roadmap%200.8.5.md).
+roadmap 0.8.5 (local-only: `../../ROADMAP%20EQPROXY/ROADMAP/Roadmap%200.8.5.md`).
 **Estado:** implementado y verificado E2E; cierra **B-H10** (fin) y la mitad
 de detección de D10. La reconciliación central sigue siendo un no-objetivo
 documentado (SPEC §9, ADR-0027).
@@ -34,10 +34,10 @@ monitorización es `tls_fingerprint` en el status).
 
 ## 2. Dónde vive
 
-- Recarga backend: [`resolve_with`](../../../eqproxy-cli/src/main.rs#L2441)
+- Recarga backend: [`resolve_with`](../../eqproxy-cli/src/main.rs#L2441)
   re-lee `ca_file` en cada reload; el swap la aplica sin reiniciar.
-- Renovación listener: [`HotCerts`](../../../eqproxy-net/src/tls.rs#L263),
-  [`fixed_material_fingerprint`](../../../eqproxy-net/src/tls.rs#L480).
+- Renovación listener: [`HotCerts`](../../eqproxy-net/src/tls.rs#L263),
+  [`fixed_material_fingerprint`](../../eqproxy-net/src/tls.rs#L480).
 - Regla de drift (ADR-0035, §3): comparar topología + `tls_fingerprint`
   entre instancias; la `revision` ordena generaciones en una instancia,
   nunca identifica contenido entre instancias; reparar con `SIGHUP`.
@@ -46,7 +46,7 @@ monitorización es `tls_fingerprint` en el status).
 
 ### 3.1 Rotación de confianza del backend (1 test Rust)
 
-[`backend_tls_trust_rotation_applies_on_reload_without_restart`](../../../eqproxy-net/tests/e2e_resilience.rs)
+[`backend_tls_trust_rotation_applies_on_reload_without_restart`](../../eqproxy-net/tests/e2e_resilience.rs)
 (tres fases sobre el **mismo** socket del proxy, sin reinicio):
 
 1. el backend sirve `mtls-server.pem` y el proxy confía en `mtls-ca.pem` →
@@ -60,7 +60,7 @@ monitorización es `tls_fingerprint` en el status).
 
 ### 3.2 Drift multi-instancia (journey contra el binario, 13 checks)
 
-[`journey.py`](../../../scripts/evidence/v085-hot-secrets-drift/journey.py)
+`journey.py` (local-only: `../../scripts/evidence/v085-hot-secrets-drift/journey.py`)
 (13/13 en verde): dos instancias del binario release con el **mismo**
 fichero, un `PUT` divergente solo en A y `SIGHUP` como reparación:
 
@@ -96,8 +96,8 @@ fase; los `.log` de cada instancia quedan junto al journey local).
 
 | Pata | Comando | Resultado | Evidencia |
 |---|---|---|---|
-| Veyra Proof | `veyra audit . --profile standard` | **ACCEPTED**, exit 0; `dylint` y `cargo-semver-checks` skipped y `cargo-geiger` INCONCLUSIVE, los tres por la razón del ADR-0030 | [`.veyra/evidence/20261030T170613Z/report.md`](../../.veyra/evidence/20261030T170613Z/report.md) |
-| Rust Audit | `python3.13 <rust-ai-audit>/scripts/rust_audit.py scan . --format md --out report --fail-on high` (0.2.7) | exit 0; **0 critical / 3 high**; los 3 high son los R16 ya revisados en `cache.rs` (falsos positivos, guard en bloque léxico antes del `.await`); el incremento no añade ningún high/critical nuevo (el R08 del test nuevo es el `Instant::now` de deadline que usan todos los E2E) | [`report/rust-audit-20261030-180527.md`](../../report/rust-audit-20261030-180527.md) |
+| Veyra Proof | `veyra audit . --profile standard` | **ACCEPTED**, exit 0; `dylint` y `cargo-semver-checks` skipped y `cargo-geiger` INCONCLUSIVE, los tres por la razón del ADR-0030 | `.veyra/evidence/20261030T170613Z/report.md` (local-only: `../../.veyra/evidence/20261030T170613Z/report.md`) |
+| Rust Audit | `python3.13 <rust-ai-audit>/scripts/rust_audit.py scan . --format md --out report --fail-on high` (0.2.7) | **exit 1**; **0 critical / 3 high** — `--fail-on high` falla con cualquier high; los 3 son los R16 ya revisados en `cache.rs` (falsos positivos, guard en bloque léxico antes del `.await`); el incremento no añade ningún high/critical nuevo (el R08 del test nuevo es el `Instant::now` de deadline que usan todos los E2E). La celda decía `exit 0`, corregida el 2026-10-31 con una repetición del scan (7 high → exit 1) | `report/rust-audit-20261030-180527.md` (local-only: `../../report/rust-audit-20261030-180527.md`) |
 | CodeGraph Rust | `codegraph-rust index . --stats-json /tmp/cg-index-secrets.json --batch-size 16` | **NOT EXECUTED**: el índice no completa en el presupuesto de 600 s de la herramienta (el árbol necesita ~11–17 min según las mediciones del ADR-proceso; el fichero de stats quedó vacío y el proceso se mató). Una consulta contra un índice rancio no es evidencia. El slice toca un solo fichero de tests (`e2e_resilience.rs` +163) y sus llamadas se comprobaron en el fuente (§2) | — |
 | Hindsight | `hindsight-note --title ... --project EQProxy` | TBD tras el push (la nota cita el run de CI) | banco `eqproxy` |
 

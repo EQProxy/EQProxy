@@ -26,12 +26,12 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
-use std::net::SocketAddr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use tokio::io::BufReader;
 
+use crate::balancer::Endpoint;
 use crate::proxy::{BoxRead, BoxWrite};
 
 /// Idle floor per backend server: burst headroom even when no concurrency
@@ -67,7 +67,7 @@ struct ServerPool {
 
 /// Per-server idle queues, shared across listeners of the same backend.
 pub struct Pool {
-    inner: Mutex<HashMap<SocketAddr, ServerPool>>,
+    inner: Mutex<HashMap<Endpoint, ServerPool>>,
     /// Idle cap when no concurrency is observed (see
     /// [`IDLE_FLOOR_PER_SERVER`]).
     floor: usize,
@@ -95,7 +95,7 @@ impl Pool {
         Self::new(IDLE_FLOOR_PER_SERVER, DEFAULT_POOL_IDLE_TIMEOUT)
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<SocketAddr, ServerPool>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<Endpoint, ServerPool>> {
         self.inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -106,7 +106,7 @@ impl Pool {
     /// out: checkout always yields a message-aligned connection or nothing.
     pub fn checkout(
         &self,
-        addr: &SocketAddr,
+        addr: &Endpoint,
         now: Instant,
     ) -> Option<(BufReader<BoxRead>, BoxWrite)> {
         let mut inner = self.lock();
@@ -128,9 +128,9 @@ impl Pool {
     /// The idle cap follows the peak of that number: a connection that is
     /// handed out during a burst is parked at check-in, not dropped and
     /// re-dialled by the next wave.
-    pub fn note_in_flight(&self, addr: SocketAddr, in_flight: usize) {
+    pub fn note_in_flight(&self, addr: &Endpoint, in_flight: usize) {
         let mut inner = self.lock();
-        let entry = inner.entry(addr).or_default();
+        let entry = inner.entry(addr.clone()).or_default();
         entry.peak_in_flight = entry.peak_in_flight.max(in_flight);
     }
 
@@ -138,7 +138,7 @@ impl Pool {
     /// stale, or holding unread bytes (fail-closed, never miscounted).
     pub fn checkin(
         &self,
-        addr: SocketAddr,
+        addr: &Endpoint,
         read: BufReader<BoxRead>,
         write: BoxWrite,
         now: Instant,
@@ -147,7 +147,7 @@ impl Pool {
             return;
         }
         let mut inner = self.lock();
-        let entry = inner.entry(addr).or_default();
+        let entry = inner.entry(addr.clone()).or_default();
         let cap = entry.peak_in_flight.clamp(self.floor, self.ceiling);
         if entry.idle.len() >= cap {
             return;
@@ -161,7 +161,7 @@ impl Pool {
 
     /// Idle connections held for `addr` (tests and diagnostics).
     #[must_use]
-    pub fn idle_count(&self, addr: &SocketAddr) -> usize {
+    pub fn idle_count(&self, addr: &Endpoint) -> usize {
         self.lock().get(addr).map_or(0, |pool| pool.idle.len())
     }
 
@@ -171,7 +171,7 @@ impl Pool {
     /// the adaptive cap must not restart from the floor after a maintenance
     /// cycle. Returns how many connections were closed; closing again is a
     /// no-op that reports zero.
-    pub fn close_idle(&self, addr: &SocketAddr) -> usize {
+    pub fn close_idle(&self, addr: &Endpoint) -> usize {
         let mut inner = self.lock();
         inner.get_mut(addr).map_or(0, |pool| {
             let closed = pool.idle.len();
@@ -188,7 +188,7 @@ impl Pool {
 
     /// Peak concurrency recorded for `addr` (tests and diagnostics).
     #[must_use]
-    pub fn peak_in_flight(&self, addr: &SocketAddr) -> usize {
+    pub fn peak_in_flight(&self, addr: &Endpoint) -> usize {
         self.lock().get(addr).map_or(0, |pool| pool.peak_in_flight)
     }
 }
@@ -229,8 +229,8 @@ mod tests {
         (BufReader::new(read), write, far)
     }
 
-    fn addr() -> SocketAddr {
-        "127.0.0.1:9000".parse().expect("addr")
+    fn addr() -> Endpoint {
+        Endpoint::Tcp("127.0.0.1:9000".parse().expect("addr"))
     }
 
     #[test]
@@ -239,8 +239,8 @@ mod tests {
         let now = Instant::now();
         assert!(pool.checkout(&addr(), now).is_none());
         let (read, write, _far) = pair();
-        pool.note_in_flight(addr(), 1);
-        pool.checkin(addr(), read, write, now);
+        pool.note_in_flight(&addr(), 1);
+        pool.checkin(&addr(), read, write, now);
         assert_eq!(pool.idle_count(&addr()), 1);
         assert!(pool.checkout(&addr(), now).is_some());
         assert_eq!(pool.idle_count(&addr()), 0);
@@ -250,10 +250,10 @@ mod tests {
     fn idle_cap_drops_excess_at_the_floor() {
         let pool = Pool::new(2, Duration::from_secs(60));
         let now = Instant::now();
-        pool.note_in_flight(addr(), 1);
+        pool.note_in_flight(&addr(), 1);
         for _ in 0..5 {
             let (read, write, _far) = pair();
-            pool.checkin(addr(), read, write, now);
+            pool.checkin(&addr(), read, write, now);
         }
         assert_eq!(pool.idle_count(&addr()), 2);
     }
@@ -266,10 +266,10 @@ mod tests {
     fn idle_cap_follows_the_peak_in_flight() {
         let pool = Pool::with_defaults();
         let now = Instant::now();
-        pool.note_in_flight(addr(), 400);
+        pool.note_in_flight(&addr(), 400);
         for _ in 0..400 {
             let (read, write, _far) = pair();
-            pool.checkin(addr(), read, write, now);
+            pool.checkin(&addr(), read, write, now);
         }
         assert_eq!(
             pool.idle_count(&addr()),
@@ -284,10 +284,10 @@ mod tests {
     fn idle_cap_never_exceeds_the_ceiling() {
         let pool = Pool::with_defaults();
         let now = Instant::now();
-        pool.note_in_flight(addr(), IDLE_CEILING_PER_SERVER + 100);
+        pool.note_in_flight(&addr(), IDLE_CEILING_PER_SERVER + 100);
         for _ in 0..(IDLE_CEILING_PER_SERVER + 100) {
             let (read, write, _far) = pair();
-            pool.checkin(addr(), read, write, now);
+            pool.checkin(&addr(), read, write, now);
         }
         assert_eq!(pool.idle_count(&addr()), IDLE_CEILING_PER_SERVER);
     }
@@ -296,8 +296,8 @@ mod tests {
     fn stale_entries_are_never_handed_out() {
         let pool = Pool::new(4, Duration::from_millis(50));
         let (read, write, _far) = pair();
-        pool.note_in_flight(addr(), 1);
-        pool.checkin(addr(), read, write, Instant::now());
+        pool.note_in_flight(&addr(), 1);
+        pool.checkin(&addr(), read, write, Instant::now());
         std::thread::sleep(Duration::from_millis(80));
         assert!(pool.checkout(&addr(), Instant::now()).is_none());
         assert_eq!(pool.idle_count(&addr()), 0);
@@ -329,7 +329,7 @@ mod tests {
         let (c, _d) = duplex(8);
         let (_rc, wc) = tokio::io::split(c);
         let write: BoxWrite = Box::new(wc);
-        pool.checkin(addr(), read, write, now);
+        pool.checkin(&addr(), read, write, now);
         assert_eq!(
             pool.idle_count(&addr()),
             0,
@@ -341,10 +341,10 @@ mod tests {
     fn close_idle_drops_what_is_parked_and_keeps_the_peak() {
         let pool = Pool::with_defaults();
         let now = Instant::now();
-        pool.note_in_flight(addr(), 7);
+        pool.note_in_flight(&addr(), 7);
         for _ in 0..3 {
             let (read, write, _far) = pair();
-            pool.checkin(addr(), read, write, now);
+            pool.checkin(&addr(), read, write, now);
         }
         assert_eq!(pool.idle_count(&addr()), 3);
         assert_eq!(pool.close_idle(&addr()), 3, "it reports what it closed");
@@ -360,10 +360,10 @@ mod tests {
             "closing again is a no-op that reports zero"
         );
         // Another server's parked connections are untouched.
-        let other: SocketAddr = "127.0.0.1:9001".parse().expect("addr");
+        let other = Endpoint::Tcp("127.0.0.1:9001".parse().expect("addr"));
         let (read, write, _far) = pair();
-        pool.note_in_flight(other, 1);
-        pool.checkin(other, read, write, now);
+        pool.note_in_flight(&other, 1);
+        pool.checkin(&other, read, write, now);
         pool.close_idle(&addr());
         assert_eq!(pool.idle_count(&other), 1);
     }
@@ -372,10 +372,10 @@ mod tests {
     fn servers_are_keyed_independently() {
         let pool = Pool::with_defaults();
         let now = Instant::now();
-        let other: SocketAddr = "127.0.0.1:9001".parse().expect("addr");
+        let other = Endpoint::Tcp("127.0.0.1:9001".parse().expect("addr"));
         let (read, write, _far) = pair();
-        pool.note_in_flight(addr(), 1);
-        pool.checkin(addr(), read, write, now);
+        pool.note_in_flight(&addr(), 1);
+        pool.checkin(&addr(), read, write, now);
         assert!(pool.checkout(&other, now).is_none());
         assert!(pool.checkout(&addr(), now).is_some());
     }

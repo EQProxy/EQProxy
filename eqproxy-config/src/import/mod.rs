@@ -142,7 +142,9 @@ pub struct Note {
 pub struct Counts {
     /// Directives with an equivalent field.
     pub converted: usize,
-    /// Directives to review (approximation, cosmetic, global).
+    /// Non-blocking notes: `Review` (approximation, cosmetic, global) **and**
+    /// `Info` (walked, no translation needed). The report header prints this
+    /// as «con aviso» and the detail sections break it down per severity.
     pub review: usize,
     /// Directives EQProxy cannot serve today.
     pub rejected: usize,
@@ -245,6 +247,8 @@ struct ListenerTls {
     key: String,
     alpn: Vec<String>,
     min_version: Option<&'static str>,
+    /// Highest accepted version (B-N16/B-I16); `None` = TLS 1.3.
+    max_version: Option<&'static str>,
     client_ca: Option<String>,
 }
 
@@ -278,6 +282,18 @@ struct Rule {
 }
 
 #[derive(Debug, Clone, Default)]
+struct ErrorPageIr {
+    codes: Vec<u16>,
+    file: Option<String>,
+    body: Option<String>,
+    /// HAProxy `errorloc`: a 3xx redirect instead of a body.
+    location: Option<String>,
+    raw: bool,
+    status: Option<u16>,
+    intercept: bool,
+}
+
+#[derive(Debug, Clone, Default)]
 struct Listener {
     listen: String,
     mode: String,
@@ -297,6 +313,7 @@ struct Listener {
     cache: bool,
     proxy_receive: bool,
     rules: Vec<Rule>,
+    error_pages: Vec<ErrorPageIr>,
 }
 
 impl Listener {
@@ -615,31 +632,41 @@ pub fn is_addr(value: &str) -> bool {
     crate::schema::parse_server_target(value).is_ok()
 }
 
-/// Normalises a bind/server address to `IP:PORT` or `HOSTNAME:PORT`.
+/// Normalises a bind/server address to `IP:PORT`, `HOSTNAME:PORT` or
+/// `unix:/absolute/path` (ADR-0043).
 ///
-/// EQProxy v0.8 accepts literal IPs and hostnames (resolved in the
-/// background, B-H13); Unix sockets and `fd@` are still refused, and a missing
-/// port is filled from `default_port` when the source dialect allows it.
+/// EQProxy accepts literal IPs and hostnames (resolved in the background,
+/// B-H13) and, as a **backend** target, a filesystem Unix socket. A listener
+/// still cannot be a Unix socket (`allow_unix = false`), and `fd@` has no
+/// equivalent: both are rejected with their cause. A missing port is filled
+/// from `default_port` when the source dialect allows it.
 fn normalize_addr(
     conv: &mut Conv,
     raw: &str,
     default_port: Option<u16>,
     directive: &str,
     context: &str,
+    allow_unix: bool,
 ) -> Option<String> {
     let mut addr = raw.trim().trim_matches(['"', '\'']).to_owned();
-    if addr.starts_with("unix:")
-        || addr.starts_with("unix@")
-        || addr.starts_with("fd@")
-        || addr.starts_with('/')
+    // `unix:/path` (nginx), `unix@/path` and a bare absolute path (HAProxy)
+    // all name the same local socket. The normalised spelling is the one the
+    // schema accepts.
+    if let Some(path) = addr
+        .strip_prefix("unix:")
+        .or_else(|| addr.strip_prefix("unix@"))
     {
+        return unix_target(conv, raw, path, directive, context, allow_unix);
+    }
+    if addr.starts_with('/') {
+        return unix_target(conv, raw, &addr, directive, context, allow_unix);
+    }
+    if addr.starts_with("fd@") {
         conv.reject(
             1,
             directive,
             context,
-            format!(
-                "«{addr}»: sockets Unix/FD sin soporte en EQProxy (solo IP:PORT o HOSTNAME:PORT)"
-            ),
+            format!("«{addr}»: descriptores heredados (fd@) sin soporte en EQProxy"),
         );
         return None;
     }
@@ -677,6 +704,40 @@ fn normalize_addr(
         directive,
         context,
         format!("«{raw}»: no es IP:PORT ni HOSTNAME:PORT válido para EQProxy"),
+    );
+    None
+}
+
+/// Accepts a Unix socket path as a backend target, or rejects it with its
+/// cause (ADR-0043).
+fn unix_target(
+    conv: &mut Conv,
+    raw: &str,
+    path: &str,
+    directive: &str,
+    context: &str,
+    allow_unix: bool,
+) -> Option<String> {
+    if !allow_unix {
+        conv.reject(
+            1,
+            directive,
+            context,
+            format!(
+                "«{raw}»: EQProxy no escucha en sockets Unix (solo IP:PORT o HOSTNAME:PORT); un backend sí puede ser unix:/ruta"
+            ),
+        );
+        return None;
+    }
+    let target = format!("unix:{path}");
+    if crate::schema::parse_server_target(&target).is_ok() {
+        return Some(target);
+    }
+    conv.reject(
+        1,
+        directive,
+        context,
+        format!("«{raw}»: ruta de socket Unix inválida (debe ser absoluta y medir ≤100 bytes)"),
     );
     None
 }
@@ -833,34 +894,82 @@ mod tests {
     }
 
     #[test]
-    fn addresses_accept_ips_and_hostnames_and_refuse_sockets() {
+    fn addresses_accept_ips_hostnames_and_backend_unix_sockets() {
         let mut conv = Conv::new();
         assert_eq!(
-            normalize_addr(&mut conv, "10.0.0.1:80", None, "bind", "x").as_deref(),
+            normalize_addr(&mut conv, "10.0.0.1:80", None, "bind", "x", false).as_deref(),
             Some("10.0.0.1:80")
         );
         assert_eq!(
-            normalize_addr(&mut conv, ":8080", None, "bind", "x").as_deref(),
+            normalize_addr(&mut conv, ":8080", None, "bind", "x", false).as_deref(),
             Some("0.0.0.0:8080")
         );
         assert_eq!(
-            normalize_addr(&mut conv, "app.local:8080", None, "server", "x").as_deref(),
+            normalize_addr(&mut conv, "app.local:8080", None, "server", "x", true).as_deref(),
             Some("app.local:8080"),
             "B-H13: hostnames are accepted and resolved in the background"
         );
         assert_eq!(
-            normalize_addr(&mut conv, "example.com", Some(443), "server", "x").as_deref(),
+            normalize_addr(&mut conv, "example.com", Some(443), "server", "x", true).as_deref(),
             Some("example.com:443")
         );
+        // ADR-0043: both reference spellings name the same backend socket,
+        // and the schema form is what the conversion emits.
         assert_eq!(
-            normalize_addr(&mut conv, "unix@/run/app.sock", None, "server", "x"),
-            None
+            normalize_addr(&mut conv, "unix@/run/app.sock", None, "server", "x", true).as_deref(),
+            Some("unix:/run/app.sock")
         );
         assert_eq!(
-            normalize_addr(&mut conv, "[::1]:8443", None, "bind", "x").as_deref(),
+            normalize_addr(&mut conv, "/run/app.sock", None, "server", "x", true).as_deref(),
+            Some("unix:/run/app.sock"),
+            "HAProxy's bare absolute path is the same target"
+        );
+        assert_eq!(
+            normalize_addr(&mut conv, "unix:/run/app.sock", None, "bind", "x", false),
+            None,
+            "a listener still cannot be a Unix socket"
+        );
+        assert_eq!(
+            normalize_addr(&mut conv, "unix:relative.sock", None, "server", "x", true),
+            None,
+            "the path must be absolute"
+        );
+        assert_eq!(
+            normalize_addr(&mut conv, "fd@12", None, "server", "x", true),
+            None,
+            "inherited descriptors have no equivalent"
+        );
+        assert_eq!(
+            normalize_addr(&mut conv, "[::1]:8443", None, "bind", "x", false).as_deref(),
             Some("[::1]:8443")
         );
         assert!(conv.notes.iter().any(|n| n.severity == Severity::Rejected));
+    }
+
+    #[test]
+    fn unix_backends_convert_in_both_reference_dialects() {
+        // ADR-0043: the conversion emits the schema spelling and the result
+        // parses and validates (`Outcome.toml` is already checked).
+        let nginx = "http {\n  upstream app {\n    server unix:/run/app.sock;\n  }\n  server {\n    listen 80;\n    location / { proxy_pass http://app; }\n  }\n}\n";
+        let out = convert(Source::Nginx, nginx).expect("nginx upstream unix");
+        assert!(out.toml.contains("\"unix:/run/app.sock\""), "{}", out.toml);
+        assert!(
+            !out.report.contains("Rejected"),
+            "a supported backend is not a rejection: {}",
+            out.report
+        );
+
+        let inline = "http {\n  server {\n    listen 80;\n    location / { proxy_pass http://unix:/run/app.sock; }\n  }\n}\n";
+        let out = convert(Source::Nginx, inline).expect("nginx inline unix");
+        assert!(out.toml.contains("\"unix:/run/app.sock\""), "{}", out.toml);
+
+        let haproxy = "global\n    maxconn 100\nbackend app\n    server local unix@/run/app.sock\nfrontend fe\n    bind :80\n    default_backend app\n";
+        let out = convert(Source::Haproxy, haproxy).expect("haproxy unix@");
+        assert!(
+            out.toml.contains("\"unix:/run/app.sock\""),
+            "the `unix@` spelling normalises to the schema form: {}",
+            out.toml
+        );
     }
 
     #[test]

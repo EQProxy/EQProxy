@@ -9,7 +9,7 @@ Language: **English**.
 
 EQProxy must choose a production platform before designing the dataplane
 (brief, section 5: "First choose a production platform. Separately declare
-experimental support for other platforms"). The chosen stack (tokio/hyper/rustls,
+experimental support for other platforms"). The chosen stack (tokio/rustls,
 see ADR-0004) is portable, but socket options (`SO_REUSEPORT`, `TCP_FASTOPEN`,
 `TCP_DEFER_ACCEPT`), descriptor limits and `recvmmsg`/UDP buffer behaviour vary
 per OS.

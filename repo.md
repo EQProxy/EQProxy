@@ -5,24 +5,22 @@ Language: **English**.
 Minimal-observability TCP/HTTP reverse proxy, written in safe Rust
 (`#![forbid(unsafe_code)]`).
 
-## Status — v0.5.0 «Operabilidad y confianza»: real HTTP/1.1 proxy (strict
-framing including interim 1xx and `Expect: 100-continue`, per-phase
-timeouts, signal cancellation) + TLS (termination, backend TLS verified by
-default, ALPN h1, mTLS with client CAs), weighted round-robin with active
-TCP/HTTP health checks (`expect status`/`expect rstring`) and passive
-failure detection, safe connect-phase retries (idempotent-only unless
-opted in) with bounded backend queues, incoming PROXY protocol v1 with
-origin allowlists (plus v1 send), forwarded headers (XFF/X-Real-IP),
-custom local responses, hot config + certificate reload under traffic with
-measured swap latency, backend keep-alive pool (A16), the diagnostic CLI
-(`explain` with per-timeout outcomes, `diff`/`plan`, offline
-`apply`/`rollback`, `doctor`), framing fuzz corpus + live fuzz, first
-benchmarks vs 3.4.6 (all comparable after the pool; see
-[docs/evidence/phase2c/bench.md](docs/evidence/phase2c/bench.md)) and the
-24h soak harness with published budgets (BENCHMARK_PLAN §9; the soak gate
-passed on netcup-bench on 2026-10-18: 17.28M requests, 0 errors, steady
-RSS 8.86 MiB / peak 9.32 MiB, clean SIGINT shutdown).
-See [SPEC.md](SPEC.md) for the specified behaviour.
+## Status — v0.9.1 «parity gaps, semantics and release candidate»
+
+Current version: **v0.9.1** (2026-11-01), release candidate; the tag and the
+publication are pending. It adds Unix-domain backends and per-server `source`
+bind, custom error pages, the TLS 1.2/1.3 range with `errorloc`, the semantic
+reference and the complete 120-row parity matrix. On top of v0.8.5, it is a
+TCP/HTTP proxy — HTTP/1.1, HTTP/2
+and HTTP/3 — with TLS termination and verified backend TLS, typed routing rules
+per listener, weighted round-robin/leastconn/slow start, active health checks,
+bounded queues and safe retries, hot config and certificate reload under
+traffic, a bearer-gated administration plane, an opt-in server-rendered panel,
+a per-listener HTTP cache, WASM plugins and the official configuration
+converter (`eqproxy config import`). This file is a short pointer, not the
+feature list: see [README.md](README.md) for what ships and [SPEC.md](SPEC.md)
+for the specified behaviour. The audit notes at the bottom are historical
+(v0.5).
 
 Docs language: from v0.3.0, documentation is published in English only.
 
@@ -44,12 +42,11 @@ eqproxy config validate --config eqproxy.toml
 eqproxy run --config eqproxy.toml
 ```
 
-Planned commands that today exit with explicit code 2 ("not implemented yet",
-never simulated success): `config import` (reference proxy converter,
-Phase 8). `config explain/diff/plan/apply/rollback` and `doctor` are
-implemented (Phase 3); `apply`/`rollback` manage versioned state offline,
-and `kill -HUP` hot-reloads the config under traffic (S-CFG-01, fail-closed
-with a validated candidate gate).
+Every documented command is implemented: `config
+validate/explain/diff/plan/apply/rollback/schema/import` and `doctor`.
+`apply`/`rollback` manage versioned state offline, and `kill -HUP` hot-reloads
+the config under traffic (S-CFG-01, fail-closed with a validated candidate
+gate).
 
 The canonical format is documented in
 [docs/adr/0002-configuration-format.md](docs/adr/0002-configuration-format.md);
@@ -63,7 +60,7 @@ Multi-architecture (linux/amd64, linux/arm64) at `ghcr.io/ExyonQ/eqproxy`:
 docker run --rm ghcr.io/ExyonQ/eqproxy --help
 ```
 
-## Known limitations (documented, not hidden)
+## Audit limitations (v0.5 audit; applicability policy in ADR-0030)
 
 ### cargo-geiger: incomplete `unsafe` inventory (INCONCLUSIVE)
 

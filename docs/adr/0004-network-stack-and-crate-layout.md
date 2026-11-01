@@ -2,7 +2,9 @@
 
 Language: **English**.
 
-- State: **Accepted for Phases 0–2** (mandatory review when Phase 5 opens)
+- State: **Accepted for Phases 0–2** (mandatory review when Phase 5 opens);
+  **superseded in part** by [ADR-0036](0036-own-http1-parser.md) for the
+  HTTP/1–2 row (2026-10-31)
 - Date: 2026-10-12
 - Related: [SPEC.md](../../SPEC.md) §Architecture
 
@@ -35,9 +37,16 @@ operational cost (researched in Phase 0, Oct-2026).
 and unaudited (`cargo deny`/equivalent) at implementation time. The versions in
 this table are the researched state of Oct-2026.
 
+**Implementation reality (checked 2026-10-31).** This table records the Phase-0
+research, not the shipped stack. `hyper` and the `http-body` crates are **not**
+in the dependency graph: HTTP/1.1 uses this project's own parser
+(`eqproxy-net/src/http1.rs`) and HTTP/2 uses the `h2` crate directly. See
+[ADR-0036](0036-own-http1-parser.md). Everything else below shipped as decided
+(tokio, rustls + `aws-lc-rs`, quinn + `h3`/`h3-quinn`, wasmtime 50).
+
 **Code rule (user decision, 2026-10-12):** all our own Rust code is safe —
 `#![forbid(unsafe_code)]` in every crate, **no exceptions**. `unsafe` and FFI
-live only inside dependencies (tokio, hyper, rustls and wasmtime contain them
+live only inside dependencies (tokio, rustls and wasmtime contain them
 internally); they are inventoried and audited (`cargo-geiger` or equivalent) as
 documented residual risk.
 
@@ -109,5 +118,5 @@ testkit) start as **modules** inside `eqproxy-net`/`eqproxy-core`.
   asserted result: it is only declared reached when reproducible measurements
   exist; a loss is recorded and profiled before optimizing (brief, section 12).
 - Proxy semantics (safe retries, cancellation, backpressure, per-phase
-  timeouts) are explicitly implemented and tested on top of hyper; using hyper
-  does not guarantee them.
+  timeouts) are explicitly implemented and tested on top of HTTP/1.1 framing
+  and `h2`; no library guarantees them.

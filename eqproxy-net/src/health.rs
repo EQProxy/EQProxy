@@ -20,18 +20,18 @@
 //! would time the check out and flap a healthy server to `down`. Only
 //! close-delimited bodies (no framing header) are read to EOF.
 
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use std::net::SocketAddr;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::{TcpSocket, TcpStream, UnixStream};
 use tokio::task::JoinSet;
 
 use eqproxy_core::Shutdown;
 use eqproxy_core::expectation::{RegexMatcher, StatusExpectation};
 
-use crate::balancer::Balancer;
+use crate::balancer::{Balancer, Endpoint};
 
 /// Maximum bytes read from a health-check response (head + body).
 pub const MAX_CHECK_RESPONSE_BYTES: usize = 64 * 1024;
@@ -131,38 +131,90 @@ pub async fn run(balancer: Arc<Balancer>, check: HealthCheck, mut shutdown: Shut
     }
 }
 
-async fn check_one(balancer: Arc<Balancer>, addr: SocketAddr, check: HealthCheck) {
-    let ok = match &check.kind {
-        CheckKind::Tcp => tcp_ok(addr, check.timeout).await,
-        CheckKind::Http(http) => http_ok(addr, http, check.timeout).await,
-    };
-    if ok {
-        balancer.report_ok(addr);
-    } else {
-        balancer.report_fail(addr);
+/// A health-check stream: TCP or Unix, boxed so one implementation probes
+/// both (ADR-0043).
+trait CheckStream: AsyncRead + AsyncWrite + Send + Unpin {}
+impl<T: AsyncRead + AsyncWrite + Send + Unpin> CheckStream for T {}
+
+/// Connects to a backend endpoint from the checker (no timeout here: the
+/// caller wraps the whole attempt). A TCP target honours the server's
+/// `source` bind, exactly like a dataplane dial.
+async fn connect(
+    endpoint: &Endpoint,
+    source: Option<IpAddr>,
+) -> std::io::Result<Box<dyn CheckStream>> {
+    match endpoint {
+        Endpoint::Tcp(addr) => tcp_connect(*addr, source)
+            .await
+            .map(|stream| Box::new(stream) as Box<dyn CheckStream>),
+        Endpoint::Unix(path) => UnixStream::connect(path.as_path())
+            .await
+            .map(|stream| Box::new(stream) as Box<dyn CheckStream>),
     }
 }
 
-/// TCP connect attempt (B11).
-async fn tcp_ok(addr: SocketAddr, timeout: Duration) -> bool {
+/// TCP connect from the chosen local address; the socket family follows the
+/// source (a v4 source cannot connect from a v6 socket, and the failure is
+/// explicit like in the dataplane path).
+async fn tcp_connect(addr: SocketAddr, source: Option<IpAddr>) -> std::io::Result<TcpStream> {
+    let Some(source) = source else {
+        return TcpStream::connect(addr).await;
+    };
+    let socket = match source {
+        IpAddr::V4(_) => TcpSocket::new_v4()?,
+        IpAddr::V6(_) => TcpSocket::new_v6()?,
+    };
+    socket.bind(SocketAddr::new(source, 0))?;
+    socket.connect(addr).await
+}
+
+async fn check_one(balancer: Arc<Balancer>, addr: Endpoint, check: HealthCheck) {
+    let source = balancer.source_of(&addr);
+    let ok = match &check.kind {
+        CheckKind::Tcp => tcp_ok(&addr, source, check.timeout).await,
+        CheckKind::Http(http) => http_ok_from(&addr, source, http, check.timeout).await,
+    };
+    if ok {
+        balancer.report_ok(&addr);
+    } else {
+        balancer.report_fail(&addr);
+    }
+}
+
+/// Connect attempt (B11): TCP connect (with the optional source bind), or a
+/// Unix socket connect.
+async fn tcp_ok(addr: &Endpoint, source: Option<IpAddr>, timeout: Duration) -> bool {
     matches!(
-        tokio::time::timeout(timeout, TcpStream::connect(addr)).await,
+        tokio::time::timeout(timeout, connect(addr, source)).await,
         Ok(Ok(_))
     )
 }
 
 /// HTTP attempt with `expect` matching (B-H6): one real exchange.
-pub async fn http_ok(addr: SocketAddr, http: &HttpCheck, timeout: Duration) -> bool {
-    tokio::time::timeout(timeout, http_exchange(addr, http))
+pub async fn http_ok(addr: &Endpoint, http: &HttpCheck, timeout: Duration) -> bool {
+    http_ok_from(addr, None, http, timeout).await
+}
+
+/// [`http_ok`] for a server with a configured `source` bind (ADR-0043).
+async fn http_ok_from(
+    addr: &Endpoint,
+    source: Option<IpAddr>,
+    http: &HttpCheck,
+    timeout: Duration,
+) -> bool {
+    tokio::time::timeout(timeout, http_exchange(addr, source, http))
         .await
         .unwrap_or_default()
 }
 
-async fn http_exchange(addr: SocketAddr, http: &HttpCheck) -> bool {
-    let Ok(mut stream) = TcpStream::connect(addr).await else {
+async fn http_exchange(addr: &Endpoint, source: Option<IpAddr>, http: &HttpCheck) -> bool {
+    let Ok(mut stream) = connect(addr, source).await else {
         return false;
     };
-    let host = http.host.clone().unwrap_or_else(|| addr.to_string());
+    let host = http.host.clone().unwrap_or_else(|| match addr {
+        Endpoint::Tcp(addr) => addr.to_string(),
+        Endpoint::Unix(_) => "localhost".to_owned(),
+    });
     let method = match http.method {
         HttpCheckMethod::Get => "GET",
         HttpCheckMethod::Head => "HEAD",
@@ -304,7 +356,7 @@ fn body_framing(method: HttpCheckMethod, head: &[u8]) -> Option<BodyFraming> {
 /// Reads one more socket chunk into `raw`, bounded by
 /// [`MAX_CHECK_RESPONSE_BYTES`]. `false` = EOF, socket error or budget
 /// exhausted (the response is then matched truncated).
-async fn read_more(raw: &mut Vec<u8>, stream: &mut TcpStream, chunk: &mut [u8]) -> bool {
+async fn read_more(raw: &mut Vec<u8>, stream: &mut Box<dyn CheckStream>, chunk: &mut [u8]) -> bool {
     if raw.len() >= MAX_CHECK_RESPONSE_BYTES {
         return false;
     }
@@ -342,6 +394,11 @@ fn matches_response(http: &HttpCheck, raw: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::SocketAddr;
+
+    fn endpoint(addr: SocketAddr) -> Endpoint {
+        Endpoint::Tcp(addr)
+    }
 
     fn http_check(status: &str, rstring: Option<&str>) -> HttpCheck {
         HttpCheck {
@@ -413,23 +470,48 @@ mod tests {
 
         let check = http_check("200-299", Some("^ok$"));
         assert!(
-            !http_ok(addr, &check, Duration::from_secs(2)).await,
+            !http_ok(&endpoint(addr), &check, Duration::from_secs(2)).await,
             "a 503 backend must be reported DOWN"
         );
 
         up.store(true, Ordering::Relaxed);
         assert!(
-            http_ok(addr, &check, Duration::from_secs(2)).await,
+            http_ok(&endpoint(addr), &check, Duration::from_secs(2)).await,
             "a 200 + \"ok\" backend must be reported UP"
         );
 
         let strict = http_check("200-299", Some("never-matches"));
         assert!(
-            !http_ok(addr, &strict, Duration::from_secs(2)).await,
+            !http_ok(&endpoint(addr), &strict, Duration::from_secs(2)).await,
             "rstring mismatch must fail the check"
         );
 
         server.abort();
+    }
+
+    #[cfg_attr(
+        miri,
+        ignore = "needs TCP sockets: miri does not support networking (rust-lang/miri#3449)"
+    )]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn health_connect_uses_the_configured_source_bind() {
+        // ADR-0043: `source` applies to the outbound socket, and the health
+        // checker is an outbound connection too. A v6 source for a v4 target
+        // cannot connect, which proves the bind is not silently skipped.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let endpoint = endpoint(addr);
+        assert!(
+            tcp_ok(&endpoint, None, Duration::from_secs(2)).await,
+            "the plain check reaches the listener"
+        );
+        let mismatched: IpAddr = "::1".parse().expect("v6 loopback");
+        assert!(
+            !tcp_ok(&endpoint, Some(mismatched), Duration::from_secs(2)).await,
+            "the check must dial from the configured source, not the default"
+        );
     }
 
     #[cfg_attr(
@@ -452,6 +534,7 @@ mod tests {
         let balancer = Arc::new(Balancer::new(
             vec![crate::balancer::ResolvedServer {
                 addr: addr.into(),
+                source: None,
                 weight: 1,
                 backup: false,
                 priority: 0,
@@ -479,14 +562,17 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(150)).await;
         assert!(
-            balancer.is_up(addr),
+            balancer.is_up(&endpoint(addr)),
             "the live server must stay operational"
         );
 
         // We close the listener: checks fail → down (fall=1).
         acceptor.abort();
         tokio::time::sleep(Duration::from_millis(150)).await;
-        assert!(!balancer.is_up(addr), "the dead server must drop");
+        assert!(
+            !balancer.is_up(&endpoint(addr)),
+            "the dead server must drop"
+        );
 
         handle.trigger();
         tokio::time::timeout(Duration::from_secs(2), task)
@@ -545,7 +631,7 @@ mod tests {
         let check = http_check("200-299", Some("^ok$"));
         let done = tokio::time::timeout(
             Duration::from_secs(1),
-            http_ok(addr, &check, Duration::from_secs(30)),
+            http_ok(&endpoint(addr), &check, Duration::from_secs(30)),
         )
         .await
         .expect(
@@ -569,7 +655,7 @@ mod tests {
         let check = http_check("200-299", Some("ok"));
         let done = tokio::time::timeout(
             Duration::from_secs(1),
-            http_ok(addr, &check, Duration::from_secs(30)),
+            http_ok(&endpoint(addr), &check, Duration::from_secs(30)),
         )
         .await
         .expect("the check must complete at the terminal chunk");
@@ -589,7 +675,7 @@ mod tests {
         check.method = HttpCheckMethod::Head;
         let done = tokio::time::timeout(
             Duration::from_secs(1),
-            http_ok(addr, &check, Duration::from_secs(30)),
+            http_ok(&endpoint(addr), &check, Duration::from_secs(30)),
         )
         .await
         .expect("HEAD has no body: the check must complete at the head");
@@ -607,7 +693,7 @@ mod tests {
         let addr = origin_with(b"HTTP/1.1 200 OK\r\n\r\nok", false).await;
         let check = http_check("200-299", Some("^ok$"));
         assert!(
-            http_ok(addr, &check, Duration::from_secs(2)).await,
+            http_ok(&endpoint(addr), &check, Duration::from_secs(2)).await,
             "a close-delimited origin must still be checked"
         );
     }
@@ -654,7 +740,7 @@ mod tests {
         let check = http_check("200-299", Some("^ok"));
         let done = tokio::time::timeout(
             Duration::from_secs(2),
-            http_ok(addr, &check, Duration::from_secs(30)),
+            http_ok(&endpoint(addr), &check, Duration::from_secs(30)),
         )
         .await
         .expect("the budget must bound the read even when the body is longer");

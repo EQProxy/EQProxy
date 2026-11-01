@@ -1,0 +1,85 @@
+
+===== haproxy: import exit 0 =====
+import: /tmp/eqproxy-v091-errors.YkzOCD/haproxy.cfg (haproxy) → /tmp/eqproxy-v091-errors.YkzOCD/haproxy.eqproxy.toml: 6 converted, 1 with notes, 0 rejected
+
+===== generated TOML =====
+# Generado por `eqproxy config import`.
+# Revise el informe de conversión antes de usarlo en producción.
+schema_version = 1
+
+[backend.app]
+server = "127.0.0.1:9000"
+
+[listener.fe]
+listen = "0.0.0.0:18081"
+mode = "http"
+backend = "app"
+
+[[listener.fe.error_pages]]
+codes = [502]
+file = "/tmp/eqproxy-v091-errors.YkzOCD/errors/502.http"
+format = "raw"
+
+[[listener.fe.error_pages]]
+codes = [503]
+file = "/tmp/eqproxy-v091-errors.YkzOCD/errors/503.http"
+format = "raw"
+
+===== conversion report =====
+# Informe de conversión HAProxy → EQProxy
+
+- Entrada: `/tmp/eqproxy-v091-errors.YkzOCD/haproxy.cfg`
+- Salida: `/tmp/eqproxy-v091-errors.YkzOCD/haproxy.eqproxy.toml`
+- Listeners generados: **1** · Backends generados: **1**
+- Directivas leídas: **7** · clasificadas: **7** — convertidas **6** · con aviso **1** · rechazadas **0**
+
+«Nunca se descarta en silencio»: cada directiva del origen aparece abajo. El fichero generado se ha parseado y validado con el propio parser de EQProxy (`schema_version = 1`) antes de escribirlo. La conversión es estática: no se ha ejecutado nada de la configuración de origen ni se ha medido tráfico.
+
+## Conversión generada
+
+| listener | escucha | modo | backend | TLS |
+|---|---|---|---|---|
+| `fe` | 0.0.0.0:18081 | http | `app` | no |
+
+| backend | servidores (peso) | balance | health check | PROXY | TLS backend |
+|---|---|---|---|---|---|
+| `app` | 127.0.0.1:9000 (1) | roundrobin | — | none | no |
+
+## Detalle de la clasificación
+
+### ❌ no traducible (0)
+
+
+### ⛔ rechazado (sin equivalente en EQProxy) (0)
+
+
+### ⚠️ revisar (1)
+
+- `mode http` — *defaults*: modo por defecto «http»: el modo real lo fija cada listener
+
+### ℹ️ informativo (0)
+
+
+### ✅ convertido (6)
+
+- `errorfile 502 /tmp/eqproxy-v091-errors.YkzOCD/errors/502.http` — *defaults*: [[listener.*.error_pages]] codes = [502], file = "/tmp/eqproxy-v091-errors.YkzOCD/errors/502.http", format = "raw" en cada listener
+- `server s1 127.0.0.1:9000` — *backend app*: servidor 127.0.0.1:9000
+- `bind :18081` — *frontend fe*: listener de EQProxy sobre esta dirección
+- `default_backend app` — *frontend fe*: backend de respaldo del listener (el `backend` de [listener.*])
+- `errorfile 503 /tmp/eqproxy-v091-errors.YkzOCD/errors/503.http` — *frontend fe*: [[listener.*.error_pages]] codes = [503], file = "/tmp/eqproxy-v091-errors.YkzOCD/errors/503.http", format = "raw"
+- `bind :18081` — *frontend fe*: listener «fe» (http) → backend «app»
+
+## Qué no se ha traducido
+
+Ninguna: todas las directivas del origen tienen destino o son informativas.
+
+## Siguiente paso
+
+1. `eqproxy config validate --config <salida>` — el mismo gate que usa el binario.
+2. Leer las secciones «revisar» y «rechazado» de arriba y corregir a mano lo que falte.
+3. `eqproxy config diff --help` para comparar con la configuración actual antes de `config apply`.
+
+===== config validate =====
+warning: listener "fe" listens on 0.0.0.0:18081 without TLS: expose it only on trusted networks or enable [listener.fe.tls]
+config OK: 1 listener(s), 1 backend(s) in /tmp/eqproxy-v091-errors.YkzOCD/haproxy.eqproxy.toml
+validate exit: 0

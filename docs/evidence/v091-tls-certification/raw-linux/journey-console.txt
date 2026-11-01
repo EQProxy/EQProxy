@@ -1,0 +1,20 @@
+info: syncing channel updates for 1.99.1-aarch64-unknown-linux-gnu
+info: latest update on 2026-10-15 for version 1.99.1 (58cf8f9c3 2026-10-13)
+info: downloading 2 components
+
+===== 1. startup: file, acceptor and status agree =====
+
+===== 2. a no-op renewal is honest about changed=false =====
+
+===== 3. rotate the default certificate without dropping a live connection =====
+
+===== 4. a bad candidate is rejected and the previous certificate keeps serving =====
+
+===== 5. SIGHUP rotates the SNI set without the admin plane =====
+
+===== 6. the renewal action keeps its permission model =====
+
+===== 7. final state =====
+
+===== all invariants passed =====
+raw: /raw

@@ -2,9 +2,9 @@
 
 Date: 2026-10-14. Raw data: [bench-raw.json](bench-raw.json) (full disclosure
 block inside), [mem-raw.json](mem-raw.json). Harness:
-[scripts/bench_phase2c.py](../../../scripts/bench_phase2c.py),
-[scripts/bench_backends.py](../../../scripts/bench_backends.py),
-[scripts/mem_budgets.py](../../../scripts/mem_budgets.py).
+scripts/bench_phase2c.py (local-only: `../../../scripts/bench_phase2c.py`),
+scripts/bench_backends.py (local-only: `../../../scripts/bench_backends.py`),
+scripts/mem_budgets.py (local-only: `../../../scripts/mem_budgets.py`).
 Commit: see `disclosure.eqproxy_commit` in bench-raw.json.
 
 Language note: from v0.3.0, project documentation is published in English

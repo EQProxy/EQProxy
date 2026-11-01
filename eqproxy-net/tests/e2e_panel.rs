@@ -31,6 +31,7 @@ fn backend(modes: &Arc<ServerModes>) -> Arc<ResolvedBackend> {
             vec![
                 ResolvedServer {
                     addr: ServerAddr::Ip(SERVER_A.parse().expect("addr a")),
+                    source: None,
                     weight: 1,
                     backup: false,
                     priority: 0,
@@ -38,6 +39,7 @@ fn backend(modes: &Arc<ServerModes>) -> Arc<ResolvedBackend> {
                 },
                 ResolvedServer {
                     addr: ServerAddr::Ip(SERVER_B.parse().expect("addr b")),
+                    source: None,
                     weight: 1,
                     backup: false,
                     priority: 0,

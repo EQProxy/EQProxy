@@ -592,6 +592,90 @@
         "status"
       ]
     },
+    "ErrorPageConfig": {
+      "description": "One custom error page (B-H15 · B-E18 · B-N14): the body or file that\nreplaces a locally generated status, and optionally the matching upstream\nresponse.",
+      "type": "object",
+      "properties": {
+        "body": {
+          "description": "Inline body. Mutually exclusive with `file`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "codes": {
+          "description": "Status codes this page answers (400-599). One page may cover several.",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0
+          }
+        },
+        "content_type": {
+          "description": "Content-Type of the payload (default `text/html; charset=utf-8`; a\n`raw` file's own header wins).",
+          "type": "string",
+          "default": "text/html; charset=utf-8"
+        },
+        "file": {
+          "description": "Body file, relative to the config file (or absolute). Mutually\nexclusive with `body`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "format": {
+          "description": "`body` (default): the file is the payload. `raw`: the file is a\ncomplete HTTP response (HAProxy `errorfile`), status line included.",
+          "$ref": "#/$defs/ErrorPageFormat"
+        },
+        "intercept": {
+          "description": "Also replace a matching **upstream** response with this page (nginx\n`proxy_intercept_errors`, ingress-nginx `custom-http-errors`).\nDefault off: only responses EQProxy generates are replaced.",
+          "type": "boolean",
+          "default": false
+        },
+        "location": {
+          "description": "Redirect target instead of a body (HAProxy `errorloc`): a path\nstarting with `/` or an absolute `http://`/`https://` URL. Mutually\nexclusive with `file` and `body`; `status` must be a 3xx other than\n304, and defaults to 302.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "status": {
+          "description": "Status to answer with instead of the one that fired (nginx\n`error_page 404 =200 …`). Default: the code that fired.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "default": null,
+          "maximum": 65535,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "codes"
+      ]
+    },
+    "ErrorPageFormat": {
+      "description": "Shape of an error-page file.",
+      "oneOf": [
+        {
+          "description": "Plain payload (the file is the body).",
+          "type": "string",
+          "const": "body"
+        },
+        {
+          "description": "A complete HTTP response: status line, headers, body.",
+          "type": "string",
+          "const": "raw"
+        }
+      ]
+    },
     "ForwardedHeaders": {
       "description": "`X-Forwarded-For` / `X-Real-IP` handling (B-N4 first step).",
       "oneOf": [
@@ -839,6 +923,13 @@
           "description": "Timeout for connecting to the backend.",
           "type": "string",
           "default": "5000ms"
+        },
+        "error_pages": {
+          "description": "Custom error pages (B-H15/B-E18/B-N14). `http` mode only.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ErrorPageConfig"
+          }
         },
         "forwarded_headers": {
           "description": "`X-Forwarded-For`/`X-Real-IP` handling (`http` only; B-N4).",
@@ -1508,6 +1599,14 @@
           "maximum": 255,
           "minimum": 0
         },
+        "source": {
+          "description": "Optional local source address for this server's outbound socket\n(ADR-0043, HAProxy `source <addr>`): a literal `IP`, not a hostname.\nOnly meaningful for TCP targets; rejected on a Unix target.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
         "weight": {
           "description": "Balancing weight (0 = drained: never selected, still health-checked).",
           "type": "integer",
@@ -1641,6 +1740,17 @@
           "description": "Path to the PEM private key (PKCS#8, PKCS#1 or SEC1).",
           "type": "string"
         },
+        "max_version": {
+          "description": "Highest TLS version accepted. Absent = TLS 1.3, the previous\nbehaviour; `\"1.2\"` caps the listener at TLS 1.2 (`ssl_protocols\nTLSv1.2`, HAProxy `ssl-max-ver TLSv1.2`). Must not be lower than\n`min_version`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TlsVersion"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "min_version": {
           "description": "Minimum TLS version (default 1.2).",
           "$ref": "#/$defs/TlsVersion"
@@ -1653,7 +1763,7 @@
       ]
     },
     "TlsVersion": {
-      "description": "Minimum accepted TLS version (A11/A12).",
+      "description": "Accepted TLS version range (A11/A12).",
       "oneOf": [
         {
           "description": "TLS 1.2 (default; TLS 1.0/1.1 are never accepted).",

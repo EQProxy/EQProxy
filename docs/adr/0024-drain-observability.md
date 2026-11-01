@@ -7,7 +7,7 @@ Language: **English**.
 - Related: [ADR-0018](0018-first-write-path-server-state.md) (the drain this
   observes), [ADR-0017](0017-read-only-admin-plane.md) (the read plane and
   `/metrics`), [ADR-0020](0020-structured-access-log.md) (log shape),
-  [SPEC §7.3/§9](../SPEC.md), [PARITY_MATRIX.md](../../PARITY_MATRIX.md)
+  [SPEC §7.3/§9](../../SPEC.md), PARITY_MATRIX.md (local-only: `../../PARITY_MATRIX.md`)
 
 ## Context
 

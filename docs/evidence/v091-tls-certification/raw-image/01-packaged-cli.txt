@@ -1,0 +1,15 @@
+
+===== docker run --rm IMAGE config validate (valid config) =====
+warning: admin.allow_remote = true: the admin plane listens beyond loopback and this slice has no TLS; the bearer token travels in the clear
+config OK: 1 listener(s), 1 backend(s) in /cfg/eqproxy.toml
+exit: 0
+
+===== docker run --rm IMAGE config validate (invalid mode) =====
+configuration error in /cfg/bad.toml:5:8 — field `listener.web.mode`: TOML parse error at line 5, column 8
+  |
+5 | mode = "not-a-mode"
+  |        ^^^^^^^^^^^^
+unknown variant `not-a-mode`, expected `tcp` or `http`
+
+  example: mode = "tcp" (or "http")
+exit: 1

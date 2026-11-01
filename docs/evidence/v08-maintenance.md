@@ -15,16 +15,16 @@ anything on the slot afterwards. Nothing of ours stays on the server.
 
 | Piece | Where |
 |---|---|
-| Third state (`ready`/`drain`/`maintenance`, exact wire names) | [balancer.rs:52](eqproxy-net/src/balancer.rs#L52) |
-| Selection: a removed slot is never picked | [balancer.rs:1412](eqproxy-net/src/balancer.rs#L1412) |
-| Transition closes the h1 pool and the backend h2 session | [admin.rs:1890](eqproxy-net/src/admin.rs#L1890) |
-| A finished exchange is never re-parked on a maintenance slot | [http1.rs:2567](eqproxy-net/src/http1.rs#L2567) |
-| h2 session removed from the hub, closed when its last stream ends | [backend_h2.rs:413](eqproxy-net/src/backend_h2.rs#L413) |
-| Window opening is an event, not a poll | [balancer.rs:336](eqproxy-net/src/balancer.rs#L336) |
-| Gauge `eqproxy_backend_servers_maintenance` (label-free) | [admin.rs:1687](eqproxy-net/src/admin.rs#L1687) |
-| Unit tests | [admin.rs:2454](eqproxy-net/src/admin.rs#L2454), [balancer.rs:1463](eqproxy-net/src/balancer.rs#L1463) |
-| E2E of the h2 session | [e2e_backend_h2.rs:1140](eqproxy-net/tests/e2e_backend_h2.rs#L1140), [:1215](eqproxy-net/tests/e2e_backend_h2.rs#L1215) |
-| E2E of the wire route | [e2e_admin.rs:433](eqproxy-net/tests/e2e_admin.rs#L433) (`write_roles_and_bodies_are_enforced_over_the_wire`, real admin socket) |
+| Third state (`ready`/`drain`/`maintenance`, exact wire names) | [balancer.rs:52](../../eqproxy-net/src/balancer.rs#L52) |
+| Selection: a removed slot is never picked | [balancer.rs:1412](../../eqproxy-net/src/balancer.rs#L1412) |
+| Transition closes the h1 pool and the backend h2 session | [admin.rs:1890](../../eqproxy-net/src/admin.rs#L1890) |
+| A finished exchange is never re-parked on a maintenance slot | [http1.rs:2567](../../eqproxy-net/src/http1.rs#L2567) |
+| h2 session removed from the hub, closed when its last stream ends | [backend_h2.rs:413](../../eqproxy-net/src/backend_h2.rs#L413) |
+| Window opening is an event, not a poll | [balancer.rs:336](../../eqproxy-net/src/balancer.rs#L336) |
+| Gauge `eqproxy_backend_servers_maintenance` (label-free) | [admin.rs:1687](../../eqproxy-net/src/admin.rs#L1687) |
+| Unit tests | [admin.rs:2454](../../eqproxy-net/src/admin.rs#L2454), [balancer.rs:1463](../../eqproxy-net/src/balancer.rs#L1463) |
+| E2E of the h2 session | [e2e_backend_h2.rs:1140](../../eqproxy-net/tests/e2e_backend_h2.rs#L1140), [:1215](../../eqproxy-net/tests/e2e_backend_h2.rs#L1215) |
+| E2E of the wire route | [e2e_admin.rs:433](../../eqproxy-net/tests/e2e_admin.rs#L433) (`write_roles_and_bodies_are_enforced_over_the_wire`, real admin socket) |
 
 ## Binary under test
 
@@ -36,7 +36,7 @@ anything on the slot afterwards. Nothing of ours stays on the server.
   that added the panel wiring; both runs are on disk and agree on every
   phase.
 - Host: macOS 26.5.1 arm64 (Darwin), `python3.13`.
-- Journey: [`scripts/evidence/v08-maintenance/journey.py`](../../scripts/evidence/v08-maintenance/journey.py)
+- Journey: `scripts/evidence/v08-maintenance/journey.py` (local-only: `../../scripts/evidence/v08-maintenance/journey.py`)
   (local-only harness, per the `docs/` rule), run from the repository root.
 - Raw run: [`docs/evidence/v08-maintenance/raw/run-20261027T003548Z/`](v08-maintenance/raw/run-20261027T003548Z/)
   — `journey.txt` (transcript), `eqproxy.toml` (exact config), `eqproxy.log`
@@ -120,16 +120,16 @@ the server's observation, not the proxy's word.
 ## Tests that cover what the journey does not
 
 - **Backend HTTP/2 sessions**: two E2E cases with a real h2 origin —
-  an idle session ends **at once** ([e2e_backend_h2.rs:1140](eqproxy-net/tests/e2e_backend_h2.rs#L1140))
+  an idle session ends **at once** ([e2e_backend_h2.rs:1140](../../eqproxy-net/tests/e2e_backend_h2.rs#L1140))
   and an in-flight stream is cut loose only when it ends
-  ([:1215](eqproxy-net/tests/e2e_backend_h2.rs#L1215)).
+  ([:1215](../../eqproxy-net/tests/e2e_backend_h2.rs#L1215)).
 - **The wire route** (role, refusal of a browser origin, declared media type,
   body bound, idempotence, status publication) is covered over a real admin
-  socket at [e2e_admin.rs:433](eqproxy-net/tests/e2e_admin.rs#L433) with the
+  socket at [e2e_admin.rs:433](../../eqproxy-net/tests/e2e_admin.rs#L433) with the
   debug profile; this page is the release-binary run of the same route.
 - **State round trip and gauge** are unit-tested in
-  [admin.rs:2454](eqproxy-net/src/admin.rs#L2454) and
-  [balancer.rs:1463](eqproxy-net/src/balancer.rs#L1463) (completion is **not** a
+  [admin.rs:2454](../../eqproxy-net/src/admin.rs#L2454) and
+  [balancer.rs:1463](../../eqproxy-net/src/balancer.rs#L1463) (completion is **not** a
   drain completion).
 
 ## Not executed in this run

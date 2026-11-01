@@ -433,6 +433,7 @@ async fn http3_fails_over_to_the_backup_when_every_primary_is_down() {
         vec![
             ResolvedServer {
                 addr: ServerAddr::Ip(primary),
+                source: None,
                 weight: 1,
                 backup: false,
                 priority: 0,
@@ -440,6 +441,7 @@ async fn http3_fails_over_to_the_backup_when_every_primary_is_down() {
             },
             ResolvedServer {
                 addr: ServerAddr::Ip(backup),
+                source: None,
                 weight: 1,
                 backup: true,
                 priority: 0,
@@ -463,7 +465,9 @@ async fn http3_fails_over_to_the_backup_when_every_primary_is_down() {
     assert!(backup_origin.seen.lock().await.is_empty());
 
     // Every primary down: the backup origin serves the h3 request.
-    backend.balancer.report_fail(primary);
+    backend
+        .balancer
+        .report_fail(&eqproxy_net::Endpoint::Tcp(primary));
     let answer = client.request("GET", "/hello", &[], None).await;
     assert_eq!(answer.status, StatusCode::OK);
     assert_eq!(answer.body, b"hello from origin");
@@ -479,7 +483,9 @@ async fn http3_fails_over_to_the_backup_when_every_primary_is_down() {
     );
 
     // The recovered primary takes it back.
-    backend.balancer.report_ok(primary);
+    backend
+        .balancer
+        .report_ok(&eqproxy_net::Endpoint::Tcp(primary));
     let answer = client.request("GET", "/hello", &[], None).await;
     assert_eq!(answer.status, StatusCode::OK);
     assert_eq!(primary_origin.seen.lock().await.len(), 2);
@@ -612,6 +618,13 @@ async fn http3_connect_is_refused_and_a_dead_backend_is_an_explicit_502() {
     // empty 200.
     let unavailable = client.request("GET", "/down", &[], None).await;
     assert_eq!(unavailable.status, StatusCode::BAD_GATEWAY);
+    let date = unavailable
+        .headers
+        .get("date")
+        .expect("a local h3 502 carries Date")
+        .to_str()
+        .expect("Date is ASCII");
+    common::assert_http_date(date);
     assert!(
         unavailable.body.is_empty(),
         "a gateway error has no body: {:?}",
@@ -620,6 +633,13 @@ async fn http3_connect_is_refused_and_a_dead_backend_is_an_explicit_502() {
 
     let connect = client.request("CONNECT", "/tunnel", &[], None).await;
     assert_eq!(connect.status, StatusCode::NOT_IMPLEMENTED);
+    let date = connect
+        .headers
+        .get("date")
+        .expect("a refused h3 CONNECT carries Date")
+        .to_str()
+        .expect("Date is ASCII");
+    common::assert_http_date(date);
     assert!(metrics.http_requests_rejected.load(Ordering::Relaxed) >= 1);
 
     drop(client);

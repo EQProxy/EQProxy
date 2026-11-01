@@ -42,6 +42,9 @@ impl Behavior {
             headers: vec![
                 ("content-type".to_owned(), "text/plain".to_owned()),
                 ("content-length".to_owned(), body.len().to_string()),
+                // A versioned origin banner the product must replace, cached
+                // or not.
+                ("server".to_owned(), "nginx/1.24.0".to_owned()),
             ],
             body: body.as_bytes().to_vec(),
             etag: None,
@@ -340,6 +343,7 @@ fn cookie_backend(origin: SocketAddr) -> Arc<ResolvedBackend> {
             "api",
             vec![ResolvedServer {
                 addr: origin.into(),
+                source: None,
                 weight: 1,
                 backup: false,
                 priority: 0,
@@ -407,12 +411,18 @@ async fn miss_then_hit_serves_identical_bytes() {
     let (status, head, first) = fetch(proxy, "GET", "/static", &[]).await;
     assert_eq!(status, 200);
     assert_eq!(header(&head, "x-cache"), Some("MISS".to_owned()));
+    assert_eq!(header(&head, "server").as_deref(), Some("eqproxy"));
     assert_eq!(origin.hits("/static"), 1);
 
     let (status, head, second) = fetch(proxy, "GET", "/static", &[]).await;
     assert_eq!(status, 200);
     assert_eq!(first, second);
     assert_eq!(header(&head, "x-cache"), Some("HIT".to_owned()));
+    assert_eq!(
+        header(&head, "server").as_deref(),
+        Some("eqproxy"),
+        "a cached entry serves the product banner, not the stored nginx one"
+    );
     assert!(header(&head, "age").is_some(), "a hit carries its age");
     assert_eq!(origin.hits("/static"), 1, "the second request never dialed");
 
@@ -713,6 +723,7 @@ async fn disk_entries_survive_a_restart() {
                 addr: eqproxy_net::ServerAddr::Ip(
                     "127.0.0.2:9".parse::<SocketAddr>().expect("dead addr"),
                 ),
+                source: None,
                 weight: 1,
                 backup: false,
                 priority: 0,

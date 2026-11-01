@@ -6,8 +6,11 @@ Reverse proxy and load balancer written in Rust, targeting progressive
 functional parity with the reference proxy together with verifiable improvements in
 diagnostics, configuration, administration, extensibility and security.
 
-> **Status: v0.8.5 (2026-10-31) — extensions, conversion and no debt in the
-> 0.8.x line: request-filter plugins as WASM with deny-by-default capabilities
+> **Status: v0.9.1 (2026-11-01) — release candidate; tag and publication
+> pending. 0.9.1 adds Unix-domain backends and per-server `source` bind,
+> custom error pages, the TLS version range and `errorloc`, the semantic
+> reference and the complete 120-row parity matrix. It builds on the v0.8.5
+> line: request-filter plugins as WASM with deny-by-default capabilities
 > (no WASI, no network, no filesystem to grant), a per-listener HTTP response
 > cache with `Vary`, ETag/304 revalidation and cache-lock, per-listener message
 > limits and stream buffers, hot TLS secrets in both directions, per-server
@@ -51,9 +54,9 @@ diagnostics, configuration, administration, extensibility and security.
 > ([ADR-0025](docs/adr/0025-certificate-renewal-without-restart.md)) and an
 > **opt-in server-rendered panel** with bearer sessions, a per-session CSRF
 > token and a write audit line, no JavaScript
-> ([ADR-0029](docs/adr/0029-panel-sessions-and-csrf.md)), with **559 tests**
-> across 30 targets green on the tier-1 platform (558 on macOS, where one
-> test is Linux-only; `cargo test --workspace`, 2026-10-27) plus two Docker-gated
+> ([ADR-0029](docs/adr/0029-panel-sessions-and-csrf.md)), with **715 tests
+> passed, 0 failed (2 declared `#[ignore]` Docker harnesses) across 36 targets**
+> (`cargo test --workspace`, 2026-11-01) plus two Docker-gated
 > harnesses (evidence from the v0.6 gate, not re-run since):
 > [differential corpus](docs/differential-corpus.md) **23/23** cases against
 > HAProxy 3.4.6, nginx, the ingress-nginx data plane and static Envoy
@@ -138,8 +141,10 @@ diagnostics, configuration, administration, extensibility and security.
 > [offload](docs/evidence/v07-h3-profile.md),
 > [close fix](docs/evidence/v07-h3-close.md)).
 >
-> **Scope honesty:** v0.8.5 is not declared production ready (Phase 9 gate
-> pending). Its own gate is met: 22/22 boxes of the v0.8.5 roadmap, including
+> **Scope honesty:** v0.9.1 is not declared production ready (Phase 9 gate
+> pending); its roadmap is closed at 13/13, but the tag, the image gate and the
+> publication are still pending. The v0.8.5 release was not declared production
+> ready either. Its own gate was met: 22/22 boxes of the v0.8.5 roadmap, including
 > the artifact gate — tag == `Cargo.toml`, every binary and both image
 > architectures built with `1.99.1`, the scanned digest promoted unchanged, and
 > the published image re-pulled and replayed
@@ -172,7 +177,7 @@ cargo run -p eqproxy-cli -- config validate --config eqproxy.toml.example
 cargo run -p eqproxy-cli -- run --config eqproxy.toml.example
 ```
 
-## Install from release v0.8.5
+## Install from the latest published release (v0.8.5)
 
 Binaries and checksums live on the
 [release page](https://github.com/ExyonQ/EQProxy/releases/tag/v0.8.5).
@@ -227,6 +232,9 @@ docker run --rm exyonq/eqproxy:0.8.5 --version
 | [SPEC.md](SPEC.md) | Specification: goals, priorities, architecture, state taxonomy |
 | [THREAT_MODEL.md](THREAT_MODEL.md) | Threat model and non-protections statement |
 | [BENCHMARK_PLAN.md](BENCHMARK_PLAN.md) | Honest benchmark plan and operator-task study |
+| [docs/semantics.md](docs/semantics.md) | Per-feature semantics, limits and what EQProxy does **not** do |
+| [docs/parity-matrix.md](docs/parity-matrix.md) | 120 reference rows classified E1 (differential), E2 (documented difference) or E3 (ADR) |
+| [docs/release-0.9.1.md](docs/release-0.9.1.md) | v0.9.1 publication checklist, image/Scout gate and artifact verification |
 | [docs/differential-corpus.md](docs/differential-corpus.md) | Declared shared-semantics corpus vs HAProxy, nginx, ingress-nginx and Envoy |
 | [docs/migration/README.md](docs/migration/README.md) | Migration matrix: the same deployment in the four source formats and in EQProxy |
 | [docs/adr/](docs/adr/) | Architecture decision records |
@@ -239,11 +247,15 @@ docker run --rm exyonq/eqproxy:0.8.5 --version
   [ADR-0003](docs/adr/0003-multiversion-reference.md).
 - **Production platform:** Linux x86_64 (glibc). See
   [ADR-0001](docs/adr/0001-production-platform.md).
-- **Configuration format:** study in
-  [ADR-0002](docs/adr/0002-configuration-format.md), decision pending approval.
-- **Network stack:** tokio + hyper 1.x + rustls, and quinn + h3 for HTTP/3;
-  **HTTP/3 is mandatory scope** (Phase 5; two-client interop passed on
-  2026-10-23, still experimental pending the QUIC adversarial tests). See
+- **Configuration format:** one TOML format behind a typed schema, decided in
+  [ADR-0002](docs/adr/0002-configuration-format.md) (**Accepted** 2026-10-12)
+  and implemented (parser, semantic validation, versioned `schema_version`).
+- **Network stack:** tokio + rustls, this project's own strict HTTP/1.1 parser
+  and the `h2` crate for HTTP/2, quinn + h3 for HTTP/3 — **no hyper**: the
+  dataplane forwards the exact bytes it validated and refuses any framing with
+  two readings ([ADR-0036](docs/adr/0036-own-http1-parser.md)). HTTP/3 is
+  **mandatory scope** (Phase 5; two-client interop passed on 2026-10-23, still
+  experimental pending the QUIC adversarial tests). See
   [ADR-0004](docs/adr/0004-network-stack-and-crate-layout.md).
 - **Performance goal:** match or beat the reference proxy 3.4.6 LTS on
   connections, memory,

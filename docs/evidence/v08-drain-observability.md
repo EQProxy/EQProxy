@@ -33,7 +33,7 @@ configured topology.
   arm64*.
 - Host: `Darwin arm64` (macOS 26.5.1), `rustc 1.97.1 (8bab26f4f 2026-07-14)`,
   `cargo 1.97.1`. Built with `cargo build --release --locked -p eqproxy-cli`.
-- Journey harness: [`scripts/evidence/v08-drain-observability/journey.py`](../../scripts/evidence/v08-drain-observability/journey.py)
+- Journey harness: `scripts/evidence/v08-drain-observability/journey.py` (local-only: `../../scripts/evidence/v08-drain-observability/journey.py`)
   (local-only, like every harness in `scripts/evidence/`). It starts the real
   binary through its public CLI, talks to the admin plane over TCP with real
   HTTP requests, and holds one exchange on a Python origin that reads the

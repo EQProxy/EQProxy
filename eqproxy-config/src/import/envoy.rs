@@ -464,7 +464,7 @@ fn listener(conv: &mut Conv, listener: &Value) -> Result<(), ImportError> {
         );
         return Ok(());
     };
-    let Some(address) = normalize_addr(conv, &address, None, &address, &context) else {
+    let Some(address) = normalize_addr(conv, &address, None, &address, &context, false) else {
         return Ok(());
     };
 
@@ -519,29 +519,61 @@ fn listener(conv: &mut Conv, listener: &Value) -> Result<(), ImportError> {
                     .iter()
                     .filter_map(|item| item.text().map(str::to_owned))
                     .collect();
-                let min_version = far
-                    .get("tls_params")
-                    .and_then(|p| p.get("tls_minimum_protocol_version"))
-                    .and_then(Value::text)
-                    .map(|version| {
-                        if version.contains("1.3") {
-                            "1.3"
-                        } else {
-                            "1.2"
+                let tls_params = far.get("tls_params");
+                // The version bounds are the only TLS knobs EQProxy exposes.
+                // Everything else in `tls_params` is provider-managed
+                // (ADR-0035/ADR-0046): report it instead of dropping it.
+                if let Some(params) = tls_params {
+                    for (key, _) in params.entries() {
+                        if key != "tls_minimum_protocol_version"
+                            && key != "tls_maximum_protocol_version"
+                        {
+                            conv.review(
+                                1,
+                                format!("tls_params.{key}"),
+                                &context,
+                                "cipher suites and curves are provider-managed (ADR-0035/ADR-0046): not applied",
+                            );
                         }
-                    });
+                    }
+                }
+                let version = |raw: &str| match raw {
+                    "TLSv1_2" => Some("1.2"),
+                    "TLSv1_3" => Some("1.3"),
+                    _ => None,
+                };
+                let mut read_version = |key: &str| {
+                    let raw = tls_params
+                        .and_then(|params| params.get(key))
+                        .and_then(Value::text);
+                    raw.and_then(|raw| match version(raw) {
+                        Some(version) => Some(version),
+                        None => {
+                            conv.review(
+                                1,
+                                format!("{key}: {raw}"),
+                                &context,
+                                "solo TLSv1.2 y TLSv1.3 existen en EQProxy (1.0/1.1 nunca)",
+                            );
+                            None
+                        }
+                    })
+                };
+                let min_version = read_version("tls_minimum_protocol_version");
+                let max_version = read_version("tls_maximum_protocol_version");
                 tls = Some(ListenerTls {
                     cert: cert_file.to_owned(),
                     key: key_file.to_owned(),
                     alpn,
                     min_version,
+                    max_version,
                     client_ca: None,
                 });
                 conv.done(
                     1,
                     "transport_socket tls",
                     &context,
-                    "[listener.*.tls] (cert, key, alpn, min_version)",
+                    "[listener.*.tls] (cert, key, alpn, min_version, max_version)",
                 );
             } else {
                 conv.reject(
@@ -567,6 +599,9 @@ fn listener(conv: &mut Conv, listener: &Value) -> Result<(), ImportError> {
     let mut idle_timeout: Option<String> = None;
     let mut client_header_timeout: Option<String> = None;
     let mut forwarded = false;
+    // `local_reply_config` (B-E18): the pages Envoy serves when it answers
+    // locally. EQProxy models them per listener (ADR-0045).
+    let mut error_pages: Vec<super::ErrorPageIr> = Vec::new();
 
     for filter in chain.get("filters").map(Value::items).unwrap_or(&[]) {
         let filter_name = filter.get("name").and_then(Value::text).unwrap_or_default();
@@ -584,6 +619,84 @@ fn listener(conv: &mut Conv, listener: &Value) -> Result<(), ImportError> {
                 if let Some(value) = typed.get("request_headers_timeout").and_then(Value::text) {
                     client_header_timeout =
                         convert_duration(conv, value, "s", "request_headers_timeout", &context);
+                }
+                if let Some(local) = typed.get("local_reply_config") {
+                    for mapper in local.get("mappers").map(Value::items).unwrap_or(&[]) {
+                        let code = match local_reply_code(mapper) {
+                            Ok(code) => code,
+                            Err(reason) => {
+                                conv.review(
+                                    1,
+                                    format!("local_reply_config: {reason}"),
+                                    &context,
+                                    "mapper sin código traducible: revíselo a mano",
+                                );
+                                continue;
+                            }
+                        };
+                        let body = mapper
+                            .get("body")
+                            .and_then(|body| body.get("inline_string"))
+                            .and_then(Value::text);
+                        let file = mapper
+                            .get("body")
+                            .and_then(|body| body.get("filename"))
+                            .and_then(Value::text);
+                        let formatted = mapper
+                            .get("body_format")
+                            .and_then(|format| format.get("text_format"))
+                            .and_then(|text| text.get("text"))
+                            .and_then(Value::text);
+                        let (body, file) = if let Some(body) = body {
+                            (Some(body.to_owned()), None)
+                        } else if let Some(file) = file {
+                            (None, Some(file.to_owned()))
+                        } else if let Some(text) = formatted {
+                            if text.contains('%') {
+                                conv.review(
+                                    1,
+                                    format!("local_reply_config mapper {code}"),
+                                    &context,
+                                    "body_format con sustituciones (%…): EQProxy sirve el cuerpo literal; \
+                                     escriba el texto resuelto en [[listener.*.error_pages]].body",
+                                );
+                                continue;
+                            }
+                            (Some(text.to_owned()), None)
+                        } else {
+                            conv.review(
+                                1,
+                                format!("local_reply_config mapper {code}"),
+                                &context,
+                                "mapper sin body.inline_string, body.filename ni body_format.text_format: \
+                                 añada body o file a mano",
+                            );
+                            continue;
+                        };
+                        if mapper.get("headers_to_add").is_some() {
+                            conv.review(
+                                1,
+                                format!("local_reply_config mapper {code}: headers_to_add"),
+                                &context,
+                                "cabeceras de la página: EQProxy sirve Content-Type; añada las extra a mano",
+                            );
+                        }
+                        error_pages.push(super::ErrorPageIr {
+                            codes: vec![code],
+                            file,
+                            body,
+                            location: None,
+                            raw: false,
+                            status: None,
+                            intercept: false,
+                        });
+                        conv.done(
+                            1,
+                            format!("local_reply_config mapper {code}"),
+                            &context,
+                            format!("[[listener.*.error_pages]] codes = [{code}]"),
+                        );
+                    }
                 }
                 if let Some(route_config) = typed.get("route_config") {
                     for host in route_config
@@ -732,6 +845,7 @@ fn listener(conv: &mut Conv, listener: &Value) -> Result<(), ImportError> {
     listener_config.tls = tls;
     listener_config.idle_timeout = idle_timeout;
     listener_config.client_header_timeout = client_header_timeout;
+    listener_config.error_pages = error_pages;
     listener_config.rules = rules;
     if forwarded {
         listener_config.forwarded_headers = Some("append");
@@ -760,6 +874,48 @@ fn listener(conv: &mut Conv, listener: &Value) -> Result<(), ImportError> {
     );
     conv.add_listener(listener_name, listener_config);
     Ok(())
+}
+
+/// Status a `local_reply_config` mapper answers, if it is an exact code.
+///
+/// Envoy accepts `status_code` directly or a `filter.status_code_filter`
+/// comparison; only equality is translated, because a range or a negation
+/// would silently broaden which responses get replaced.
+fn local_reply_code(mapper: &Value) -> Result<u16, String> {
+    if let Some(raw) = mapper.get("status_code").and_then(Value::text) {
+        return local_reply_parse(raw);
+    }
+    let Some(filter) = mapper.get("filter") else {
+        return Err("mapper sin status_code ni filter".to_owned());
+    };
+    let Some(status_filter) = filter.get("status_code_filter") else {
+        return Err("filter distinto de status_code_filter: el conversor no lo evalúa".to_owned());
+    };
+    let Some(comparison) = status_filter.get("comparison") else {
+        return Err("status_code_filter sin comparison".to_owned());
+    };
+    let op = comparison.get("op").and_then(Value::text).unwrap_or("EQ");
+    if op != "EQ" {
+        return Err(format!(
+            "comparison con op = {op}: solo se traduce la igualdad exacta"
+        ));
+    }
+    let Some(value) = comparison.get("value") else {
+        return Err("comparison sin value".to_owned());
+    };
+    let Some(raw) = value
+        .get("default_value")
+        .and_then(Value::text)
+        .or_else(|| value.text())
+    else {
+        return Err("comparison.value sin default_value".to_owned());
+    };
+    local_reply_parse(raw)
+}
+
+fn local_reply_parse(raw: &str) -> Result<u16, String> {
+    raw.parse::<u16>()
+        .map_err(|_| format!("«{raw}» no es un código de estado"))
 }
 
 /// Translates Envoy `domains` into EQProxy host conditions.
@@ -999,6 +1155,67 @@ mod tests {
         let (regex, exact) = domains(&host, &mut conv, "virtual host");
         assert_eq!(regex.as_deref(), Some("^[^.]+\\.ejemplo\\.com$"));
         assert!(exact.is_none());
+    }
+
+    #[test]
+    fn local_reply_config_mappers_become_error_pages() {
+        // B-E18: Envoy's local reply mapper carries the body inline, and the
+        // filter form selects one status. Both become listener pages.
+        let source = "static_resources:\n  listeners:\n    - name: edge\n      address:\n        socket_address:\n          address: 0.0.0.0\n          port_value: 8080\n      filter_chains:\n        - filters:\n            - name: envoy.filters.network.http_connection_manager\n              typed_config:\n                stat_prefix: edge\n                local_reply_config:\n                  mappers:\n                    - status_code: 503\n                      body:\n                        inline_string: \"mantenimiento\\n\"\n                    - filter:\n                        status_code_filter:\n                          comparison:\n                            op: EQ\n                            value:\n                              default_value: 429\n                      body_format:\n                        text_format:\n                          text: \"demasiadas peticiones\\n\"\n                route_config:\n                  virtual_hosts:\n                    - name: default\n                      domains: [\"*\"]\n                      routes:\n                        - match:\n                            prefix: \"/\"\n                          route:\n                            cluster: web\n  clusters:\n    - name: web\n      load_assignment:\n        cluster_name: web\n        endpoints:\n          - lb_endpoints:\n              - endpoint:\n                  address:\n                    socket_address:\n                      address: 10.0.0.1\n                      port_value: 8080\n";
+        let outcome = super::super::convert(super::super::Source::Envoy, source)
+            .expect("local_reply_config must convert");
+        assert!(
+            outcome.toml.contains("codes = [503]") && outcome.toml.contains("codes = [429]"),
+            "both mappers must reach the file:\n{}",
+            outcome.toml
+        );
+        assert!(
+            outcome.toml.contains("mantenimiento")
+                && outcome.toml.contains("demasiadas peticiones"),
+            "the inline bodies must be preserved:\n{}",
+            outcome.toml
+        );
+        let parsed = crate::parse_str(&outcome.toml, std::path::Path::new("envoy.yaml"))
+            .expect("generated TOML parses");
+        let check =
+            crate::validate::check(&parsed, &outcome.toml, std::path::Path::new("envoy.yaml"));
+        assert!(check.is_valid(), "{check:?}");
+        assert_eq!(
+            parsed.listener["edge"].error_pages[0].body.as_deref(),
+            Some("mantenimiento\n"),
+            "the YAML escape must reach the page as a real newline"
+        );
+
+        // A range filter cannot be widened into one page without changing
+        // which responses it replaces.
+        let ranged = source.replace("op: EQ", "op: GE");
+        let outcome = super::super::convert(super::super::Source::Envoy, &ranged)
+            .expect("a range filter is classified");
+        assert!(!outcome.toml.contains("codes = [429]"), "{}", outcome.toml);
+        assert!(
+            outcome.report.contains("igualdad exacta"),
+            "the refusal must name the reason:\n{}",
+            outcome.report
+        );
+    }
+
+    #[test]
+    fn tls_params_cipher_suites_are_reported_not_silently_ignored() {
+        // ADR-0046 §2: `cipher_suites`/`ecdh_curves` are provider-managed;
+        // the converter must name them as reviews, never drop them.
+        let source = "static_resources:\n  listeners:\n    - name: edge\n      address:\n        socket_address:\n          address: 0.0.0.0\n          port_value: 8443\n      filter_chains:\n        - transport_socket:\n            name: envoy.transport_sockets.tls\n            typed_config:\n              common_tls_context:\n                tls_certificates:\n                  - certificate_chain:\n                      filename: /etc/c.pem\n                    private_key:\n                      filename: /etc/c.key\n                tls_params:\n                  tls_minimum_protocol_version: TLSv1_2\n                  cipher_suites:\n                    - ECDHE-RSA-AES128-GCM-SHA256\n          filters:\n            - name: envoy.filters.network.http_connection_manager\n              typed_config:\n                stat_prefix: edge\n                route_config:\n                  virtual_hosts:\n                    - name: default\n                      domains: [\"*\"]\n                      routes:\n                        - match:\n                            prefix: \"/\"\n                          route:\n                            cluster: web\n  clusters:\n    - name: web\n      load_assignment:\n        cluster_name: web\n        endpoints:\n          - lb_endpoints:\n              - endpoint:\n                  address:\n                    socket_address:\n                      address: 10.0.0.1\n                      port_value: 8080\n";
+        let outcome = super::super::convert(super::super::Source::Envoy, source)
+            .expect("TLS params must convert");
+        assert!(
+            outcome.report.contains("tls_params.cipher_suites"),
+            "the ignored cipher list must be named in the report:\n{}",
+            outcome.report
+        );
+        assert!(
+            outcome.toml.contains("min_version = \"1.2\""),
+            "the version bound still converts:\n{}",
+            outcome.toml
+        );
     }
 
     #[test]

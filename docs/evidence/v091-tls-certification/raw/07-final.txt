@@ -1,0 +1,35 @@
+
+===== metrics =====
+# TYPE eqproxy_config_reloads_total counter
+eqproxy_config_reloads_total 4
+# TYPE eqproxy_config_reload_failures_total counter
+eqproxy_config_reload_failures_total 1
+# TYPE eqproxy_config_reload_last_swap_seconds gauge
+eqproxy_config_reload_last_swap_seconds 0.000016
+
+===== served leaves =====
+default: 764aa4dbc7f8d7b4adcd8146a49978ddd8967e6f2a36309aba9d52d41f70002c
+beta:    915eeb24d6b8adc883732e1ada69ba43db99f824e7655a3a0847b3d639355d7a
+
+===== process =====
+pid: 28416 (alive: yes)
+listen: 127.0.0.1:50154
+
+===== full proxy log =====
+INFO listener web listening on 127.0.0.1:50154
+INFO admin listening on 127.0.0.1:50155 (routes: /api/v1/status, /metrics, PUT /api/v1/backends/{name}, PUT /api/v1/listeners/{name}, PUT /api/v1/backends/{backend}/servers/{target}/state, POST /api/v1/certificates/reload)
+METRICS client[accepted=0 active=0 completed=0 rejected_maxconn=0 protocol_errors=0 log_dropped=0] proxy[no_server=0 queue_full=0 queue_timeout=0 retries=0 local_responses=0 error_pages=0 redirects=0 direct=0] network[idle_timeouts=0 bytes_c2b=0 bytes_b2c=0] backend[connect_failures=0 tls_failures=0 discarded=0 reused=0 opened=0 proxied=0] phases[header_timeouts=0] proxy_proto[denied=0 invalid=0] cfg[reloads=0 reload_failures=0 last_swap_us=0] auth[denied=0 service_errors=0] dns[ok=0 failures=0 updates=0] maps[reloads=0 failures=0] mirror[sent=0 failures=0 skipped=0] h2[sessions_idle_closed=0 goaway=0 refused_retried=0] grpc[streams=0 errors=0] h3[clean_closes=0 connection_errors=0] ws[tunnels=0 failures=0] compression[gzip=0 brotli=0 bytes_in=0 bytes_out=0] cache[hits=0 misses=0 bypasses=0 revalidations=0 stores=0 evictions=0 disk_loads=0 disk_skipped=0]
+ERROR [web] failed client TLS handshake (peer 127.0.0.1:50167): tls handshake eof
+INFO config reload applied: listeners kept=1 added=0 removed=0 in 39.875µs
+AUDIT {"event":"admin_write","ts_unix":1793499852,"remote":"127.0.0.1:50178","role":"operate","method":"POST","path":"/api/v1/certificates/reload","status":200,"backend":null,"server":null,"from":null,"to":null}
+INFO config reload applied: listeners kept=1 added=0 removed=0 in 6.042µs
+AUDIT {"event":"admin_write","ts_unix":1793499852,"remote":"127.0.0.1:50186","role":"operate","method":"POST","path":"/api/v1/certificates/reload","status":200,"backend":null,"server":null,"from":null,"to":null}
+ERROR config reload rejected: inconsistent configuration after validation: listener.web.tls: invalid PEM private key: the private key does not match the certificate's public key: the files belong to different pairs
+AUDIT {"event":"admin_write","ts_unix":1793499852,"remote":"127.0.0.1:50196","role":"operate","method":"POST","path":"/api/v1/certificates/reload","status":400,"backend":null,"server":null,"from":null,"to":null}
+INFO config reload applied: listeners kept=1 added=0 removed=0 in 13.75µs
+AUDIT {"event":"admin_write","ts_unix":1793499853,"remote":"127.0.0.1:50212","role":"none","method":"POST","path":"/api/v1/certificates/reload","status":401,"backend":null,"server":null,"from":null,"to":null}
+AUDIT {"event":"admin_write","ts_unix":1793499853,"remote":"127.0.0.1:50213","role":"read","method":"POST","path":"/api/v1/certificates/reload","status":403,"backend":null,"server":null,"from":null,"to":null}
+AUDIT {"event":"admin_write","ts_unix":1793499853,"remote":"127.0.0.1:50214","role":"operate","method":"POST","path":"/api/v1/certificates/reload","status":400,"backend":null,"server":null,"from":null,"to":null}
+AUDIT {"event":"admin_write","ts_unix":1793499853,"remote":"127.0.0.1:50215","role":"operate","method":"POST","path":"/api/v1/certificates/reload","status":403,"backend":null,"server":null,"from":null,"to":null}
+INFO config reload applied: listeners kept=1 added=0 removed=0 in 16.375µs
+AUDIT {"event":"admin_write","ts_unix":1793499853,"remote":"127.0.0.1:50216","role":"operate","method":"POST","path":"/api/v1/certificates/reload","status":200,"backend":null,"server":null,"from":null,"to":null}

@@ -1,0 +1,24 @@
+
+===== config =====
+schema_version = 1
+
+[listener.web]
+listen = "127.0.0.1:52126"
+mode = "http"
+backend = "app"
+connect_timeout = "300ms"
+
+[backend.app]
+server = "127.0.0.1:52125"
+
+[[listener.web.error_pages]]
+codes = [502]
+location = "https://status.example.test/maintenance"
+
+===== GET (302, Location, no body) =====
+HTTP/1.1 302 found
+Server: eqproxy
+connection: close
+location: https://status.example.test/maintenance
+content-length: 0
+

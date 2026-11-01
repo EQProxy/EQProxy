@@ -335,6 +335,7 @@ async fn balancer_roundrobin() {
         vec![
             ResolvedServer {
                 addr: a.into(),
+                source: None,
                 weight: 1,
                 backup: false,
                 priority: 0,
@@ -342,6 +343,7 @@ async fn balancer_roundrobin() {
             },
             ResolvedServer {
                 addr: b.into(),
+                source: None,
                 weight: 1,
                 backup: false,
                 priority: 0,
@@ -349,6 +351,7 @@ async fn balancer_roundrobin() {
             },
             ResolvedServer {
                 addr: c.into(),
+                source: None,
                 weight: 1,
                 backup: false,
                 priority: 0,
@@ -393,6 +396,7 @@ async fn balancer_weights() {
         vec![
             ResolvedServer {
                 addr: a.into(),
+                source: None,
                 weight: 1,
                 backup: false,
                 priority: 0,
@@ -400,6 +404,7 @@ async fn balancer_weights() {
             },
             ResolvedServer {
                 addr: b.into(),
+                source: None,
                 weight: 3,
                 backup: false,
                 priority: 0,
@@ -443,6 +448,7 @@ async fn healthchecks_e2e() {
         vec![
             ResolvedServer {
                 addr: a.into(),
+                source: None,
                 weight: 1,
                 backup: false,
                 priority: 0,
@@ -450,6 +456,7 @@ async fn healthchecks_e2e() {
             },
             ResolvedServer {
                 addr: b_addr.into(),
+                source: None,
                 weight: 1,
                 backup: false,
                 priority: 0,
@@ -637,6 +644,7 @@ async fn all_servers_down_returns_503_in_http_mode() {
         "api",
         vec![ResolvedServer {
             addr: dead.into(),
+            source: None,
             weight: 1,
             backup: false,
             priority: 0,
@@ -690,6 +698,7 @@ async fn all_servers_down_closes_connection_in_tcp_mode() {
         "api",
         vec![ResolvedServer {
             addr: dead.into(),
+            source: None,
             weight: 1,
             backup: false,
             priority: 0,
@@ -734,6 +743,7 @@ async fn drained_server_is_skipped() {
         vec![
             ResolvedServer {
                 addr: a.into(),
+                source: None,
                 weight: 1,
                 backup: false,
                 priority: 0,
@@ -741,6 +751,7 @@ async fn drained_server_is_skipped() {
             },
             ResolvedServer {
                 addr: drained.into(),
+                source: None,
                 weight: 0,
                 backup: false,
                 priority: 0,

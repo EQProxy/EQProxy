@@ -173,3 +173,7 @@ evidence behind each number — is in
 
 Dual: [MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE), at the recipient's
 choice.
+
+---
+
+A product of ExyonQ.

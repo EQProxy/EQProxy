@@ -5,11 +5,15 @@ Language: **English**.
 Minimal-observability TCP/HTTP reverse proxy, written in safe Rust
 (`#![forbid(unsafe_code)]`).
 
-## Status — v0.9.1 «parity gaps, semantics and release candidate»
+## Status — v0.9.1 «parity gaps, semantics and release»
 
-Current version: **v0.9.1** (2026-11-01), release candidate; the tag and the
-publication are pending. It adds Unix-domain backends and per-server `source`
-bind, custom error pages, the TLS 1.2/1.3 range with `errorloc`, the semantic
+Current version: **v0.9.1** (2026-11-01), released and published: annotated tag
+over `e7473ea`, release run 41299478887 green on all six jobs, the scanned
+image index `sha256:95170d9a…` promoted unchanged to `:0.9.1` and `:latest`,
+0 critical / 0 high on both architectures
+([artifact gate](docs/release-0.9.1.md#51-result-2026-11-01)). It adds
+Unix-domain backends and per-server `source` bind, custom error pages, the TLS
+1.2/1.3 range with `errorloc`, the semantic
 reference and the complete 120-row parity matrix. On top of v0.8.5, it is a
 TCP/HTTP proxy — HTTP/1.1, HTTP/2
 and HTTP/3 — with TLS termination and verified backend TLS, typed routing rules
@@ -57,7 +61,7 @@ the full example lives in [eqproxy.toml.example](eqproxy.toml.example).
 Multi-architecture (linux/amd64, linux/arm64) at `ghcr.io/ExyonQ/eqproxy`:
 
 ```bash
-docker run --rm ghcr.io/ExyonQ/eqproxy --help
+docker run --rm ghcr.io/ExyonQ/eqproxy:0.9.1 --help
 ```
 
 ## Audit limitations (v0.5 audit; applicability policy in ADR-0030)

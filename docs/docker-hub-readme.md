@@ -25,6 +25,11 @@ listener's same address and port over UDP (experimental) and compresses
 responses with **gzip or Brotli** from `Accept-Encoding` — request bodies are
 never decompressed, they are forwarded untouched.
 
+Backends can also be Unix-domain sockets, and a server can bind its own
+upstream connections to a chosen source address. Local error responses can be
+replaced with custom pages, and every response the proxy generates itself —
+errors, redirects, auth refusals — carries an RFC 9110 `Date`.
+
 The image runs on **Wolfi**, the minimal container distro
 (`cgr.dev/chainguard/wolfi-base`, pinned by digest): **0 critical / 0 high**
 per Docker Scout on both architectures, over the {{packages}} packages in its SBOM. The

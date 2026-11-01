@@ -6,8 +6,8 @@ Reverse proxy and load balancer written in Rust, targeting progressive
 functional parity with the reference proxy together with verifiable improvements in
 diagnostics, configuration, administration, extensibility and security.
 
-> **Status: v0.9.1 (2026-11-01) — release candidate; tag and publication
-> pending. 0.9.1 adds Unix-domain backends and per-server `source` bind,
+> **Status: v0.9.1 (2026-11-01) — released and published; artifact gate met.
+> 0.9.1 adds Unix-domain backends and per-server `source` bind,
 > custom error pages, the TLS version range and `errorloc`, the semantic
 > reference and the complete 120-row parity matrix. It builds on the v0.8.5
 > line: request-filter plugins as WASM with deny-by-default capabilities
@@ -123,6 +123,11 @@ diagnostics, configuration, administration, extensibility and security.
 > [maintenance window](docs/evidence/v08-maintenance.md),
 > [priority ladder](docs/evidence/v08-priority.md) and
 > [backup pool](docs/evidence/v08-allbackups.md).
+> Release v0.9.1 (tag `v0.9.1`, release run 41299478887 green on all six
+> jobs, image index `sha256:95170d9a…` scanned 0 critical / 0 high on both
+> architectures and promoted unchanged to `:0.9.1` and `:latest` on GHCR and
+> Docker Hub — [artifact gate](docs/release-0.9.1.md#51-result-2026-11-01);
+> binaries for darwin/linux amd64+arm64 and multi-arch image, see Install).
 > Release v0.8.5 (tag `v0.8.5`, release run 41165822327 green on all six
 > jobs, image index `sha256:bf1a06cd…` scanned 0 critical / 0 high on both
 > architectures and promoted unchanged to `:0.8.5` and `:latest` on GHCR and
@@ -142,8 +147,11 @@ diagnostics, configuration, administration, extensibility and security.
 > [close fix](docs/evidence/v07-h3-close.md)).
 >
 > **Scope honesty:** v0.9.1 is not declared production ready (Phase 9 gate
-> pending); its roadmap is closed at 13/13, but the tag, the image gate and the
-> publication are still pending. The v0.8.5 release was not declared production
+> pending); its roadmap is closed at 13/13 and its publication gate is met:
+> annotated tag over the release commit `e7473ea`, all six tag-run jobs green,
+> the scanned index promoted unchanged, and the published image re-pulled and
+> exercised ([artifact gate](docs/release-0.9.1.md#51-result-2026-11-01)).
+> The v0.8.5 release was not declared production
 > ready either. Its own gate was met: 22/22 boxes of the v0.8.5 roadmap, including
 > the artifact gate — tag == `Cargo.toml`, every binary and both image
 > architectures built with `1.99.1`, the scanned digest promoted unchanged, and
@@ -177,10 +185,10 @@ cargo run -p eqproxy-cli -- config validate --config eqproxy.toml.example
 cargo run -p eqproxy-cli -- run --config eqproxy.toml.example
 ```
 
-## Install from the latest published release (v0.8.5)
+## Install from the latest published release (v0.9.1)
 
 Binaries and checksums live on the
-[release page](https://github.com/ExyonQ/EQProxy/releases/tag/v0.8.5).
+[release page](https://github.com/ExyonQ/EQProxy/releases/tag/v0.9.1).
 
 Every release carries **four prebuilt binaries**: `eqproxy-darwin-arm64`,
 `eqproxy-darwin-amd64`, `eqproxy-linux-arm64` and `eqproxy-linux-amd64`. The
@@ -198,8 +206,8 @@ Building from them is `cargo build --release --locked` with nothing else.
 # Pick your platform artifact:
 #   eqproxy-darwin-arm64 | eqproxy-darwin-amd64
 #   eqproxy-linux-arm64  | eqproxy-linux-amd64   (static, musl)
-curl -sSLO https://github.com/ExyonQ/EQProxy/releases/download/v0.8.5/eqproxy-linux-amd64
-curl -sSLO https://github.com/ExyonQ/EQProxy/releases/download/v0.8.5/SHA256SUMS.txt
+curl -sSLO https://github.com/ExyonQ/EQProxy/releases/download/v0.9.1/eqproxy-linux-amd64
+curl -sSLO https://github.com/ExyonQ/EQProxy/releases/download/v0.9.1/SHA256SUMS.txt
 shasum -a 256 -c SHA256SUMS.txt --ignore-missing   # Linux: sha256sum -c --ignore-missing SHA256SUMS.txt
 chmod +x eqproxy-linux-amd64
 ./eqproxy-linux-amd64 --version
@@ -220,9 +228,9 @@ EOF
 Docker (linux/amd64 + linux/arm64, Wolfi base), same digests on both registries:
 
 ```bash
-docker pull exyonq/eqproxy:0.8.5           # Docker Hub (docs + examples on the repo page)
-docker pull ghcr.io/exyonq/eqproxy:0.8.5   # GitHub Container Registry
-docker run --rm exyonq/eqproxy:0.8.5 --version
+docker pull exyonq/eqproxy:0.9.1           # Docker Hub (docs + examples on the repo page)
+docker pull ghcr.io/exyonq/eqproxy:0.9.1   # GitHub Container Registry
+docker run --rm exyonq/eqproxy:0.9.1 --version
 ```
 
 ## Documentation
@@ -234,7 +242,7 @@ docker run --rm exyonq/eqproxy:0.8.5 --version
 | [BENCHMARK_PLAN.md](BENCHMARK_PLAN.md) | Honest benchmark plan and operator-task study |
 | [docs/semantics.md](docs/semantics.md) | Per-feature semantics, limits and what EQProxy does **not** do |
 | [docs/parity-matrix.md](docs/parity-matrix.md) | 120 reference rows classified E1 (differential), E2 (documented difference) or E3 (ADR) |
-| [docs/release-0.9.1.md](docs/release-0.9.1.md) | v0.9.1 publication checklist, image/Scout gate and artifact verification |
+| [docs/release-0.9.1.md](docs/release-0.9.1.md) | v0.9.1 publication checklist, image/Scout gate and the verified artifact gate (published 2026-11-01) |
 | [docs/differential-corpus.md](docs/differential-corpus.md) | Declared shared-semantics corpus vs HAProxy, nginx, ingress-nginx and Envoy |
 | [docs/migration/README.md](docs/migration/README.md) | Migration matrix: the same deployment in the four source formats and in EQProxy |
 | [docs/adr/](docs/adr/) | Architecture decision records |

@@ -2,14 +2,15 @@
 
 Language: **English**.
 
-**What this page answers:** what must be true before the `v0.9.1` tag is
-pushed, what the pipeline does with it, and how the published artifacts are
-verified afterwards. This is the procedure for the 0.9.1 cut; it is **not a
-claim that the publication has happened**. The cut commit exists
-(`ff89879ce24c9554a0d7b6862b22d24dc5b500c5`, 2026-11-01) and the local source
-gates and all four audit legs were run on it; the results are recorded in §2.1
-and §2.2. No tag exists, no image has been promoted, and every gate below that
-is marked **NOT EXECUTED** has not run.
+**What this page answers:** what had to be true before the `v0.9.1` tag was
+pushed, what the pipeline did with it, and how the published artifacts were
+verified afterwards. The cut is **published**: run
+[41299478887](https://github.com/ExyonQ/EQProxy/actions/runs/41299478887)
+concluded `success` at 14:03 UTC on 2026-11-01, and the release, the four
+binaries, the source tarball and the multi-arch image were checked by hand
+afterwards (§2.4, §5.1). The source gates and all four audit legs ran on the
+cut commit (`ff89879ce24c9554a0d7b6862b22d24dc5b500c5`, 2026-11-01); the
+results are recorded in §2.1 and §2.2.
 
 - Version: **0.9.1** (`Cargo.toml` `[workspace.package] version`).
 - Release notes: [CHANGELOG.md](../CHANGELOG.md) section
@@ -107,8 +108,10 @@ Every row was produced on commit `ff89879ce24c9554a0d7b6862b22d24dc5b500c5`
 with a clean working tree (`git status --porcelain` empty), except the link
 row's 1,145: that is the re-run after this page's audit table added its one
 link, on a tree whose only change is documentation. The
-`root`/unprivileged `--nocapture` pair and the two `uid-skips` verdicts remain
-CI-only until the tag run produces those transcripts.
+`root`/unprivileged `--nocapture` pair and the two `uid-skips` verdicts were
+CI-only on the cut commit; the tag run's `guard` job executed them and
+finished `success`. Those transcripts live in the run log, not in this
+repository.
 
 ### 2.2 Audits on the cut commit
 
@@ -119,10 +122,10 @@ CI-only until the tag run produces those transcripts.
 | CodeGraph Rust | index exit **0** over `ff89879`: 84 files, 81,576 lines, 8,940 nodes, 15,784 edges, `graph_complete: true`, `vector_index_ready: true`, `errors: 0`, `index_ms 993 238`. `agent impact` on `current_http_date` reports 9 direct dependents; source-checked: `http1.rs:1117/1141/1241/1288/1329`, `http2.rs:336`, `http3.rs:953`, `ws.rs:321` and `grpc.rs:647` (the agent's ranges are a few lines off; the set is right). `agent context` locates the pages in `error_pages.rs:49-83` and the writers in `http1.rs`; it flags `get_reverse_dependencies` returning nothing, so the grep above is the authority. Stats: `/tmp/cg-index-v091.json`. |
 | Hindsight | **Stored** for this cut, bank `eqproxy`: first id `6a6eb5dc-30f2-4096-b065-86166016a866` (the CLI returned a list of memory ids for the note). |
 
-All four legs ran on the cut commit, not on an earlier working tree. A
-docs-only commit on top of it records these results and updates the Date
-evidence page; the tagged tree therefore differs from the audited one only in
-those Markdown files.
+All four legs ran on the cut commit, not on an earlier working tree. The
+docs-only commit `e7473ea` on top of it records these results and updates the
+Date evidence page; that is the commit `v0.9.1` points at, so the tagged tree
+differs from the audited one only in those Markdown files.
 
 ### 2.3 `Date` on locally generated responses
 
@@ -142,7 +145,7 @@ Deliberate limits of the change: an origin that omits `Date` is relayed as-is
 body, so the generated `Date` replaces any written in the raw file. The
 `100 Continue` interim response keeps no header fields, as before.
 
-### Image and Scout gate
+### 2.4 Image and Scout gate
 
 The `image` job builds the candidate index for **linux/amd64 and linux/arm64**,
 scans each architecture with Docker Scout (`--only-severity critical,high
@@ -160,12 +163,27 @@ $ docker scout cves --only-severity critical,high --exit-code \
     --platform linux/arm64 eqproxy-release:0.9.1-arm64
 ```
 
-The container journey and the Scout gate on this 0.9.1 tree are **NOT
-EXECUTED**: the amd64 build started on 2026-11-01 was stopped by the owner
-before it completed; no amd64 image, no journey transcript and no Scout report
-exist for it. The previous arm64 image (`eqproxy:v091-arm64`) and its TLS
-journey are evidence for that architecture only and are not a substitute for
-the amd64 run or for the candidate index.
+Run [41299478887](https://github.com/ExyonQ/EQProxy/actions/runs/41299478887)
+executed that gate and finished `success`:
+
+| | linux/amd64 | linux/arm64 |
+|---|---|---|
+| manifest digest | `sha256:0a346d4a011ffd255a44f91b2e797cf31c290bf56a8d8a6bbe576545da9669b6` | `sha256:c6531d2c0f81c59b7655c28b7e775356151b57944cd20f45850d1b3b4c5f86cb` |
+| Scout critical / high | **0 / 0** | **0 / 0** |
+| Scout medium / low | 0 / 0 | 0 / 0 |
+| packages | 69 | 69 |
+| size | 20 MB | 18 MB |
+
+Candidate index digest, promoted unchanged to `:0.9.1` and `:latest` on GHCR
+and mirrored to Docker Hub:
+`sha256:95170d9a19dc089ccf876a6ae91322e826b64086d7d07763a5462685e2ad775f`.
+Both published Scout reports name that candidate index, so the reports, the
+tag and the mirror refer to the same bytes. The container journeys (CLI,
+`config`, live traffic, admin ACL) ran against the candidate image inside the
+job before promotion; the run is their transcript.
+
+A local amd64 build started earlier on 2026-11-01 was stopped by the owner
+before it completed and produced no evidence; it is not cited here.
 
 ## 3. The commit itself
 
@@ -209,11 +227,22 @@ Nothing is published by a job whose verification failed: the registry push and
 the release creation are gated on the earlier jobs, and the promotion copies a
 digest that was scanned, not a rebuild.
 
+For this cut the tag `v0.9.1` is an annotated tag over `e7473ea` and the push
+triggered run 41299478887, whose six jobs all finished `success`:
+
+| Job | Conclusion |
+|---|---|
+| Line gates pass before any build | `success` |
+| Binaries linux (build + E2E verify) + SBOM | `success` |
+| Binaries darwin (build + E2E verify) | `success` |
+| Multi-arch image (build + Scout both archs + E2E + promote) | `success` |
+| GitHub release (binaries + source tarball + SHA256SUMS + SBOM + Scout) | `success` |
+| Docker Hub page (rendered, published and read back) | `success` |
+
 ## 5. After publication — the artifact gate
 
-This is the gate that closes the version. It runs after the tag run finishes;
-until then every line is pending. Every line is a check with its expected
-result.
+This is the gate that closes the version. Every line is a check with its
+expected result, and the results below close it for 0.9.1.
 
 ```console
 $ gh run list --workflow release.yml --limit 1        # the tag run: success, every job
@@ -229,18 +258,58 @@ $ docker buildx imagetools inspect ghcr.io/exyonq/eqproxy:0.9.1 \
     --format '{{.Manifest.Digest}}'                                              # == the scanned candidate digest
 ```
 
-- The digest check is the one that matters: `:0.9.1`, `:latest` and the Docker
-  Hub mirror must carry **exactly** the index digest the Scout gate scanned.
-- Both architectures are re-pulled and replayed by the pipeline itself; repeat
-  one journey by hand on the published tag (`--version`, `config validate` and
-  one proxied request) to confirm the public artifact, not the local build.
-- Then, in a follow-up commit, update what describes the published state:
-  `README.md` (status line, install URLs, image tags), `repo.md` and
-  `docs/docker-hub-readme.md`. They are not part of the cut commit on purpose:
-  until the tag run succeeds they would claim a release that does not exist.
-- Record the run id, the digests, the Scout reports and the re-pull transcript
-  under `docs/evidence/`, so the version is reproducible from the repository
-  alone.
+### 5.1 Result (2026-11-01)
+
+Run [41299478887](https://github.com/ExyonQ/EQProxy/actions/runs/41299478887)
+finished `success` at 14:03 UTC over `e7473ea`; the release
+[v0.9.1](https://github.com/ExyonQ/EQProxy/releases/tag/v0.9.1) is public, not
+a draft and not a pre-release, with **12 assets**.
+
+All twelve assets were downloaded and `SHA256SUMS.txt` checked with
+`shasum -a 256 -c`:
+
+| Asset | SHA-256 |
+|---|---|
+| `eqproxy-darwin-amd64` | `6be9b37e3ddd7a8c9c6eaadb9e4471e0cb5a1e5628940d7df20f28023249823d` |
+| `eqproxy-darwin-arm64` | `aff4faa72036b01bbc62887fab95f18fcc4047d3147017e1dc9d3eec7e172bfc` |
+| `eqproxy-linux-amd64` | `9fd5089d048a7d1321de2f5d8fb0c7ca6cc1ab90db92d90fd31243ce3369188b` |
+| `eqproxy-linux-arm64` | `db6f13a8c1f2c945dd20c3ffa7f5857d1136c69bfe23d8b9b8ea8ae032896704` |
+| `eqproxy-0.9.1-src.tar.gz` | `42ced9379e49ef490b3f5fb6f08dd5f344eae68627d5b9d77c5a9db600598fb3` |
+
+The five lines are `OK`; the other seven assets are the four CycloneDX SBOMs,
+the two Scout reports and `SHA256SUMS.txt` itself.
+
+- The downloaded `eqproxy-darwin-arm64` runs on this machine and answers
+  `eqproxy 0.9.1`.
+- The source tarball declares `version = "0.9.1"`, expands to **2 834
+  entries**, and contains no `ROADMAP EQPROXY/`, `SERVIDORES.md`,
+  `.dockerignore`, `scripts/` or `.git/`.
+- `ghcr.io/exyonq/eqproxy:0.9.1`, `:latest`, `docker.io/exyonq/eqproxy:0.9.1`
+  and `:latest` all report index digest
+  `sha256:95170d9a19dc089ccf876a6ae91322e826b64086d7d07763a5462685e2ad775f`,
+  the scanned candidate.
+- `docker pull ghcr.io/exyonq/eqproxy:0.9.1` downloaded exactly that digest;
+  `docker run --rm … --version` answered `eqproxy 0.9.1`.
+- A hand-run journey with the pulled image (nginx backend on its own network,
+  mounted TOML) returned `HTTP/1.1 200 OK`, the nginx body, `Server: eqproxy`
+  and `Date: Sun, 01 Nov 2026 14:05:43 GMT`.
+
+### 5.2 Not verified by hand
+
+- The source tarball was inspected but **not rebuilt**: `cargo build --locked`
+  from that export is not executed locally or in the workflow.
+- The Docker Hub copy was compared by index digest (identical to GHCR); its
+  blob was not pulled from Docker Hub.
+- The linux binaries were not executed on a linux host; the `linux` job's E2E
+  journeys are their evidence.
+
+### 5.3 Pending description update
+
+`README.md` (status line, install URLs, image tags), `repo.md` and
+`docs/docker-hub-readme.md` are not part of the cut commit; the gate above asks
+for them to be updated after publication, and that follow-up commit is
+**pending**. Until it lands, this page and the release assets are the record of
+the published state.
 
 ## 6. If the tag run fails
 

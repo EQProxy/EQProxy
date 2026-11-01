@@ -149,7 +149,8 @@ new Hindsight note.
 
 - No Docker image, `linux/amd64` build, Docker Scout scan or CI run was made
   for this delta: **NOT EXECUTED**. The host here is arm64 macOS. The image
-  gate remains as described in the release checklist.
+  gate remains as described in the release checklist. The published image was
+  exercised later by hand; see **Published image** below.
 - TLS/mTLS does not change the header path, but no separate TLS journey was
   repeated for this delta.
 - External URLs, rendered HTML and `#L…` anchors are outside this page's scope;
@@ -158,3 +159,76 @@ new Hindsight note.
   the banner (ADR-0017): it is a management surface, not a site response.
 - The `100 Continue` interim response still carries no header fields; RFC 9110
   does not require `Date` on it, and this change does not alter that.
+
+## Published image (2026-11-01, after the release)
+
+The released image was pulled and exercised by hand, not only by the pipeline:
+`ghcr.io/exyonq/eqproxy:0.9.1`, index digest
+`sha256:95170d9a19dc089ccf876a6ae91322e826b64086d7d07763a5462685e2ad775f`
+(`docker pull` reports that digest). The container ran a one-listener config
+whose only rule answers locally, so no origin exists on the path:
+
+```toml
+[listener.web]
+listen = "0.0.0.0:8080"
+backend = "api"
+mode = "http"
+
+[[listener.web.rules]]
+name = "root"
+path = "/"
+[listener.web.rules.direct_response]
+status = 200
+content_type = "text/plain"
+body = "Welcome to EQProxy (ExyonQ)!\n"
+
+[backend.api]
+server = "127.0.0.1:9"
+```
+
+```console
+$ docker run -d --name eqv091-date -p 18091:8080 \
+    -v /tmp/eqv091-date/eqproxy.toml:/etc/eqproxy/eqproxy.toml:ro \
+    ghcr.io/exyonq/eqproxy:0.9.1 run --config /etc/eqproxy/eqproxy.toml
+$ curl -sS -i http://127.0.0.1:18091/
+HTTP/1.1 200 ok
+Server: eqproxy
+date: Sun, 01 Nov 2026 16:41:18 GMT
+connection: keep-alive
+content-type: text/plain
+content-length: 29
+
+Welcome to EQProxy (ExyonQ)!
+
+$ sleep 2; curl -sS -I http://127.0.0.1:18091/
+HTTP/1.1 200 ok
+Server: eqproxy
+date: Sun, 01 Nov 2026 16:41:20 GMT
+…
+
+$ date -u
+Sun, 01 Nov 2026 16:41:20 GMT
+```
+
+The header advances with the clock and equals `date -u` at request time, so it
+is generated per response rather than replayed. A request that misses the rule
+is forwarded to the unreachable `127.0.0.1:9`, and the local error carries it
+too:
+
+```console
+$ curl -sS -i http://127.0.0.1:18091/nope
+HTTP/1.1 502 bad gateway
+Server: eqproxy
+date: Sun, 01 Nov 2026 16:41:29 GMT
+connection: close
+content-length: 0
+```
+
+No backend was contacted for the 200 (the body is the rule's) and none
+answered for the 502, so both `date` values are the proxy's own. The container
+was removed afterwards (`docker ps -a --filter name=eqv091` returned 0).
+
+**Correction.** An earlier probe of the same image proxied to an `nginx:alpine`
+origin and printed that response's `Date`; the value was nginx's own header
+relayed by the proxy, which the contract preserves, so it did not demonstrate
+the generated header. The transcript above replaces it.

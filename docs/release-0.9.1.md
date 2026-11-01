@@ -290,9 +290,17 @@ the two Scout reports and `SHA256SUMS.txt` itself.
   the scanned candidate.
 - `docker pull ghcr.io/exyonq/eqproxy:0.9.1` downloaded exactly that digest;
   `docker run --rm … --version` answered `eqproxy 0.9.1`.
-- A hand-run journey with the pulled image (nginx backend on its own network,
-  mounted TOML) returned `HTTP/1.1 200 OK`, the nginx body, `Server: eqproxy`
-  and `Date: Sun, 01 Nov 2026 14:05:43 GMT`.
+- A hand-run journey with the pulled image used a `direct_response` rule, so
+  no origin existed on the path: `HTTP/1.1 200 ok`, `Server: eqproxy`,
+  `date: Sun, 01 Nov 2026 16:41:18 GMT` (the local clock at request time) and
+  the configured body `Welcome to EQProxy (ExyonQ)!`. Two seconds later the
+  same request carried `16:41:20`, and a route with an unreachable backend
+  answered `HTTP/1.1 502 bad gateway` with its own `date`. Transcript in
+  [v091-date-header](evidence/v091-date-header.md#published-image-2026-11-01-after-the-release).
+- Correction to an earlier probe: it proxied to an `nginx:alpine` origin and
+  printed the `Date` of that response, which was nginx's own header relayed by
+  the proxy, not a generated one. It is not evidence for this feature; the
+  local-response transcript above is.
 
 ### 5.2 Not verified by hand
 

@@ -411,7 +411,7 @@ async fn miss_then_hit_serves_identical_bytes() {
     let (status, head, first) = fetch(proxy, "GET", "/static", &[]).await;
     assert_eq!(status, 200);
     assert_eq!(header(&head, "x-cache"), Some("MISS".to_owned()));
-    assert_eq!(header(&head, "server").as_deref(), Some("eqproxy"));
+    assert_eq!(header(&head, "server").as_deref(), Some("EQProxy"));
     assert_eq!(origin.hits("/static"), 1);
 
     let (status, head, second) = fetch(proxy, "GET", "/static", &[]).await;
@@ -420,7 +420,7 @@ async fn miss_then_hit_serves_identical_bytes() {
     assert_eq!(header(&head, "x-cache"), Some("HIT".to_owned()));
     assert_eq!(
         header(&head, "server").as_deref(),
-        Some("eqproxy"),
+        Some("EQProxy"),
         "a cached entry serves the product banner, not the stored nginx one"
     );
     assert!(header(&head, "age").is_some(), "a hit carries its age");
@@ -775,4 +775,106 @@ async fn disk_entries_survive_a_restart() {
     handle.trigger();
     serve.await.expect("proxy stops");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Pulls one full message (head + `Content-Length` body) out of `buffer`,
+/// which may already hold bytes of the next pipelined response. `None`
+/// means the buffer does not yet carry a complete message.
+fn take_message(buffer: &mut Vec<u8>) -> Option<(String, Vec<u8>)> {
+    let split = buffer.windows(4).position(|window| window == b"\r\n\r\n")? + 4;
+    let head = String::from_utf8_lossy(&buffer[..split]).into_owned();
+    let len = head
+        .lines()
+        .skip(1)
+        .find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.trim()
+                .eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .expect("served responses carry a content-length");
+    if buffer.len() < split + len {
+        return None;
+    }
+    let body = buffer[split..split + len].to_vec();
+    buffer.drain(..split + len);
+    Some((head, body))
+}
+
+#[tokio::test]
+async fn pipelined_hits_keep_the_next_request_on_the_connection() {
+    let origin = start_origin().await;
+    let (proxy, metrics, _handle, _serve) = start_proxy(origin.addr, cache_settings("web")).await;
+
+    // Warm the entry over a throwaway connection.
+    let (status, _, _) = fetch(proxy, "GET", "/static", &[]).await;
+    assert_eq!(status, 200);
+    assert_eq!(origin.hits("/static"), 1);
+
+    // Both GETs travel in one write. The first is answered from the cache
+    // without dialing, and the bytes already queued for the second must
+    // survive that local reply instead of being dropped with the exchange.
+    let mut socket = TcpStream::connect(proxy).await.expect("connect proxy");
+    socket
+        .write_all(
+            b"GET /static HTTP/1.1\r\nhost: api\r\n\r\n\
+              GET /static HTTP/1.1\r\nhost: api\r\nconnection: close\r\n\r\n",
+        )
+        .await
+        .expect("write pipeline");
+
+    let mut buffer = Vec::new();
+    let mut responses: Vec<(String, Vec<u8>)> = Vec::new();
+    while responses.len() < 2 {
+        let mut chunk = [0u8; 4096];
+        let read = tokio::time::timeout(WAIT, socket.read(&mut chunk))
+            .await
+            .expect("response in time")
+            .expect("read response");
+        assert!(
+            read > 0,
+            "connection ended after {} of two pipelined responses",
+            responses.len()
+        );
+        buffer.extend_from_slice(&chunk[..read]);
+        while let Some(message) = take_message(&mut buffer) {
+            responses.push(message);
+        }
+    }
+
+    assert_eq!(header(&responses[0].0, "x-cache").as_deref(), Some("HIT"));
+    assert_eq!(header(&responses[1].0, "x-cache").as_deref(), Some("HIT"));
+    assert_eq!(responses[0].1, b"static-body-v1");
+    assert_eq!(responses[1].1, b"static-body-v1");
+    assert_eq!(
+        origin.hits("/static"),
+        1,
+        "neither cached reply may dial the origin"
+    );
+    assert_eq!(metrics.snapshot().cache_hits, 2);
+    assert_eq!(metrics.snapshot().cache_misses, 1);
+}
+
+#[tokio::test]
+async fn a_hit_serves_the_stored_bytes_after_the_origin_changes() {
+    let origin = start_origin().await;
+    let (proxy, metrics, _handle, _serve) = start_proxy(origin.addr, cache_settings("web")).await;
+
+    let (status, _, first) = fetch(proxy, "GET", "/static", &[]).await;
+    assert_eq!(status, 200);
+    assert_eq!(first, b"static-body-v1");
+    assert_eq!(origin.hits("/static"), 1);
+
+    // The origin changes; the stored entry must keep the bytes the proxy
+    // assembled on the miss, not pick up the new body behind its back.
+    origin.set_body("/static", "static-body-v2", Some("\"v2\""));
+
+    let (status, head, second) = fetch(proxy, "GET", "/static", &[]).await;
+    assert_eq!(status, 200);
+    assert_eq!(header(&head, "x-cache").as_deref(), Some("HIT"));
+    assert_eq!(second, b"static-body-v1");
+    assert_eq!(origin.hits("/static"), 1, "the hit must not dial");
+    assert_eq!(metrics.snapshot().cache_stores, 1);
+    assert_eq!(metrics.snapshot().cache_hits, 1);
 }

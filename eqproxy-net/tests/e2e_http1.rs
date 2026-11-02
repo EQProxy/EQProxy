@@ -302,6 +302,32 @@ fn header_value(head: &str, name: &str) -> Option<String> {
     })
 }
 
+/// Reads one full message (head + `Content-Length` body) from `buffer`,
+/// which may already hold bytes of the next pipelined response. Returns
+/// the head, the body and whatever belongs to the next message.
+async fn read_message(client: &mut TcpStream, mut buffer: Vec<u8>) -> (String, String, Vec<u8>) {
+    let mut chunk = [0u8; 512];
+    loop {
+        if let Some(pos) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
+            let head = String::from_utf8_lossy(&buffer[..pos + 4]).into_owned();
+            let len = header_value(&head, "content-length")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(0);
+            if buffer.len() >= pos + 4 + len {
+                let body = String::from_utf8_lossy(&buffer[pos + 4..pos + 4 + len]).into_owned();
+                let rest = buffer.split_off(pos + 4 + len);
+                return (head, body, rest);
+            }
+        }
+        let n = tokio::time::timeout(WAIT, client.read(&mut chunk))
+            .await
+            .expect("message in time")
+            .expect("read message");
+        assert!(n > 0, "EOF before a complete message: {buffer:?}");
+        buffer.extend_from_slice(&chunk[..n]);
+    }
+}
+
 async fn send_and_read(addr: SocketAddr, request: &[u8]) -> String {
     let mut client = tokio::time::timeout(WAIT, TcpStream::connect(addr))
         .await
@@ -430,6 +456,119 @@ async fn http1_get_roundtrip_and_keepalive() {
     .await;
     assert_eq!(metrics.snapshot().http_requests_rejected, 0);
 
+    handle.trigger();
+    tokio::time::timeout(WAIT, serve)
+        .await
+        .expect("serve finishes")
+        .expect("serve task without panic");
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs TCP sockets: miri does not support networking (rust-lang/miri#3449)"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pipelined_requests_are_served_in_order_from_the_carry() {
+    let backend = start_scripted_backend(
+        vec![
+            b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\none".to_vec(),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\ntwo".to_vec(),
+        ],
+        false,
+    )
+    .await;
+    let metrics = Arc::new(Metrics::default());
+    let cfg = http_listener_cfg(
+        "127.0.0.1:0".parse().expect("addr"),
+        backend,
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    );
+    let (proxy_addr, handle, serve) = start_proxy(cfg, Arc::clone(&metrics)).await;
+
+    let mut client = TcpStream::connect(proxy_addr).await.expect("connect");
+    client
+        .write_all(b"GET /one HTTP/1.1\r\nHost: t\r\n\r\nGET /two HTTP/1.1\r\nHost: t\r\n\r\n")
+        .await
+        .expect("write both requests");
+
+    let (first_head, first_body, carry) = read_message(&mut client, Vec::new()).await;
+    assert_eq!(
+        first_body, "one",
+        "the first pipelined response is out of order"
+    );
+    assert_eq!(
+        header_value(&first_head, "server").as_deref(),
+        Some("EQProxy")
+    );
+    let (second_head, second_body, rest) = read_message(&mut client, carry).await;
+    assert_eq!(
+        second_body, "two",
+        "the request read past the first head was lost instead of carried"
+    );
+    assert_eq!(
+        header_value(&second_head, "server").as_deref(),
+        Some("EQProxy")
+    );
+    assert!(rest.is_empty(), "unexpected extra bytes: {rest:?}");
+
+    drop(client);
+    common::wait_for_counter("http_requests_proxied", 2, || {
+        metrics.snapshot().http_requests_proxied
+    })
+    .await;
+    handle.trigger();
+    tokio::time::timeout(WAIT, serve)
+        .await
+        .expect("serve finishes")
+        .expect("serve task without panic");
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs TCP sockets: miri does not support networking (rust-lang/miri#3449)"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pipelined_get_after_a_post_body_stays_aligned() {
+    let backend = start_scripted_backend(
+        vec![
+            b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\none".to_vec(),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\ntwo".to_vec(),
+        ],
+        false,
+    )
+    .await;
+    let metrics = Arc::new(Metrics::default());
+    let cfg = http_listener_cfg(
+        "127.0.0.1:0".parse().expect("addr"),
+        backend,
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    );
+    let (proxy_addr, handle, serve) = start_proxy(cfg, Arc::clone(&metrics)).await;
+
+    let mut client = TcpStream::connect(proxy_addr).await.expect("connect");
+    client
+        .write_all(
+            b"POST /one HTTP/1.1\r\nHost: t\r\nContent-Length: 4\r\n\r\nabcdGET /two HTTP/1.1\r\nHost: t\r\n\r\n",
+        )
+        .await
+        .expect("write both requests");
+
+    let (_, first_body, carry) = read_message(&mut client, Vec::new()).await;
+    assert_eq!(first_body, "one");
+    let (_, second_body, rest) = read_message(&mut client, carry).await;
+    assert_eq!(
+        second_body, "two",
+        "bytes past the request body were consumed as body instead of carried"
+    );
+    assert!(rest.is_empty(), "unexpected extra bytes: {rest:?}");
+
+    drop(client);
+    common::wait_for_counter("http_requests_proxied", 2, || {
+        metrics.snapshot().http_requests_proxied
+    })
+    .await;
     handle.trigger();
     tokio::time::timeout(WAIT, serve)
         .await

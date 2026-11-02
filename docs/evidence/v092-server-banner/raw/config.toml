@@ -1,0 +1,23 @@
+schema_version = 1
+
+# The listener under test: HTTP/1.1 and h2c, response cache enabled so the
+# second request is served without touching the origin.
+[listener.web]
+listen = "127.0.0.1:64720"
+mode = "http"
+backend = "app"
+
+[listener.web.cache]
+default_ttl = "120s"
+
+[backend.app]
+servers = [{ addr = "127.0.0.1:64719" }]
+
+# A listener whose only server is closed: every request is a local 502.
+[listener.dead]
+listen = "127.0.0.1:64721"
+mode = "http"
+backend = "gone"
+
+[backend.gone]
+servers = [{ addr = "127.0.0.1:64722" }]

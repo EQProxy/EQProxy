@@ -327,7 +327,7 @@ async fn close_request_is_never_pooled() {
         // plus the product banner every dataplane response now carries.
         assert_eq!(
             String::from_utf8_lossy(&response),
-            "HTTP/1.1 200 OK\r\nServer: eqproxy\r\nContent-Length: 2\r\n\r\nok",
+            "HTTP/1.1 200 OK\r\nServer: EQProxy\r\nContent-Length: 2\r\n\r\nok",
             "a close-request exchange must be answered, never 502"
         );
     }

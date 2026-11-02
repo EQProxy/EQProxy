@@ -1,0 +1,9 @@
+2026-11-02T00:09:50Z
+Darwin 25.5.0 arm64
+binary: /Volumes/Lexar/Cursor/EQProxy/target/release/eqproxy
+eqproxy 0.9.1
+b4e5873a3922a20c8ccebf95b231f853fceeecdc94fa02c1ea9bf788744845ab  /Volumes/Lexar/Cursor/EQProxy/target/release/eqproxy
+git HEAD: 80f5e98a804703b9cb3efd0869ca25a35806b45c
+dirty paths: 22
+rustc 1.99.1 (58cf8f9c3 2026-10-13)
+curl: curl 8.7.1 (x86_64-apple-darwin25.0) libcurl/8.7.1 (SecureTransport) LibreSSL/3.3.6 zlib/1.2.12 nghttp2/1.68.1

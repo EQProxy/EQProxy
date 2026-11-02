@@ -596,7 +596,7 @@ async fn local_response_serves_the_configured_body() {
         "must carry the configured body: {response:?}"
     );
     assert_eq!(
-        response.matches("Server: eqproxy").count(),
+        response.matches("Server: EQProxy").count(),
         1,
         "a custom local reply carries the product banner exactly once: {response:?}"
     );

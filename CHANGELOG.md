@@ -3,6 +3,19 @@
 Language: **English**. Format follows "Keep a Changelog" (Added / Changed /
 Fixed); versions are `vMAJOR.MINOR.PATCH` git tags.
 
+## [Unreleased]
+
+### Changed
+
+- **Product banner: the dataplane sends `Server: EQProxy`.** v0.9.1 shipped
+  `Server: eqproxy`; the policy is unchanged (the origin's value is replaced,
+  never appended, and no build number is advertised), only the capitalisation
+  follows the product name. Every path that stamps the banner moves together:
+  proxied HTTP/1.1, the h2/h3 paths through the h1 engine, cached entries,
+  local errors, redirects, auth denials, gRPC and the `101`/CONNECT switch
+  head. The administration plane keeps its own responses. Evidence:
+  [v092-server-banner](docs/evidence/v092-server-banner.md).
+
 ## [v0.9.1] — 2026-11-01
 
 ### Added

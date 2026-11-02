@@ -1,0 +1,8 @@
+HTTP/2 200 
+server: EQProxy
+content-type: text/plain
+cache-control: max-age=120
+content-length: 15
+x-cache: HIT
+age: 0
+

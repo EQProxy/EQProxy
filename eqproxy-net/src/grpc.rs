@@ -322,7 +322,7 @@ pub(crate) async fn serve(
     // Product banner, same value the h1 engine stamps: the origin's `Server`
     // (often a versioned gRPC stack) never reaches the client.
     out.headers_mut()
-        .insert("server", HeaderValue::from_static("eqproxy"));
+        .insert("server", HeaderValue::from_static("EQProxy"));
     let end = response.body().is_end_stream();
     let client = match respond.send_response(out, end) {
         Ok(client) => client,
@@ -643,7 +643,7 @@ fn local_answer(
     // leave two lines: the product banner replaces it.
     response
         .headers_mut()
-        .insert("server", HeaderValue::from_static("eqproxy"));
+        .insert("server", HeaderValue::from_static("EQProxy"));
     if let Ok(date) = HeaderValue::from_str(&crate::date::current_http_date()) {
         response.headers_mut().insert("date", date);
     }

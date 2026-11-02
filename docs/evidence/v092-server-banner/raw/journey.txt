@@ -1,0 +1,7 @@
+control direct: Server: nginx/1.24.0
+h1 proxied: Server: EQProxy / x-cache: MISS
+h1 cached: Server: EQProxy / x-cache: HIT
+h2c: HTTP/2 200  / server: EQProxy
+local 502: HTTP/1.1 502 bad gateway / Server: EQProxy
+origin requests: 2
+binary sha256: b4e5873a3922a20c8ccebf95b231f853fceeecdc94fa02c1ea9bf788744845ab

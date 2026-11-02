@@ -662,7 +662,7 @@ async fn grpc_forwarded_headers_cross_the_pass_through() {
             .headers()
             .get("server")
             .map(|value| value.as_bytes()),
-        Some(&b"eqproxy"[..]),
+        Some(&b"EQProxy"[..]),
         "the gRPC pass-through carries the product banner, not grpc-origin/1.0: {:?}",
         response.headers()
     );

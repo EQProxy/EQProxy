@@ -87,7 +87,7 @@ const CONTINUE: &[u8] = b"HTTP/1.1 100 Continue\r\n\r\n";
 /// Product banner for every dataplane response. No version: the build number
 /// is an oracle for known CVEs and no operator migrates a proxy because of its
 /// patch level.
-pub(crate) const SERVER_HEADER: &str = "Server: eqproxy";
+pub(crate) const SERVER_HEADER: &str = "Server: EQProxy";
 /// Interim responses accepted before the final one (bounded, never an
 /// endless 1xx stream).
 const MAX_INTERIM_RESPONSES: u32 = 8;
@@ -3556,7 +3556,7 @@ pub async fn serve_http<CR, CW>(
             append_response_headers(&response_head_bytes, &response_lines)
         };
         // Product banner, after every header source (origin, rule actions,
-        // sticky cookie, CORS): exactly one `Server: eqproxy`, never the
+        // sticky cookie, CORS): exactly one `Server: EQProxy`, never the
         // origin's value and never a version.
         response_head_bytes = with_server_header(&response_head_bytes);
         // Response compression (B-N6/H6): the decision happens once, before a
@@ -3954,17 +3954,17 @@ mod tests {
         let stamped = with_server_header(head);
         assert_eq!(
             stamped,
-            b"HTTP/1.1 200 OK\r\nServer: eqproxy\r\ncontent-type: text/plain".to_vec()
+            b"HTTP/1.1 200 OK\r\nServer: EQProxy\r\ncontent-type: text/plain".to_vec()
         );
         // Idempotent and case-insensitive: the second pass changes nothing.
         assert_eq!(with_server_header(&stamped), stamped);
         let mixed_case = with_server_header(b"HTTP/1.1 200 OK\r\nserver: Apache/2.4");
-        assert_eq!(mixed_case, b"HTTP/1.1 200 OK\r\nServer: eqproxy".to_vec());
+        assert_eq!(mixed_case, b"HTTP/1.1 200 OK\r\nServer: EQProxy".to_vec());
         // A head that carried none gets exactly one, after the status line.
         let added = with_server_header(b"HTTP/1.1 204 No Content");
         assert_eq!(
             added,
-            b"HTTP/1.1 204 No Content\r\nServer: eqproxy".to_vec()
+            b"HTTP/1.1 204 No Content\r\nServer: EQProxy".to_vec()
         );
     }
 
@@ -4002,7 +4002,7 @@ mod tests {
         );
         let stamped = with_server_header(&with_rule);
         let text = String::from_utf8(stamped).expect("ascii head");
-        assert_eq!(text.matches("Server: eqproxy").count(), 1, "{text:?}");
+        assert_eq!(text.matches("Server: EQProxy").count(), 1, "{text:?}");
         assert!(
             !text.to_ascii_lowercase().contains("configured-value"),
             "{text:?}"
@@ -4016,7 +4016,7 @@ mod tests {
         write_error(&mut out, 502, "bad gateway").await;
         let text = String::from_utf8(out).expect("ascii head");
         assert!(text.starts_with("HTTP/1.1 502 bad gateway\r\n"), "{text:?}");
-        assert_eq!(text.matches("Server: eqproxy").count(), 1, "{text:?}");
+        assert_eq!(text.matches("Server: EQProxy").count(), 1, "{text:?}");
         let dates: Vec<_> = text
             .lines()
             .filter(|line| line.to_ascii_lowercase().starts_with("date:"))
@@ -4046,7 +4046,7 @@ mod tests {
         .await;
         let text = String::from_utf8(out).expect("ascii head");
         assert!(text.starts_with("HTTP/1.1 302 found\r\n"), "{text:?}");
-        assert_eq!(text.matches("Server: eqproxy").count(), 1, "{text:?}");
+        assert_eq!(text.matches("Server: EQProxy").count(), 1, "{text:?}");
         assert_eq!(
             text.to_ascii_lowercase().matches("date:").count(),
             1,

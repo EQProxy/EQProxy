@@ -395,7 +395,7 @@ async fn ws_unknown_protocol_is_refused_with_501() {
             .headers()
             .get("server")
             .map(|value| value.as_bytes()),
-        Some(&b"eqproxy"[..]),
+        Some(&b"EQProxy"[..]),
         "a refused extended CONNECT carries the product banner"
     );
     let date = response
@@ -436,7 +436,7 @@ async fn ws_classic_connect_keeps_its_501() {
             .headers()
             .get("server")
             .map(|value| value.as_bytes()),
-        Some(&b"eqproxy"[..]),
+        Some(&b"EQProxy"[..]),
         "a refused classic h2 CONNECT carries the product banner"
     );
     let date = response

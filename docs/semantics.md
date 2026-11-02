@@ -38,7 +38,7 @@ not hidden behind the same word.
   absolute-form, obs-fold) is **rejected**, not normalized (SPEC §13.4). A
   backend `101` opens the tunnel; it is not relayed as a normal response.
 - **Product banner.** Every response the dataplane assembles carries exactly
-  one `Server: eqproxy`. The origin's value is replaced, never appended, and
+  one `Server: EQProxy`. The origin's value is replaced, never appended, and
   the proxy does not advertise its version; this covers proxied HTTP/1.1, the
   h2/h3 paths that traverse the h1 engine, cached entries, local errors,
   redirects, auth denials and gRPC responses. The administration plane keeps

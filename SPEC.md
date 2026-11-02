@@ -677,7 +677,7 @@ the whole service), sanitizers/concurrency tools where appropriate.
       [docs/migration/README.md](docs/migration/README.md).
 
   16. **Product banner (v0.9.1):** every response assembled by the dataplane
-      carries exactly one `Server: eqproxy`; the origin's value is replaced,
+      carries exactly one `Server: EQProxy`; the origin's value is replaced,
       never appended, and the proxy does not advertise its version. This
       covers proxied HTTP/1.1 and the h2/h3 paths that traverse the h1 engine,
       cached entries, local errors, redirects, auth denials and gRPC; the

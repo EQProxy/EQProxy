@@ -351,7 +351,7 @@ async fn server_header_is_the_product_banner_not_the_origin() {
     );
     assert_eq!(
         header_value(&response, "server").as_deref(),
-        Some("eqproxy")
+        Some("EQProxy")
     );
     let server_lines = response
         .lines()

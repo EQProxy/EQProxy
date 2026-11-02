@@ -177,3 +177,7 @@ docker kill --signal=HUP eqproxy
 Dual: MIT OR Apache-2.0, at the recipient's choice.
 
 https://github.com/EQProxy/EQProxy/blob/v{{version}}/LICENSE-MIT
+
+---
+
+A product of ExyonQ.

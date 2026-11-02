@@ -51,4 +51,4 @@ reasons and the rejected alternatives are in the linked ADRs.
 ## Report a gap
 
 Open an issue with a sanitised config and the command that failed:
-<https://github.com/ExyonQ/EQProxy/issues>.
+<https://github.com/EQProxy/EQProxy/issues>.

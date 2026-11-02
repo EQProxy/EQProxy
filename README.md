@@ -2,7 +2,7 @@
 
 EQProxy — the reverse proxy and load balancer that imports your HAProxy and nginx config, and proves the translation routes the same.
 
-[![Latest release](https://img.shields.io/github/v/release/ExyonQ/EQProxy)](https://github.com/ExyonQ/EQProxy/releases)
+[![Latest release](https://img.shields.io/github/v/release/EQProxy/EQProxy)](https://github.com/EQProxy/EQProxy/releases)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](LICENSE-MIT)
 ![Status](https://img.shields.io/badge/status-pre--1.0-orange)
 
@@ -53,7 +53,7 @@ cover the operational path.
 **v0.9.1 · pre-1.0 · not production-ready.** 715 tests green across 36 targets,
 real HTTP/1.1, HTTP/2 and HTTP/3 dataplanes — but no users outside the author
 yet. Try it on a staging config and tell me what breaks:
-[KNOWN_GAPS.md](KNOWN_GAPS.md) · [open an issue](https://github.com/ExyonQ/EQProxy/issues).
+[KNOWN_GAPS.md](KNOWN_GAPS.md) · [open an issue](https://github.com/EQProxy/EQProxy/issues).
 
 ## What's in it
 
@@ -69,7 +69,7 @@ metrics; and a server-rendered panel with no JavaScript.
 ## Install
 
 Binaries and checksums live on the
-[release page](https://github.com/ExyonQ/EQProxy/releases/tag/v0.9.1). Every
+[release page](https://github.com/EQProxy/EQProxy/releases/tag/v0.9.1). Every
 release carries four prebuilt binaries — `eqproxy-darwin-arm64`,
 `eqproxy-darwin-amd64`, `eqproxy-linux-arm64` and `eqproxy-linux-amd64` — the
 matching sources as `eqproxy-<version>-src.tar.gz`, the SBOM of each crate and
@@ -86,8 +86,8 @@ packages: they run on any Linux distribution of that architecture, and on
 # Pick your platform artifact:
 #   eqproxy-darwin-arm64 | eqproxy-darwin-amd64
 #   eqproxy-linux-arm64  | eqproxy-linux-amd64   (static, musl)
-curl -sSLO https://github.com/ExyonQ/EQProxy/releases/download/v0.9.1/eqproxy-linux-amd64
-curl -sSLO https://github.com/ExyonQ/EQProxy/releases/download/v0.9.1/SHA256SUMS.txt
+curl -sSLO https://github.com/EQProxy/EQProxy/releases/download/v0.9.1/eqproxy-linux-amd64
+curl -sSLO https://github.com/EQProxy/EQProxy/releases/download/v0.9.1/SHA256SUMS.txt
 shasum -a 256 -c SHA256SUMS.txt --ignore-missing   # Linux: sha256sum -c --ignore-missing SHA256SUMS.txt
 chmod +x eqproxy-linux-amd64
 ./eqproxy-linux-amd64 --version

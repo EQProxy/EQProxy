@@ -16,7 +16,7 @@ same compiler, so bumping the pin is a deliberate change with its own
 verification rather than a moving `stable`.
 
 ```bash
-git clone https://github.com/ExyonQ/EQProxy.git
+git clone https://github.com/EQProxy/EQProxy.git
 cd EQProxy
 cargo build --workspace
 cargo test --workspace

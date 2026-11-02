@@ -774,14 +774,14 @@ async fn copy_chunked_capped<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     idle: Duration,
     counter: &AtomicU64,
     idle_counter: &AtomicU64,
-    cap: Option<u64>,
+    cap: Option<std::num::NonZeroU64>,
 ) -> Result<(), CopyError> {
     let mut total = 0u64;
     loop {
         let line = read_crlf_line(reader, idle, MAX_LINE_BYTES).await?;
         let size = parse_chunk_size(&line)?;
         if let Some(cap) = cap
-            && size > cap.saturating_sub(total)
+            && size > cap.get().saturating_sub(total)
         {
             return Err(CopyError::TooLarge);
         }
@@ -1074,7 +1074,7 @@ pub(crate) enum HeadError {
     Eof,
     Timeout,
     TooLarge,
-    Io,
+    Io(std::io::Error),
 }
 
 pub(crate) async fn read_head<R: AsyncRead + Unpin>(
@@ -1086,7 +1086,7 @@ pub(crate) async fn read_head<R: AsyncRead + Unpin>(
         let mut acc = Vec::with_capacity(1024);
         let mut buf = [0u8; 2048];
         loop {
-            let got = reader.read(&mut buf).await.map_err(|_| HeadError::Io)?;
+            let got = reader.read(&mut buf).await.map_err(HeadError::Io)?;
             if got == 0 {
                 return Err(HeadError::Eof);
             }
@@ -2317,7 +2317,7 @@ struct Http1Ctx<'a> {
     protocol: crate::access::ClientProtocol,
     limits: ResolvedLimits,
     head_limits: HeadLimits,
-    body_cap: Option<u64>,
+    body_cap: Option<std::num::NonZeroU64>,
 }
 
 /// Client phase: reads one request head, answering `408`/`431` itself.
@@ -2396,7 +2396,15 @@ where
                 .await;
                 return None;
             }
-            Err(HeadError::Io) => return None,
+            Err(HeadError::Io(error)) => {
+                // The peer may simply have reset an idle socket. Keep the
+                // error available for operators without treating it as a
+                // protocol rejection.
+                if error.kind() != std::io::ErrorKind::UnexpectedEof {
+                    eprintln!("WARN client read failed: {error}");
+                }
+                return None;
+            }
         };
     // Exact stream remainder after the head, in order: bytes read past
     // the terminator plus any prefix bytes read_head never consumed.
@@ -3135,8 +3143,8 @@ impl RequestPrepPhase<'_, '_> {
         // unacceptable body is forwarded. `0` = unlimited (the default, and
         // the behaviour before this limit existed).
         if let BodyFraming::ContentLength(len) = request.framing
-            && limits.max_body_bytes > 0
-            && len > limits.max_body_bytes
+            && let Some(cap) = limits.max_body_bytes
+            && len > cap.get()
         {
             metrics
                 .http_requests_rejected
@@ -3534,7 +3542,7 @@ pub async fn serve_http<CR, CW>(
         max_head_bytes: limits.max_head_bytes,
         max_headers: limits.max_headers,
     };
-    let body_cap = (limits.max_body_bytes > 0).then_some(limits.max_body_bytes);
+    let body_cap = limits.max_body_bytes;
     let h1 = Http1Ctx {
         cfg,
         metrics: Arc::clone(&metrics),
@@ -4661,7 +4669,7 @@ mod tests {
             Duration::from_secs(1),
             &countered,
             &idle,
-            Some(16),
+            Some(std::num::NonZeroU64::new(16).expect("non-zero cap")),
         )
         .await;
         assert!(

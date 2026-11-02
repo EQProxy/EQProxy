@@ -1826,7 +1826,7 @@ fn check_rule_headers(
             if let Err(cause) = validate_header_value(&op.value) {
                 err(
                     rule_field(&format!("{op_field}[{j}].value")),
-                    cause,
+                    cause.to_string(),
                     "value = \"$scheme\" (literal text or $remote_addr, $host, $scheme)".to_owned(),
                     &section,
                 );
@@ -2070,7 +2070,7 @@ fn check_rule_terminal(
         if let Err(cause) = validate_location(&redirect.location) {
             err(
                 rule_field("redirect.location"),
-                cause,
+                cause.to_string(),
                 "location = \"https://$host$request_uri\"".to_owned(),
                 &section,
             );
@@ -2127,13 +2127,37 @@ fn check_rule_terminal(
             &section,
         );
     }
-    if let Err(cause) = Rule::compile(&rule.to_spec(i)) {
+    let spec = match rule.to_spec(i) {
+        Ok(spec) => Some(spec),
+        Err(cause) => {
+            let example = if cause.example.is_empty() {
+                format!("rule \"{}\"", rule.name.clone().unwrap_or_default())
+            } else {
+                cause.example
+            };
+            err(
+                rule_field(cause.field.as_deref().unwrap_or("")),
+                cause.cause,
+                example,
+                &section,
+            );
+            None
+        }
+    };
+    if let Some(spec) = spec
+        && let Err(cause) = Rule::compile(&spec)
+    {
         let example = if cause.example.is_empty() {
             format!("rule \"{}\"", rule.name.clone().unwrap_or_default())
         } else {
             cause.example
         };
-        err(rule_field(&cause.field), cause.cause, example, &section);
+        err(
+            rule_field(cause.field.as_deref().unwrap_or("")),
+            cause.cause,
+            example,
+            &section,
+        );
     }
 }
 
@@ -4267,6 +4291,51 @@ server = "127.0.0.1:9000"
                 && e.cause.contains("forwarding rules")),
             "errors: {:?}",
             redirect.errors
+        );
+    }
+
+    #[test]
+    fn mixed_header_and_cookie_match_kinds_are_rejected_by_the_gate() {
+        let header = check_source(
+            "schema_version = 1\n\
+             [listener.web]\n\
+             listen = \"127.0.0.1:8080\"\n\
+             mode = \"http\"\n\
+             backend = \"api\"\n\
+             [[listener.web.rules]]\n\
+             name = \"mixed\"\n\
+             headers = [{ name = \"x-a\", exact = \"1\", regex = \"2\" }]\n\
+             use_backend = \"api\"\n\
+             [backend.api]\n\
+             server = \"127.0.0.1:9000\"\n",
+        );
+        assert!(
+            header.errors.iter().any(|e| e.field.as_deref()
+                == Some("listener.web.rules[0].headers[0]")
+                && e.cause.contains("exactly one of exact, regex or present")),
+            "errors: {:?}",
+            header.errors
+        );
+
+        let cookie = check_source(
+            "schema_version = 1\n\
+             [listener.web]\n\
+             listen = \"127.0.0.1:8080\"\n\
+             mode = \"http\"\n\
+             backend = \"api\"\n\
+             [[listener.web.rules]]\n\
+             name = \"mixed\"\n\
+             cookies = [{ name = \"canary\", exact = \"1\", present = true }]\n\
+             use_backend = \"api\"\n\
+             [backend.api]\n\
+             server = \"127.0.0.1:9000\"\n",
+        );
+        assert!(
+            cookie.errors.iter().any(|e| e.field.as_deref()
+                == Some("listener.web.rules[0].cookies[0]")
+                && e.cause.contains("exactly one of exact, regex or present")),
+            "errors: {:?}",
+            cookie.errors
         );
     }
 

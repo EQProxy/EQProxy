@@ -900,11 +900,16 @@ async fn handle_connection(
         // The head reader stops at the blank line but a single read may have
         // carried body bytes: they belong to the request, not the head.
         let Some(end) = head_end(&buffer) else {
-            return Err(HeadError::Io);
+            return Err(HeadError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "admin request head ended without a blank line",
+            )));
         };
         let initial = buffer.split_off(end);
         let head = std::str::from_utf8(&buffer)
-            .map_err(|_| HeadError::Io)?
+            .map_err(|error| {
+                HeadError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+            })?
             .to_owned();
         let mut body = None;
         // Only a `PUT` (JSON table or state) or a panel `POST` (form) carries
@@ -934,7 +939,8 @@ async fn handle_connection(
         }
         // The peer closed before sending a full head: nothing to answer.
         Ok(Err(HeadError::Closed)) => return,
-        Ok(Err(HeadError::Io)) => {
+        Ok(Err(HeadError::Io(error))) => {
+            eprintln!("WARN admin request read failed: {error}");
             answer(&mut stream, Response::text(400, "bad request")).await;
             return;
         }
@@ -1107,11 +1113,11 @@ where
     let _ = stream.shutdown().await;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 enum HeadError {
     TooLarge,
     Closed,
-    Io,
+    Io(std::io::Error),
 }
 
 /// Reads until the blank line that ends an HTTP/1.x head, bounded by
@@ -1122,7 +1128,7 @@ where
 {
     let mut chunk = [0u8; 1024];
     loop {
-        let read = stream.read(&mut chunk).await.map_err(|_| HeadError::Io)?;
+        let read = stream.read(&mut chunk).await.map_err(HeadError::Io)?;
         if read == 0 {
             return Err(HeadError::Closed);
         }
@@ -1156,7 +1162,7 @@ where
     body.extend_from_slice(initial);
     while body.len() < length {
         let mut chunk = [0u8; 1024];
-        let read = stream.read(&mut chunk).await.map_err(|_| HeadError::Io)?;
+        let read = stream.read(&mut chunk).await.map_err(HeadError::Io)?;
         if read == 0 {
             return Err(HeadError::Closed);
         }

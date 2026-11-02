@@ -186,6 +186,35 @@ impl AccessLog {
         Ok(AccessHandle { log, writer })
     }
 
+    /// Checks the configured destination without creating it (ADR-0020).
+    ///
+    /// Validation must never create a log file. When the file exists,
+    /// opening it in append mode proves it is reachable; when it does not,
+    /// the parent must exist and be a directory. Creation permission is
+    /// deliberately not inferred: a check running as one user cannot prove
+    /// the service user's permissions, and creating the file during
+    /// validation is exactly what ADR-0020 forbids.
+    pub fn probe(config: &AccessLogSettings) -> io::Result<()> {
+        let Some(path) = &config.path else {
+            return Ok(());
+        };
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."));
+        if !std::fs::metadata(parent)?.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{} is not a directory", parent.display()),
+            ));
+        }
+        match std::fs::OpenOptions::new().append(true).open(path) {
+            Ok(_) => Ok(()),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(err),
+        }
+    }
+
     /// Lines lost because the channel was full or the writer had stopped.
     #[must_use]
     pub fn dropped(&self) -> u64 {
@@ -567,6 +596,77 @@ mod tests {
         drop(record);
         assert_eq!(log.dropped(), 1);
         assert_eq!(metrics.access_log_dropped.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn probe_accepts_an_existing_file_without_touching_it() {
+        let path = std::env::temp_dir().join(format!(
+            "eqproxy-access-probe-existing-{}",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"keep").expect("write fixture");
+        AccessLog::probe(&AccessLogSettings {
+            path: Some(path.clone()),
+            format: AccessLogFormat::Json,
+        })
+        .expect("an existing file is usable");
+        assert_eq!(std::fs::read(&path).expect("read fixture"), b"keep");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn probe_accepts_a_missing_file_in_an_existing_directory_without_creating_it() {
+        let dir =
+            std::env::temp_dir().join(format!("eqproxy-access-probe-new-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create directory");
+        let path = dir.join("access.log");
+        AccessLog::probe(&AccessLogSettings {
+            path: Some(path.clone()),
+            format: AccessLogFormat::Json,
+        })
+        .expect("a creatable path in an existing directory is usable");
+        assert!(
+            !path.exists(),
+            "probe must not create the access log during validation"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn probe_rejects_a_missing_parent_without_creating_it() {
+        let dir = std::env::temp_dir().join(format!(
+            "eqproxy-access-probe-missing-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("logs").join("access.log");
+        let err = AccessLog::probe(&AccessLogSettings {
+            path: Some(path),
+            format: AccessLogFormat::Json,
+        })
+        .expect_err("a missing parent directory must fail the probe");
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert!(
+            !dir.join("logs").exists(),
+            "probe must not create the missing parent directory"
+        );
+    }
+
+    #[test]
+    fn probe_rejects_a_file_as_parent() {
+        let path = std::env::temp_dir().join(format!(
+            "eqproxy-access-probe-file-parent-{}",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"not a directory").expect("write fixture");
+        let err = AccessLog::probe(&AccessLogSettings {
+            path: Some(path.join("access.log")),
+            format: AccessLogFormat::Json,
+        })
+        .expect_err("a file cannot be a parent directory");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test]

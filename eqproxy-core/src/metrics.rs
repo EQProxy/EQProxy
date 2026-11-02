@@ -577,8 +577,6 @@ impl MetricsSnapshot {
     /// `connections_active` and the last swap duration are gauges.
     #[must_use]
     pub fn prometheus(&self) -> String {
-        use std::fmt::Write as _;
-
         let counters: &[(&str, u64)] = &[
             ("connections_accepted", self.connections_accepted),
             ("connections_rejected", self.connections_rejected),
@@ -660,27 +658,24 @@ impl MetricsSnapshot {
         ];
         let mut out = String::with_capacity(4096);
         for (name, value) in counters {
-            let _ = writeln!(out, "# TYPE eqproxy_{name}_total counter");
-            let _ = writeln!(out, "eqproxy_{name}_total {value}");
+            out.push_str(&format!("# TYPE eqproxy_{name}_total counter\n"));
+            out.push_str(&format!("eqproxy_{name}_total {value}\n"));
         }
-        let _ = writeln!(out, "# TYPE eqproxy_connections_active gauge");
-        let _ = writeln!(
-            out,
-            "eqproxy_connections_active {}",
+        out.push_str("# TYPE eqproxy_connections_active gauge\n");
+        out.push_str(&format!(
+            "eqproxy_connections_active {}\n",
             self.connections_active
-        );
-        let _ = writeln!(out, "# TYPE eqproxy_config_reload_last_swap_seconds gauge");
-        let _ = writeln!(
-            out,
-            "eqproxy_config_reload_last_swap_seconds {:.6}",
+        ));
+        out.push_str("# TYPE eqproxy_config_reload_last_swap_seconds gauge\n");
+        out.push_str(&format!(
+            "eqproxy_config_reload_last_swap_seconds {:.6}\n",
             self.config_reload_duration_us as f64 / 1_000_000.0
-        );
-        let _ = writeln!(out, "# TYPE eqproxy_build_info gauge");
-        let _ = writeln!(
-            out,
-            "eqproxy_build_info{{version=\"{}\"}} 1",
+        ));
+        out.push_str("# TYPE eqproxy_build_info gauge\n");
+        out.push_str(&format!(
+            "eqproxy_build_info{{version=\"{}\"}} 1\n",
             env!("CARGO_PKG_VERSION")
-        );
+        ));
         out
     }
 }
@@ -953,6 +948,29 @@ mod tests {
         assert!(shown.contains("discarded=1"), "display: {shown}");
         assert!(shown.contains("reloads=2"), "display: {shown}");
         assert!(shown.contains("reload_failures=1"), "display: {shown}");
+    }
+
+    #[test]
+    fn prometheus_exports_gauges_and_build_info() {
+        let metrics = Metrics::default();
+        metrics.connections_active.store(2, Ordering::Relaxed);
+        metrics
+            .config_reload_duration_us
+            .store(1_500_000, Ordering::Relaxed);
+        let text = metrics.snapshot().prometheus();
+        assert!(text.contains("eqproxy_connections_active 2"), "{text}");
+        assert!(
+            text.contains("eqproxy_config_reload_last_swap_seconds 1.500000"),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!(
+                "eqproxy_build_info{{version=\"{}\"}} 1",
+                env!("CARGO_PKG_VERSION")
+            )),
+            "{text}"
+        );
+        assert!(text.ends_with('\n'), "a scrape must end at a line boundary");
     }
 
     #[test]

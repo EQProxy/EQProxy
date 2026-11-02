@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -1028,9 +1029,98 @@ impl RuleConfig {
 
     /// Compile input for [`eqproxy_core::rules::Rule::compile`]; `index`
     /// positions the rule in its listener (default name `"rule-N"`).
-    #[must_use]
-    pub fn to_spec(&self, index: usize) -> eqproxy_core::rules::RuleSpec {
-        eqproxy_core::rules::RuleSpec {
+    ///
+    /// Fails when a condition has zero or several match kinds: those shapes
+    /// are rejected at the config gate with the same field-qualified error
+    /// the core compiler uses.
+    pub fn to_spec(
+        &self,
+        index: usize,
+    ) -> Result<eqproxy_core::rules::RuleSpec, eqproxy_core::rules::RuleError> {
+        use eqproxy_core::rules::RuleError;
+        let invalid = |field: String, cause: String, example: String| RuleError {
+            field: Some(field),
+            cause,
+            example,
+        };
+        let mut headers = Vec::with_capacity(self.headers.len());
+        for (i, header) in self.headers.iter().enumerate() {
+            let field = format!("headers[{i}]");
+            let spec = match (&header.exact, &header.regex, header.present) {
+                (Some(value), None, false) => eqproxy_core::rules::HeaderSpec::Exact {
+                    name: header.name.clone(),
+                    value: value.clone(),
+                },
+                (None, Some(pattern), false) => eqproxy_core::rules::HeaderSpec::Regex {
+                    name: header.name.clone(),
+                    pattern: pattern.clone(),
+                },
+                (None, None, true) => eqproxy_core::rules::HeaderSpec::Present {
+                    name: header.name.clone(),
+                },
+                _ => {
+                    return Err(invalid(
+                        field,
+                        "set exactly one of exact, regex or present = true".to_owned(),
+                        "headers = [{ name = \"x-tenant\", exact = \"acme\" }]".to_owned(),
+                    ));
+                }
+            };
+            headers.push(spec);
+        }
+        let mut cookies = Vec::with_capacity(self.cookies.len());
+        for (i, cookie) in self.cookies.iter().enumerate() {
+            let field = format!("cookies[{i}]");
+            let spec = match (&cookie.exact, &cookie.regex, cookie.present) {
+                (Some(value), None, false) => eqproxy_core::rules::CookieSpec::Exact {
+                    name: cookie.name.clone(),
+                    value: value.clone(),
+                },
+                (None, Some(pattern), false) => eqproxy_core::rules::CookieSpec::Regex {
+                    name: cookie.name.clone(),
+                    pattern: pattern.clone(),
+                },
+                (None, None, true) => eqproxy_core::rules::CookieSpec::Present {
+                    name: cookie.name.clone(),
+                },
+                _ => {
+                    return Err(invalid(
+                        field,
+                        "set exactly one of exact, regex or present = true".to_owned(),
+                        "cookies = [{ name = \"canary\", exact = \"always\" }]".to_owned(),
+                    ));
+                }
+            };
+            cookies.push(spec);
+        }
+        let map = match &self.map {
+            None => None,
+            Some(map) => {
+                let key = match (&map.key, &map.header) {
+                    (Some(raw), None) => eqproxy_core::maps::MapKey::parse(raw).map_err(|why| {
+                        invalid(
+                            "map.key".to_owned(),
+                            why,
+                            "map = { name = \"tenants\", key = \"host\" }".to_owned(),
+                        )
+                    })?,
+                    (None, Some(header)) => eqproxy_core::maps::MapKey::Header(header.clone()),
+                    _ => {
+                        return Err(invalid(
+                            "map.key".to_owned(),
+                            "set exactly one of key or header (the lookup key source)".to_owned(),
+                            "map = { name = \"tenants\", key = \"host\" } or map = { name = \"tenants\", header = \"x-tenant\" }".to_owned(),
+                        ));
+                    }
+                };
+                Some(eqproxy_core::rules::MapConditionSpec {
+                    name: map.name.clone(),
+                    key,
+                    equals: map.equals.clone(),
+                })
+            }
+        };
+        Ok(eqproxy_core::rules::RuleSpec {
             name: self
                 .name
                 .clone()
@@ -1042,37 +1132,11 @@ impl RuleConfig {
             path_prefix: self.path_prefix.clone(),
             path_regex: self.path_regex.clone(),
             methods: self.methods.clone(),
-            headers: self
-                .headers
-                .iter()
-                .map(|h| eqproxy_core::rules::HeaderSpec {
-                    name: h.name.clone(),
-                    exact: h.exact.clone(),
-                    regex: h.regex.clone(),
-                    present: h.present,
-                })
-                .collect(),
-            cookies: self
-                .cookies
-                .iter()
-                .map(|c| eqproxy_core::rules::CookieSpec {
-                    name: c.name.clone(),
-                    exact: c.exact.clone(),
-                    regex: c.regex.clone(),
-                    present: c.present,
-                })
-                .collect(),
+            headers,
+            cookies,
             ip: self.ip.clone(),
-            map: self
-                .map
-                .as_ref()
-                .map(|m| eqproxy_core::rules::MapConditionSpec {
-                    name: m.name.clone(),
-                    key: m.key.clone(),
-                    header: m.header.clone(),
-                    equals: m.equals.clone(),
-                }),
-        }
+            map,
+        })
     }
 }
 
@@ -1212,8 +1276,9 @@ pub struct LimitsConfig {
     /// Maximum **request** body in bytes; `0` = unlimited (default).
     /// A declared `Content-Length` over the bound is refused before the
     /// backend is dialed; a chunked body is refused as soon as it crosses.
-    #[serde(default)]
-    pub max_body_bytes: u64,
+    #[serde(default, deserialize_with = "zero_is_none")]
+    #[schemars(with = "u64", default = "u64::default")]
+    pub max_body_bytes: Option<NonZeroU64>,
     /// Buffer of each internal h2/h3/WebSocket stream pipe, in bytes.
     /// Absent = the protocol default (64 KiB; 16 KiB for h3), which is what
     /// the dataplane used before this knob existed. Present: 1024..=1048576.
@@ -1226,7 +1291,7 @@ impl Default for LimitsConfig {
         Self {
             max_head_bytes: default_max_head_bytes(),
             max_headers: default_max_headers(),
-            max_body_bytes: 0,
+            max_body_bytes: None,
             stream_buffer_bytes: None,
         }
     }
@@ -1238,6 +1303,17 @@ fn default_max_head_bytes() -> usize {
 
 fn default_max_headers() -> usize {
     100
+}
+
+/// Preserves the published TOML spelling: `max_body_bytes = 0` and an absent
+/// field both mean "unlimited", while a present positive value becomes a
+/// non-zero type the dataplane cannot confuse with the sentinel.
+fn zero_is_none<'de, D>(deserializer: D) -> Result<Option<NonZeroU64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = u64::deserialize(deserializer)?;
+    Ok(NonZeroU64::new(value))
 }
 
 /// WASM request filter attached to one listener (B-I5/B-E4, ADR-0031).
@@ -1536,5 +1612,24 @@ impl BackendConfig {
                 .collect(),
             (None, None) => Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn body_cap_keeps_the_published_zero_sentinel() {
+        let zero: LimitsConfig = toml::from_str("max_body_bytes = 0").expect("zero parses");
+        assert_eq!(zero.max_body_bytes, None);
+        let positive: LimitsConfig =
+            toml::from_str("max_body_bytes = 1048576").expect("positive parses");
+        assert_eq!(
+            positive.max_body_bytes.map(NonZeroU64::get),
+            Some(1_048_576)
+        );
+        let absent: LimitsConfig = toml::from_str("").expect("empty table parses");
+        assert_eq!(absent.max_body_bytes, None);
     }
 }

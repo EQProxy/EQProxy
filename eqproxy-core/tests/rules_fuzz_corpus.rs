@@ -197,22 +197,18 @@ fn random_spec(rng: &mut Rng) -> RuleSpec {
         spec.methods.push(random_string(rng));
     }
     for _ in 0..rng.below(3) {
-        let mut header = HeaderSpec {
-            name: random_string(rng),
-            exact: None,
-            regex: None,
-            present: false,
+        let name = random_string(rng);
+        let header = match rng.below(3) {
+            0 => HeaderSpec::Exact {
+                name,
+                value: random_string(rng),
+            },
+            1 => HeaderSpec::Regex {
+                name,
+                pattern: random_string(rng),
+            },
+            _ => HeaderSpec::Present { name },
         };
-        match rng.below(3) {
-            0 => header.exact = Some(random_string(rng)),
-            1 => header.regex = Some(random_string(rng)),
-            _ => header.present = true,
-        }
-        if rng.chance(6) {
-            // Corrupt into the "set exactly one kind" rejection.
-            header.present = true;
-            header.exact = Some(random_string(rng));
-        }
         spec.headers.push(header);
     }
     for _ in 0..rng.below(3) {
@@ -284,24 +280,15 @@ fn random_valid_spec(rng: &mut Rng) -> RuleSpec {
         }
         let name = (*name).to_owned();
         let header = match rng.below(3) {
-            0 => HeaderSpec {
+            0 => HeaderSpec::Exact {
                 name,
-                exact: Some("acme".to_owned()),
-                regex: None,
-                present: false,
+                value: "acme".to_owned(),
             },
-            1 => HeaderSpec {
+            1 => HeaderSpec::Regex {
                 name,
-                exact: None,
-                regex: Some(pick_key(rng, VALID_HEADER_REGEXES)),
-                present: false,
+                pattern: pick_key(rng, VALID_HEADER_REGEXES),
             },
-            _ => HeaderSpec {
-                name,
-                exact: None,
-                regex: None,
-                present: true,
-            },
+            _ => HeaderSpec::Present { name },
         };
         spec.headers.push(header);
     }
@@ -367,18 +354,19 @@ fn conforming_facts(rng: &mut Rng, spec: &RuleSpec) -> OwnedFacts {
         peer: "127.0.0.1".parse().expect("static peer is valid"),
     };
     for header in &spec.headers {
-        let value = if let Some(exact) = &header.exact {
-            exact.clone()
-        } else if let Some(regex) = &header.regex {
-            VALID_HEADER_REGEXES
-                .iter()
-                .find(|(v, _)| v == regex)
-                .map(|(_, s)| (*s).to_owned())
-                .unwrap_or_default()
-        } else {
-            "1".to_owned()
+        let (name, value) = match header {
+            HeaderSpec::Exact { name, value } => (name.clone(), value.clone()),
+            HeaderSpec::Regex { name, pattern } => (
+                name.clone(),
+                VALID_HEADER_REGEXES
+                    .iter()
+                    .find(|(v, _)| v == pattern)
+                    .map(|(_, s)| (*s).to_owned())
+                    .unwrap_or_default(),
+            ),
+            HeaderSpec::Present { name } => (name.clone(), "1".to_owned()),
         };
-        facts.headers.push((header.name.clone(), value));
+        facts.headers.push((name, value));
     }
     if let Some(block) = spec.ip.first() {
         let member = VALID_IP
@@ -477,24 +465,9 @@ fn known_specs() -> Vec<(RuleSpec, &'static str)> {
         (
             RuleSpec {
                 name: "bad-header-name".to_owned(),
-                headers: vec![HeaderSpec {
+                headers: vec![HeaderSpec::Exact {
                     name: "bad name".to_owned(),
-                    exact: Some("1".to_owned()),
-                    regex: None,
-                    present: false,
-                }],
-                ..RuleSpec::default()
-            },
-            "headers[0]",
-        ),
-        (
-            RuleSpec {
-                name: "three-kinds".to_owned(),
-                headers: vec![HeaderSpec {
-                    name: "x-a".to_owned(),
-                    exact: Some("1".to_owned()),
-                    regex: Some("2".to_owned()),
-                    present: true,
+                    value: "1".to_owned(),
                 }],
                 ..RuleSpec::default()
             },
@@ -649,9 +622,11 @@ fn host_verdict_is_invariant_under_case_and_port_suffix() {
 fn known_bad_specs_name_their_field() {
     for (spec, field) in known_specs() {
         let err = Rule::compile(&spec).expect_err("known-bad spec must be rejected");
+        let expected = (!field.is_empty()).then_some(field);
         assert_eq!(
-            err.field, field,
-            "wrong field for spec {spec:?}: {}",
+            err.field.as_deref(),
+            expected,
+            "wrong field for spec {spec:?}: {:?}",
             err.field
         );
     }

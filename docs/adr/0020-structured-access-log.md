@@ -46,6 +46,12 @@ path = "/var/log/eqproxy/access.log"   # absent = stdout
 - `path` is opened once at startup, in append mode. A failure to open it
   aborts startup: a configured sink that silently disappears is worse than
   not starting (same rule as the admin plane in ADR-0017).
+- Validation (`config validate` and `config apply`) probes the destination
+  without creating or writing it: an existing file is opened in append mode
+  and closed, and a missing file is accepted only when its parent directory
+  exists. The actual create/append happens in `run` at startup; a permission
+  check performed by a validation user cannot prove the service user's
+  permissions and is therefore documented as a limit, not claimed.
 - The destination and format are **fixed at startup**. `SIGHUP` and the admin
   API reload the configuration but never swap the sink: changing
   `[access_log]` needs a restart. A reload that edits it logs a warning and

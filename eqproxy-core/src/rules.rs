@@ -58,12 +58,59 @@ pub struct RequestFacts<'a> {
     pub maps: &'a MapRegistry,
 }
 
+/// Why a redirect/header template could not be rendered.
+///
+/// The config gate reports these before traffic exists; the dataplane keeps
+/// the same typed error for its defense-in-depth call sites.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenderError {
+    /// A redirect template was empty.
+    EmptyLocation,
+    /// A template contains a control character that could break framing.
+    ControlCharacters {
+        /// Which template was being validated (`location` or `value`).
+        field: &'static str,
+    },
+    /// A `$` starts a placeholder the template does not support.
+    UnknownPlaceholder {
+        /// Which template was being validated (`location` or `value`).
+        field: &'static str,
+        /// The offending text, bounded, for an actionable message.
+        shown: String,
+        /// The placeholders that do exist.
+        allowed: &'static str,
+    },
+}
+
+impl std::fmt::Display for RenderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyLocation => {
+                f.write_str("location is empty (example: location = \"https://$host$request_uri\")")
+            }
+            Self::ControlCharacters { field } => {
+                write!(f, "{field} contains control characters")
+            }
+            Self::UnknownPlaceholder {
+                field,
+                shown,
+                allowed,
+            } => write!(
+                f,
+                "unknown placeholder in {field}: {shown:?} (only {allowed} exist)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RenderError {}
+
 /// Compile-time problem in a rule, with the field it lives in (so the
 /// config gate can name `listener.web.rules[0].host_regex`, …).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuleError {
-    /// Rule-relative field path (`""` = the rule itself).
-    pub field: String,
+    /// Rule-relative field path; `None` means the rule itself.
+    pub field: Option<String>,
     /// Why it is invalid.
     pub cause: String,
     /// A concrete valid value (actionable errors, never a bare dump).
@@ -72,50 +119,93 @@ pub struct RuleError {
 
 impl std::fmt::Display for RuleError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.field, self.cause)
+        match &self.field {
+            Some(field) => write!(f, "{field}: {}", self.cause),
+            None => f.write_str(&self.cause),
+        }
     }
 }
 
 impl std::error::Error for RuleError {}
 
-/// Header condition as authored in the config (exactly one of `exact`,
-/// `regex` or `present`).
+/// Header condition as authored in the config: exactly one match kind, so
+/// the invalid "zero or several kinds" shape cannot be represented.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HeaderSpec {
-    /// Header name (case-insensitive).
-    pub name: String,
+pub enum HeaderSpec {
     /// Exact value match (byte-for-byte).
-    pub exact: Option<String>,
+    Exact {
+        /// Header name (case-insensitive).
+        name: String,
+        /// Value to compare byte-for-byte.
+        value: String,
+    },
     /// Unanchored regex over the value.
-    pub regex: Option<String>,
-    /// `true` = presence check (value irrelevant).
-    pub present: bool,
+    Regex {
+        /// Header name (case-insensitive).
+        name: String,
+        /// Regex pattern.
+        pattern: String,
+    },
+    /// Presence check (value irrelevant).
+    Present {
+        /// Header name (case-insensitive).
+        name: String,
+    },
 }
 
-/// Cookie condition as authored in the config (B-I11 canary-by-cookie;
-/// exactly one of `exact`, `regex` or `present`, like [`HeaderSpec`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CookieSpec {
-    /// Cookie name (case-insensitive; RFC 6265 pair parsing).
-    pub name: String,
-    /// Exact value match (byte-for-byte).
-    pub exact: Option<String>,
-    /// Unanchored regex over the value.
-    pub regex: Option<String>,
-    /// `true` = presence check (any value, including empty).
-    pub present: bool,
+impl HeaderSpec {
+    /// Header name, regardless of the match kind.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Exact { name, .. } | Self::Regex { name, .. } | Self::Present { name } => name,
+        }
+    }
 }
 
-/// Map-backed condition as authored in the config (C10; exactly one of
-/// `key` or `header` selects the lookup key).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// Cookie condition as authored in the config (B-I11 canary-by-cookie):
+/// exactly one match kind, like [`HeaderSpec`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CookieSpec {
+    /// Exact value match (byte-for-byte).
+    Exact {
+        /// Cookie name (case-insensitive; RFC 6265 pair parsing).
+        name: String,
+        /// Value to compare byte-for-byte.
+        value: String,
+    },
+    /// Unanchored regex over the value.
+    Regex {
+        /// Cookie name (case-insensitive).
+        name: String,
+        /// Regex pattern.
+        pattern: String,
+    },
+    /// Presence check (any value, including empty).
+    Present {
+        /// Cookie name (case-insensitive).
+        name: String,
+    },
+}
+
+impl CookieSpec {
+    /// Cookie name, regardless of the match kind.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Exact { name, .. } | Self::Regex { name, .. } | Self::Present { name } => name,
+        }
+    }
+}
+
+/// Map-backed condition as authored in the config (C10): the lookup key is
+/// one typed selector, never a pair of optional fields that can disagree.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MapConditionSpec {
     /// Name of the `[maps.*]` table consulted.
     pub name: String,
-    /// Key source: `"ip"`, `"host"`, `"path"` or `"method"`.
-    pub key: Option<String>,
-    /// Key source: first value of this request header.
-    pub header: Option<String>,
+    /// Key source.
+    pub key: MapKey,
     /// Required mapped value (absent = presence match).
     pub equals: Option<String>,
 }
@@ -200,7 +290,7 @@ fn is_tchar(b: u8) -> bool {
 
 fn err(field: &str, cause: impl Into<String>, example: impl Into<String>) -> RuleError {
     RuleError {
-        field: field.to_owned(),
+        field: (!field.is_empty()).then(|| field.to_owned()),
         cause: cause.into(),
         example: example.into(),
     }
@@ -291,69 +381,46 @@ impl Rule {
         let mut headers = Vec::with_capacity(spec.headers.len());
         for (i, header) in spec.headers.iter().enumerate() {
             let field = format!("headers[{i}]");
-            if header.name.is_empty() || !header.name.bytes().all(is_tchar) {
+            let name = header.name();
+            if name.is_empty() || !name.bytes().all(is_tchar) {
                 return Err(err(
                     &field,
-                    format!("\"{}\" is not a valid header name", header.name),
+                    format!("\"{name}\" is not a valid header name"),
                     "headers = [{ name = \"x-tenant\", exact = \"acme\" }]",
                 ));
             }
-            let kinds = u8::from(header.exact.is_some())
-                + u8::from(header.regex.is_some())
-                + u8::from(header.present);
-            if kinds != 1 {
-                return Err(err(
-                    &field,
-                    "set exactly one of exact, regex or present = true",
-                    "headers = [{ name = \"x-tenant\", exact = \"acme\" }]",
-                ));
-            }
-            let value = if header.present {
-                ValueMatch::Present
-            } else if let Some(exact) = &header.exact {
-                ValueMatch::Exact(exact.clone())
-            } else {
-                let pattern = header.regex.as_deref().unwrap_or_default();
-                ValueMatch::Regex(
+            let value = match header {
+                HeaderSpec::Present { .. } => ValueMatch::Present,
+                HeaderSpec::Exact { value, .. } => ValueMatch::Exact(value.clone()),
+                HeaderSpec::Regex { pattern, .. } => ValueMatch::Regex(
                     RegexMatcher::parse(pattern)
                         .map_err(|why| err(&format!("{field}.regex"), why, "regex = \"^acme-\""))?,
-                )
+                ),
             };
-            headers.push((header.name.to_ascii_lowercase(), value));
+            headers.push((name.to_ascii_lowercase(), value));
         }
 
         let mut cookies = Vec::with_capacity(spec.cookies.len());
         for (i, cookie) in spec.cookies.iter().enumerate() {
             let field = format!("cookies[{i}]");
-            if cookie.name.is_empty() || !cookie.name.bytes().all(is_tchar) {
+            let name = cookie.name();
+            if name.is_empty() || !name.bytes().all(is_tchar) {
                 return Err(err(
                     &field,
-                    format!("\"{}\" is not a valid cookie name", cookie.name),
+                    format!("\"{name}\" is not a valid cookie name"),
                     "cookies = [{ name = \"canary\", exact = \"always\" }]",
                 ));
             }
-            let kinds = u8::from(cookie.exact.is_some())
-                + u8::from(cookie.regex.is_some())
-                + u8::from(cookie.present);
-            if kinds != 1 {
-                return Err(err(
-                    &field,
-                    "set exactly one of exact, regex or present = true",
-                    "cookies = [{ name = \"canary\", exact = \"always\" }]",
-                ));
-            }
-            let value =
-                if cookie.present {
-                    ValueMatch::Present
-                } else if let Some(exact) = &cookie.exact {
-                    ValueMatch::Exact(exact.clone())
-                } else {
-                    let pattern = cookie.regex.as_deref().unwrap_or_default();
+            let value = match cookie {
+                CookieSpec::Present { .. } => ValueMatch::Present,
+                CookieSpec::Exact { value, .. } => ValueMatch::Exact(value.clone()),
+                CookieSpec::Regex { pattern, .. } => {
                     ValueMatch::Regex(RegexMatcher::parse(pattern).map_err(|why| {
                         err(&format!("{field}.regex"), why, "regex = \"^v[0-9]+\"")
                     })?)
-                };
-            cookies.push((cookie.name.to_ascii_lowercase(), value));
+                }
+            };
+            cookies.push((name.to_ascii_lowercase(), value));
         }
 
         let ip = if spec.ip.is_empty() {
@@ -365,46 +432,46 @@ impl Rule {
             )
         };
 
-        let map = spec.map.as_ref().map(|map| -> Result<MapMatch, RuleError> {
-            if map.name.is_empty() {
-                return Err(err(
-                    "map.name",
-                    "the map name is empty",
-                    "map = { name = \"tenants\", key = \"host\", equals = \"vip\" }",
-                ));
-            }
-            let key = match (&map.key, &map.header) {
-                (Some(raw), None) => MapKey::parse(raw).map_err(|why| err("map.key", why, "map = { name = \"tenants\", key = \"host\" }"))?,
-                (None, Some(name)) => {
-                    if name.is_empty() || !name.bytes().all(is_tchar) {
-                        return Err(err(
-                            "map.header",
-                            format!("\"{name}\" is not a valid header name"),
-                            "map = { name = \"tenants\", header = \"x-tenant\" }",
-                        ));
-                    }
-                    MapKey::Header(name.to_ascii_lowercase())
-                }
-                _ => {
+        let map = spec
+            .map
+            .as_ref()
+            .map(|map| -> Result<MapMatch, RuleError> {
+                if map.name.is_empty() {
                     return Err(err(
-                        "map.key",
-                        "set exactly one of key or header (the lookup key source)",
-                        "map = { name = \"tenants\", key = \"host\" } or map = { name = \"tenants\", header = \"x-tenant\" }",
+                        "map.name",
+                        "the map name is empty",
+                        "map = { name = \"tenants\", key = \"host\", equals = \"vip\" }",
                     ));
                 }
-            };
-            if let Some(equals) = &map.equals {
-                crate::maps::validate_value(equals).map_err(|why| {
-                    err("map.equals", why, "map = { name = \"tenants\", key = \"host\", equals = \"vip\" }")
-                })?;
-            }
-            Ok(MapMatch {
-                name: map.name.clone(),
-                key,
-                equals: map.equals.clone(),
+                let key = match &map.key {
+                    MapKey::Header(name) => {
+                        if name.is_empty() || !name.bytes().all(is_tchar) {
+                            return Err(err(
+                                "map.key",
+                                format!("\"{name}\" is not a valid header name"),
+                                "map = { name = \"tenants\", header = \"x-tenant\" }",
+                            ));
+                        }
+                        MapKey::Header(name.to_ascii_lowercase())
+                    }
+                    other => other.clone(),
+                };
+                if let Some(equals) = &map.equals {
+                    crate::maps::validate_value(equals).map_err(|why| {
+                        err(
+                            "map.equals",
+                            why,
+                            "map = { name = \"tenants\", key = \"host\", equals = \"vip\" }",
+                        )
+                    })?;
+                }
+                Ok(MapMatch {
+                    name: map.name.clone(),
+                    key,
+                    equals: map.equals.clone(),
+                })
             })
-        })
-        .transpose()?;
+            .transpose()?;
 
         Ok(Self {
             name: spec.name.clone(),
@@ -419,9 +486,61 @@ impl Rule {
     }
 
     /// True when every condition holds.
+    ///
+    /// This is the hot path: it must not format a "why not" message (that
+    /// belongs to [`Self::explain`]), and exact/prefix host checks compare
+    /// borrowed slices instead of allocating a lowercased `String` per rule.
     #[must_use]
     pub fn matches(&self, facts: &RequestFacts<'_>) -> bool {
-        self.explain(facts).is_ok()
+        if let Some(host) = &self.host
+            && !host_matches(host, facts.host)
+        {
+            return false;
+        }
+        if let Some(path) = &self.path
+            && !path_matches(path, facts.path)
+        {
+            return false;
+        }
+        if !self.methods.is_empty() && !self.methods.iter().any(|m| m == facts.method) {
+            return false;
+        }
+        for (name, want) in &self.headers {
+            let got = facts
+                .headers
+                .iter()
+                .find(|(n, _)| n.eq_ignore_ascii_case(name))
+                .map(|(_, v)| v.as_str());
+            if !value_matches(want, got) {
+                return false;
+            }
+        }
+        for (name, want) in &self.cookies {
+            if !value_matches(want, cookie_value(facts.headers, name)) {
+                return false;
+            }
+        }
+        if let Some(allowlist) = &self.ip
+            && !allowlist.contains(facts.peer)
+        {
+            return false;
+        }
+        if let Some(map) = &self.map {
+            let key = map.key.select(facts);
+            let Some(hot) = facts.maps.get(&map.name) else {
+                return false;
+            };
+            let data = hot.get();
+            let Some(value) = data.lookup(&key) else {
+                return false;
+            };
+            if let Some(want) = &map.equals
+                && value != want
+            {
+                return false;
+            }
+        }
+        true
     }
 
     /// `Ok(())` when the rule matches; `Err(reason)` names the first
@@ -585,16 +704,58 @@ pub fn cookie_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&
     None
 }
 
+/// Borrowed host with any `:port` suffix removed (bracket-aware for IPv6
+/// literals, which lose the brackets too). The malformed shapes are part of
+/// the frozen Q8 semantics: `a:b:c` -> `a`, `example.com:abc` ->
+/// `example.com`, `::1` -> `""`, `[::1]:8080` -> `::1`.
+fn host_without_port(host: &str) -> &str {
+    if let Some(rest) = host.strip_prefix('[') {
+        rest.split(']').next().unwrap_or(rest)
+    } else {
+        host.split(':').next().unwrap_or(host)
+    }
+}
+
 /// Lowercased host with any `:port` suffix removed (bracket-aware for
 /// IPv6 literals, which lose the brackets too).
 #[must_use]
 pub fn host_key(host: &str) -> String {
-    let without_port = if let Some(rest) = host.strip_prefix('[') {
-        rest.split(']').next().unwrap_or(rest)
-    } else {
-        host.split(':').next().unwrap_or(host)
-    };
-    without_port.to_ascii_lowercase()
+    host_without_port(host).to_ascii_lowercase()
+}
+
+fn host_matches(want: &HostMatch, host: &str) -> bool {
+    let got = host_without_port(host);
+    match want {
+        HostMatch::Exact(want) => got.eq_ignore_ascii_case(want),
+        HostMatch::Prefix(want) => starts_with_ignore_ascii_case(got, want),
+        // Regex semantics are defined over the lowercased host (Q8); this is
+        // the only host shape that still needs the allocation.
+        HostMatch::Regex(regex) => regex.is_match(&got.to_ascii_lowercase()),
+    }
+}
+
+fn path_matches(want: &PathMatch, path: &str) -> bool {
+    match want {
+        PathMatch::Exact(want) => path == want,
+        PathMatch::Prefix(want) => path.starts_with(want.as_str()),
+        PathMatch::Regex(regex) => regex.is_match(path),
+    }
+}
+
+fn value_matches(want: &ValueMatch, got: Option<&str>) -> bool {
+    match (want, got) {
+        (ValueMatch::Present, Some(_)) => true,
+        (ValueMatch::Exact(want), Some(got)) => got == want,
+        (ValueMatch::Regex(regex), Some(got)) => regex.is_match(got),
+        _ => false,
+    }
+}
+
+/// ASCII-only prefix comparison with the same result as lowercasing both
+/// sides first (the normalization used by the compiled host patterns).
+fn starts_with_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    haystack.len() >= needle.len()
+        && haystack.as_bytes()[..needle.len()].eq_ignore_ascii_case(needle.as_bytes())
 }
 
 /// The request target path: everything before the first `?`.
@@ -623,14 +784,12 @@ pub fn path_of(target: &str) -> &str {
 
 /// Validates a redirect `location` template (placeholders only, no
 /// control characters). Called by the config gate, once per rule.
-pub fn validate_location(template: &str) -> Result<(), String> {
+pub fn validate_location(template: &str) -> Result<(), RenderError> {
     if template.is_empty() {
-        return Err(
-            "location is empty (example: location = \"https://$host$request_uri\")".to_owned(),
-        );
+        return Err(RenderError::EmptyLocation);
     }
     if template.bytes().any(|b| b < 0x20 || b == 0x7f) {
-        return Err("location contains control characters".to_owned());
+        return Err(RenderError::ControlCharacters { field: "location" });
     }
     let mut rest = template;
     while let Some(pos) = rest.find('$') {
@@ -643,9 +802,11 @@ pub fn validate_location(template: &str) -> Result<(), String> {
             rest = &rest["$uri".len()..];
         } else {
             let shown: String = rest.chars().take(12).collect();
-            return Err(format!(
-                "unknown placeholder in location: {shown:?} (only $host, $uri and $request_uri exist)"
-            ));
+            return Err(RenderError::UnknownPlaceholder {
+                field: "location",
+                shown,
+                allowed: "$host, $uri and $request_uri",
+            });
         }
     }
     Ok(())
@@ -655,7 +816,7 @@ pub fn validate_location(template: &str) -> Result<(), String> {
 /// is the Host header as received (may carry `:port`) and `target` the
 /// full request target as received (path + query). Errors only on an
 /// unvalidated template (defense in depth at runtime).
-pub fn render_location(template: &str, host: &str, target: &str) -> Result<String, String> {
+pub fn render_location(template: &str, host: &str, target: &str) -> Result<String, RenderError> {
     validate_location(template)?;
     let mut out = String::with_capacity(template.len() + 16);
     let mut rest = template;
@@ -682,9 +843,9 @@ pub fn render_location(template: &str, host: &str, target: &str) -> Result<Strin
 /// (CR/LF in a value would smuggle headers). Every `$` must start one
 /// of those placeholders — a literal `$` has no escape, write the value
 /// without one. Called by the config gate, once per header action.
-pub fn validate_header_value(template: &str) -> Result<(), String> {
+pub fn validate_header_value(template: &str) -> Result<(), RenderError> {
     if template.bytes().any(|b| b < 0x20 || b == 0x7f) {
-        return Err("value contains control characters".to_owned());
+        return Err(RenderError::ControlCharacters { field: "value" });
     }
     for after in template.split('$').skip(1) {
         if !["remote_addr", "scheme", "host"]
@@ -692,9 +853,11 @@ pub fn validate_header_value(template: &str) -> Result<(), String> {
             .any(|placeholder| after.starts_with(placeholder))
         {
             let shown: String = after.chars().take(12).collect();
-            return Err(format!(
-                "unknown placeholder in value: {shown:?} (only $remote_addr, $host and $scheme exist)"
-            ));
+            return Err(RenderError::UnknownPlaceholder {
+                field: "value",
+                shown,
+                allowed: "$remote_addr, $host and $scheme",
+            });
         }
     }
     Ok(())
@@ -710,7 +873,7 @@ pub fn render_header_value(
     remote_addr: &str,
     host: &str,
     scheme: &str,
-) -> Result<String, String> {
+) -> Result<String, RenderError> {
     validate_header_value(template)?;
     let values = [
         ("remote_addr", remote_addr),
@@ -726,7 +889,11 @@ pub fn render_header_value(
             .find_map(|(placeholder, value)| {
                 after.strip_prefix(placeholder).map(|tail| (value, tail))
             })
-            .ok_or_else(|| "unknown placeholder in value".to_owned())?;
+            .ok_or_else(|| RenderError::UnknownPlaceholder {
+                field: "value",
+                shown: after.chars().take(12).collect(),
+                allowed: "$remote_addr, $host and $scheme",
+            })?;
         out.push_str(value);
         rest = tail;
     }
@@ -775,6 +942,37 @@ mod tests {
         assert!(validate_header_value("100$ ok").is_err());
     }
 
+    #[test]
+    fn render_errors_are_typed_and_actionable() {
+        assert_eq!(
+            validate_location("$nope"),
+            Err(RenderError::UnknownPlaceholder {
+                field: "location",
+                shown: "$nope".to_owned(),
+                allowed: "$host, $uri and $request_uri",
+            })
+        );
+        assert_eq!(
+            validate_header_value("a\r\n"),
+            Err(RenderError::ControlCharacters { field: "value" })
+        );
+        assert_eq!(validate_location(""), Err(RenderError::EmptyLocation));
+        assert!(
+            RenderError::EmptyLocation
+                .to_string()
+                .contains("location is empty")
+        );
+        assert!(
+            RenderError::UnknownPlaceholder {
+                field: "value",
+                shown: "$bad".to_owned(),
+                allowed: "$remote_addr, $host and $scheme",
+            }
+            .to_string()
+            .contains("unknown placeholder in value")
+        );
+    }
+
     fn facts<'a>(method: &'a str, host: &'a str, path: &'a str) -> RequestFacts<'a> {
         RequestFacts {
             method,
@@ -788,6 +986,23 @@ mod tests {
 
     fn compile(spec: RuleSpec) -> Rule {
         Rule::compile(&spec).expect("rule compiles")
+    }
+
+    #[test]
+    fn malformed_hosts_keep_the_existing_host_key_semantics() {
+        let exact = |host: &str| {
+            compile(RuleSpec {
+                name: "h".to_owned(),
+                host: Some(host.to_owned()),
+                ..RuleSpec::default()
+            })
+        };
+        assert!(exact("a").matches(&facts("GET", "a:b:c", "/")));
+        assert!(exact("example.com").matches(&facts("GET", "example.com:abc", "/")));
+        assert!(exact("").matches(&facts("GET", "::1", "/")));
+        assert!(exact("::1").matches(&facts("GET", "[::1]:8080", "/")));
+        assert!(exact("::1").matches(&facts("GET", "[::1", "/")));
+        assert!(!exact("::1").matches(&facts("GET", "[::2]:8080", "/")));
     }
 
     #[test]
@@ -858,23 +1073,16 @@ mod tests {
             name: "all".to_owned(),
             methods: vec!["GET".to_owned(), "HEAD".to_owned()],
             headers: vec![
-                HeaderSpec {
+                HeaderSpec::Exact {
                     name: "X-Tenant".to_owned(),
-                    exact: Some("acme".to_owned()),
-                    regex: None,
-                    present: false,
+                    value: "acme".to_owned(),
                 },
-                HeaderSpec {
+                HeaderSpec::Present {
                     name: "x-beta".to_owned(),
-                    exact: None,
-                    regex: None,
-                    present: true,
                 },
-                HeaderSpec {
+                HeaderSpec::Regex {
                     name: "x-trace".to_owned(),
-                    exact: None,
-                    regex: Some("^req-".to_owned()),
-                    present: false,
+                    pattern: "^req-".to_owned(),
                 },
             ],
             ip: vec!["10.0.0.0/8".to_owned()],
@@ -941,10 +1149,10 @@ mod tests {
             ..RuleSpec::default()
         })
         .expect_err("two host conditions");
-        assert_eq!(err.field, "host");
+        assert_eq!(err.field.as_deref(), Some("host"));
 
         let err = Rule::compile(&RuleSpec::default()).expect_err("no conditions");
-        assert_eq!(err.field, "");
+        assert_eq!(err.field, None);
         assert!(err.cause.contains("at least one match condition"));
 
         let err = Rule::compile(&RuleSpec {
@@ -953,7 +1161,7 @@ mod tests {
             ..RuleSpec::default()
         })
         .expect_err("bad regex");
-        assert_eq!(err.field, "host_regex");
+        assert_eq!(err.field.as_deref(), Some("host_regex"));
 
         let err = Rule::compile(&RuleSpec {
             name: "x".to_owned(),
@@ -961,20 +1169,18 @@ mod tests {
             ..RuleSpec::default()
         })
         .expect_err("bad cidr");
-        assert_eq!(err.field, "ip");
+        assert_eq!(err.field.as_deref(), Some("ip"));
 
         let err = Rule::compile(&RuleSpec {
             name: "x".to_owned(),
-            headers: vec![HeaderSpec {
+            headers: vec![HeaderSpec::Regex {
                 name: "x-a".to_owned(),
-                exact: Some("1".to_owned()),
-                regex: Some("2".to_owned()),
-                present: true,
+                pattern: "(".to_owned(),
             }],
             ..RuleSpec::default()
         })
-        .expect_err("three header kinds");
-        assert_eq!(err.field, "headers[0]");
+        .expect_err("invalid header regex");
+        assert_eq!(err.field.as_deref(), Some("headers[0].regex"));
     }
 
     /// Property: `matches` and `explain` never disagree, whatever the
@@ -1060,17 +1266,12 @@ mod tests {
         let rule = compile(RuleSpec {
             name: "canary".to_owned(),
             cookies: vec![
-                CookieSpec {
+                CookieSpec::Exact {
                     name: "Canary".to_owned(),
-                    exact: Some("always".to_owned()),
-                    regex: None,
-                    present: false,
+                    value: "always".to_owned(),
                 },
-                CookieSpec {
+                CookieSpec::Present {
                     name: "beta".to_owned(),
-                    exact: None,
-                    regex: None,
-                    present: true,
                 },
             ],
             ..RuleSpec::default()
@@ -1097,32 +1298,44 @@ mod tests {
     }
 
     #[test]
-    fn cookie_compile_rejects_bad_names_and_three_kinds() {
+    fn spec_names_survive_every_match_kind() {
+        assert_eq!(
+            HeaderSpec::Exact {
+                name: "X-A".to_owned(),
+                value: "1".to_owned()
+            }
+            .name(),
+            "X-A"
+        );
+        assert_eq!(
+            HeaderSpec::Present {
+                name: "X-B".to_owned()
+            }
+            .name(),
+            "X-B"
+        );
+        assert_eq!(
+            CookieSpec::Regex {
+                name: "canary".to_owned(),
+                pattern: "^v".to_owned()
+            }
+            .name(),
+            "canary"
+        );
+    }
+
+    #[test]
+    fn cookie_compile_rejects_bad_names() {
         let err = Rule::compile(&RuleSpec {
             name: "x".to_owned(),
-            cookies: vec![CookieSpec {
+            cookies: vec![CookieSpec::Exact {
                 name: "bad name".to_owned(),
-                exact: Some("1".to_owned()),
-                regex: None,
-                present: false,
+                value: "1".to_owned(),
             }],
             ..RuleSpec::default()
         })
         .expect_err("name with space");
-        assert_eq!(err.field, "cookies[0]");
-
-        let err = Rule::compile(&RuleSpec {
-            name: "x".to_owned(),
-            cookies: vec![CookieSpec {
-                name: "ok".to_owned(),
-                exact: Some("1".to_owned()),
-                regex: Some("2".to_owned()),
-                present: true,
-            }],
-            ..RuleSpec::default()
-        })
-        .expect_err("three kinds");
-        assert_eq!(err.field, "cookies[0]");
+        assert_eq!(err.field.as_deref(), Some("cookies[0]"));
     }
 
     fn registry_with(name: &str, text: &str) -> MapRegistry {
@@ -1146,8 +1359,7 @@ mod tests {
             name: "vip".to_owned(),
             map: Some(MapConditionSpec {
                 name: "tenants".to_owned(),
-                key: Some("host".to_owned()),
-                header: None,
+                key: MapKey::Host,
                 equals: Some("vip".to_owned()),
             }),
             ..RuleSpec::default()
@@ -1183,8 +1395,7 @@ mod tests {
             name: "known".to_owned(),
             map: Some(MapConditionSpec {
                 name: "tenants".to_owned(),
-                key: None,
-                header: Some("X-Tenant".to_owned()),
+                key: MapKey::Header("X-Tenant".to_owned()),
                 equals: None,
             }),
             ..RuleSpec::default()
@@ -1204,45 +1415,30 @@ mod tests {
     }
 
     #[test]
-    fn map_compile_rejects_ambiguous_keys_and_unknown_sources() {
+    fn map_compile_rejects_bad_header_names_and_empty_map_names() {
         let err = Rule::compile(&RuleSpec {
             name: "x".to_owned(),
             map: Some(MapConditionSpec {
                 name: "m".to_owned(),
-                key: Some("host".to_owned()),
-                header: Some("x-a".to_owned()),
+                key: MapKey::Header("bad name".to_owned()),
                 equals: None,
             }),
             ..RuleSpec::default()
         })
-        .expect_err("key and header");
-        assert_eq!(err.field, "map.key");
-
-        let err = Rule::compile(&RuleSpec {
-            name: "x".to_owned(),
-            map: Some(MapConditionSpec {
-                name: "m".to_owned(),
-                key: Some("uri".to_owned()),
-                header: None,
-                equals: None,
-            }),
-            ..RuleSpec::default()
-        })
-        .expect_err("unknown key source");
-        assert_eq!(err.field, "map.key");
+        .expect_err("header name with space");
+        assert_eq!(err.field.as_deref(), Some("map.key"));
 
         let err = Rule::compile(&RuleSpec {
             name: "x".to_owned(),
             map: Some(MapConditionSpec {
                 name: "".to_owned(),
-                key: Some("ip".to_owned()),
-                header: None,
+                key: MapKey::Ip,
                 equals: None,
             }),
             ..RuleSpec::default()
         })
         .expect_err("empty map name");
-        assert_eq!(err.field, "map.name");
+        assert_eq!(err.field.as_deref(), Some("map.name"));
     }
 
     /// Property (B-I11/C10): with cookies and a map condition in play,
@@ -1252,16 +1448,13 @@ mod tests {
         let registry = registry_with("t", "api.example.com on\n");
         let rule = compile(RuleSpec {
             name: "prop".to_owned(),
-            cookies: vec![CookieSpec {
+            cookies: vec![CookieSpec::Regex {
                 name: "canary".to_owned(),
-                exact: None,
-                regex: Some("^v[0-9]+$".to_owned()),
-                present: false,
+                pattern: "^v[0-9]+$".to_owned(),
             }],
             map: Some(MapConditionSpec {
                 name: "t".to_owned(),
-                key: Some("host".to_owned()),
-                header: None,
+                key: MapKey::Host,
                 equals: Some("on".to_owned()),
             }),
             ..RuleSpec::default()

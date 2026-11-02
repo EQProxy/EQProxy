@@ -10,6 +10,7 @@
 //! succeeds, one over fails.
 
 use std::net::SocketAddr;
+use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -35,7 +36,7 @@ fn limits(
     ResolvedLimits {
         max_head_bytes,
         max_headers,
-        max_body_bytes,
+        max_body_bytes: NonZeroU64::new(max_body_bytes),
         stream_buffer_bytes,
     }
 }

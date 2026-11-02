@@ -652,11 +652,8 @@ async fn rules_route_by_path_host_method_header_and_ip() {
             RuleSpec {
                 name: "trusted-ip".to_owned(),
                 ip: vec!["127.0.0.0/8".to_owned()],
-                headers: vec![HeaderSpec {
+                headers: vec![HeaderSpec::Present {
                     name: "x-trace".to_owned(),
-                    exact: None,
-                    regex: None,
-                    present: true,
                 }],
                 ..RuleSpec::default()
             },
@@ -1446,21 +1443,17 @@ async fn canary_by_cookie_and_header_overrides_route_to_the_canary() {
     let routes = vec![
         to_canary(RuleSpec {
             name: "by-header".to_owned(),
-            headers: vec![HeaderSpec {
+            headers: vec![HeaderSpec::Exact {
                 name: "x-canary".to_owned(),
-                exact: Some("always".to_owned()),
-                regex: None,
-                present: false,
+                value: "always".to_owned(),
             }],
             ..RuleSpec::default()
         }),
         to_canary(RuleSpec {
             name: "by-cookie".to_owned(),
-            cookies: vec![eqproxy_core::rules::CookieSpec {
+            cookies: vec![eqproxy_core::rules::CookieSpec::Exact {
                 name: "canary".to_owned(),
-                exact: Some("always".to_owned()),
-                regex: None,
-                present: false,
+                value: "always".to_owned(),
             }],
             ..RuleSpec::default()
         }),
@@ -1532,8 +1525,7 @@ async fn map_condition_consults_hot_data_and_swaps_in_hot() {
             name: "vip-gate".to_owned(),
             map: Some(MapConditionSpec {
                 name: "gate".to_owned(),
-                key: None,
-                header: Some("x-ticket".to_owned()),
+                key: eqproxy_core::maps::MapKey::Header("x-ticket".to_owned()),
                 equals: Some("1".to_owned()),
             }),
             ..RuleSpec::default()

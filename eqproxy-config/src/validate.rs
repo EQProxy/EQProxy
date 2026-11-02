@@ -12,11 +12,12 @@ use eqproxy_core::rules::{Rule, validate_header_value, validate_location};
 use crate::error::{ConfigError, Location};
 use crate::find_line;
 use crate::schema::{
-    Config, ErrorPageFormat, ForwardedHeaders, HealthCheckKind, ListenerMode, MAX_ADMIN_ACL_UIDS,
-    MAX_AUTH_USERS, MAX_ERROR_PAGE_BYTES, MAX_ERROR_PAGES, MAX_LOCAL_RESPONSE_BYTES,
-    MAX_MAP_RELOAD_INTERVAL, MAX_METRICS_SERIES, MAX_QUEUE, MAX_RETRIES, MAX_RULES, MAX_SECTIONS,
-    MAX_SERVER_MAXCONN, MAX_SERVER_PRIORITY, MAX_SERVER_WEIGHT, MAX_SPLIT_TARGETS,
-    MIN_ADMIN_TOKEN_BYTES, MIN_MAP_RELOAD_INTERVAL, SCHEMA_VERSION, TlsVersion,
+    Config, ErrorPageFormat, ForwardedHeaders, HealthCheckKind, ListenerConfig, ListenerMode,
+    MAX_ADMIN_ACL_UIDS, MAX_AUTH_USERS, MAX_ERROR_PAGE_BYTES, MAX_ERROR_PAGES,
+    MAX_LOCAL_RESPONSE_BYTES, MAX_MAP_RELOAD_INTERVAL, MAX_METRICS_SERIES, MAX_QUEUE, MAX_RETRIES,
+    MAX_RULES, MAX_SECTIONS, MAX_SERVER_MAXCONN, MAX_SERVER_PRIORITY, MAX_SERVER_WEIGHT,
+    MAX_SPLIT_TARGETS, MIN_ADMIN_TOKEN_BYTES, MIN_MAP_RELOAD_INTERVAL, RuleConfig, SCHEMA_VERSION,
+    TlsVersion,
 };
 
 /// Result of validating a full configuration.
@@ -38,7 +39,17 @@ impl CheckResult {
 /// Validates `config` (parsed) against the `source` text to locate lines.
 pub fn check(config: &Config, source: &str, file: &Path) -> CheckResult {
     let mut result = CheckResult::default();
+    check_globals(config, source, file, &mut result);
+    check_admin(config, source, file, &mut result);
+    check_access_log(config, source, file, &mut result);
+    check_maps(config, source, file, &mut result);
+    check_listeners(config, source, file, &mut result);
+    check_backends(config, source, file, &mut result);
+    check_listener_tls(config, source, file, &mut result);
+    result
+}
 
+fn check_globals(config: &Config, source: &str, file: &Path, result: &mut CheckResult) {
     let sections = config.listener.len() + config.backend.len();
     if sections > MAX_SECTIONS {
         result.errors.push(ConfigError {
@@ -109,7 +120,18 @@ pub fn check(config: &Config, source: &str, file: &Path) -> CheckResult {
             "[metrics]",
         );
     }
+}
 
+fn check_admin(config: &Config, source: &str, file: &Path, result: &mut CheckResult) {
+    let mut err = |field: String, cause: String, example: String, needle: &str| {
+        result.errors.push(ConfigError {
+            file: file.to_path_buf(),
+            location: find_line(source, needle).map(|line| Location { line, column: None }),
+            field: Some(field),
+            cause,
+            example,
+        });
+    };
     // Administration plane (v0.8, D6): loopback by default, a real secret,
     // and never the public listener's address. SPEC §9 requires the strict
     // separation between public and administration, so none of this is a
@@ -414,7 +436,18 @@ pub fn check(config: &Config, source: &str, file: &Path) -> CheckResult {
             );
         }
     }
+}
 
+fn check_access_log(config: &Config, source: &str, file: &Path, result: &mut CheckResult) {
+    let mut err = |field: String, cause: String, example: String, needle: &str| {
+        result.errors.push(ConfigError {
+            file: file.to_path_buf(),
+            location: find_line(source, needle).map(|line| Location { line, column: None }),
+            field: Some(field),
+            cause,
+            example,
+        });
+    };
     // Structured access log (v0.8, ADR-0020): absent = off. A destination
     // that cannot be represented as one line is refused at the gate, before
     // the process starts writing (a newline in a path is a config error,
@@ -440,7 +473,18 @@ pub fn check(config: &Config, source: &str, file: &Path) -> CheckResult {
             );
         }
     }
+}
 
+fn check_maps(config: &Config, source: &str, file: &Path, result: &mut CheckResult) {
+    let mut err = |field: String, cause: String, example: String, needle: &str| {
+        result.errors.push(ConfigError {
+            file: file.to_path_buf(),
+            location: find_line(source, needle).map(|line| Location { line, column: None }),
+            field: Some(field),
+            cause,
+            example,
+        });
+    };
     // Data maps (C10/PP-02): one source per map, bounded data, sane
     // reload window. The file itself is read at load time (`run`), like
     // certificates.
@@ -537,1211 +581,1590 @@ pub fn check(config: &Config, source: &str, file: &Path) -> CheckResult {
                 .push(format!("[maps.{name}] is never referenced by any rule"));
         }
     }
+}
 
+fn check_listeners(config: &Config, source: &str, file: &Path, result: &mut CheckResult) {
     for (name, listener) in &config.listener {
-        let section = format!("[listener.{name}]");
-        let field = |suffix: &str| format!("listener.{name}.{suffix}");
+        check_listener_endpoint(name, listener, config, source, file, result);
+        check_listener_plugin(name, listener, source, file, result);
+        check_listener_proxy(name, listener, source, file, result);
+        check_listener_cache(name, listener, source, file, result);
+        check_listener_quic(name, listener, source, file, result);
+        check_listener_alpn(name, listener, source, file, result);
+        check_listener_forwarded(name, listener, source, file, result);
+        check_listener_local_response(name, listener, source, file, result);
+        check_listener_error_pages(name, listener, source, file, result);
+        check_listener_compression(name, listener, source, file, result);
+        check_listener_rules(name, listener, config, source, file, result);
+        check_listener_warnings(name, listener, result);
+    }
+}
 
-        if listener.listen.parse::<SocketAddr>().is_err() {
+/// Endpoint, timeouts and buffer limits of one listener.
+fn check_listener_endpoint(
+    name: &str,
+    listener: &ListenerConfig,
+    config: &Config,
+    source: &str,
+    file: &Path,
+    result: &mut CheckResult,
+) {
+    let mut err = |field: String, cause: String, example: String, needle: &str| {
+        result.errors.push(ConfigError {
+            file: file.to_path_buf(),
+            location: find_line(source, needle).map(|line| Location { line, column: None }),
+            field: Some(field),
+            cause,
+            example,
+        });
+    };
+    let section = format!("[listener.{name}]");
+    let field = |suffix: &str| format!("listener.{name}.{suffix}");
+
+    if listener.listen.parse::<SocketAddr>().is_err() {
+        err(
+            field("listen"),
+            format!(
+                "\"{}\" is not a valid address (expected IP:PORT)",
+                listener.listen
+            ),
+            "listen = \"127.0.0.1:8080\"".to_owned(),
+            &section,
+        );
+    }
+
+    // Backend validations run per section (not per listener):
+    // they are checked in the backend loop below.
+    if !config.backend.contains_key(&listener.backend) {
+        err(
+            field("backend"),
+            format!("backend \"{}\" does not exist", listener.backend),
+            format!(
+                "backend = \"{}\" requires a [backend.{}] section with server = \"127.0.0.1:9000\"",
+                listener.backend, listener.backend
+            ),
+            &section,
+        );
+    }
+
+    if listener.maxconn == 0 {
+        err(
+            field("maxconn"),
+            "maxconn must be at least 1".to_owned(),
+            "maxconn = 1024".to_owned(),
+            &section,
+        );
+    }
+
+    if listener.connect_timeout.is_zero() {
+        err(
+            field("connect_timeout"),
+            "connect_timeout must be greater than 0".to_owned(),
+            "connect_timeout = \"5s\"".to_owned(),
+            &section,
+        );
+    }
+
+    if listener.idle_timeout.is_zero() {
+        err(
+            field("idle_timeout"),
+            "idle_timeout must be greater than 0".to_owned(),
+            "idle_timeout = \"60s\"".to_owned(),
+            &section,
+        );
+    }
+
+    if listener.client_header_timeout.is_zero() {
+        err(
+            field("client_header_timeout"),
+            "client_header_timeout must be greater than 0".to_owned(),
+            "client_header_timeout = \"5s\"".to_owned(),
+            &section,
+        );
+    }
+
+    if listener.server_header_timeout.is_zero() {
+        err(
+            field("server_header_timeout"),
+            "server_header_timeout must be greater than 0".to_owned(),
+            "server_header_timeout = \"30s\"".to_owned(),
+            &section,
+        );
+    }
+
+    // Message and buffer limits (B-N19/B-I17/B-E19): the bounds keep a
+    // typo (`max_head_bytes = 16`, thought of as KiB) from turning into
+    // an outage, and a zero-sized pipe from deadlocking every stream.
+    if !(1024..=1_048_576).contains(&listener.limits.max_head_bytes) {
+        err(
+            field("limits.max_head_bytes"),
+            format!(
+                "{} is outside 1024..=1048576 bytes",
+                listener.limits.max_head_bytes
+            ),
+            "max_head_bytes = 16384".to_owned(),
+            &section,
+        );
+    }
+
+    if !(1..=1000).contains(&listener.limits.max_headers) {
+        err(
+            field("limits.max_headers"),
+            format!(
+                "{} is outside 1..=1000 header fields",
+                listener.limits.max_headers
+            ),
+            "max_headers = 100".to_owned(),
+            &section,
+        );
+    }
+
+    if let Some(buffer) = listener.limits.stream_buffer_bytes
+        && !(1024..=1_048_576).contains(&buffer)
+    {
+        err(
+            field("limits.stream_buffer_bytes"),
+            format!("{buffer} is outside 1024..=1048576 bytes"),
+            "stream_buffer_bytes = 16384 (omit for the protocol default)".to_owned(),
+            &section,
+        );
+    }
+}
+
+/// WASM request filter (B-I5/B-E4, ADR-0031).
+fn check_listener_plugin(
+    name: &str,
+    listener: &ListenerConfig,
+    source: &str,
+    file: &Path,
+    result: &mut CheckResult,
+) {
+    let mut err = |field: String, cause: String, example: String, needle: &str| {
+        result.errors.push(ConfigError {
+            file: file.to_path_buf(),
+            location: find_line(source, needle).map(|line| Location { line, column: None }),
+            field: Some(field),
+            cause,
+            example,
+        });
+    };
+    let section = format!("[listener.{name}]");
+    let field = |suffix: &str| format!("listener.{name}.{suffix}");
+
+    // WASM request filter (B-I5/B-E4, ADR-0031): the file is loaded and
+    // compiled at resolution, but the bounds belong to the gate so a typo
+    // is reported with field, line and example instead of a runtime 503.
+    if let Some(plugin) = &listener.plugin {
+        if listener.mode == ListenerMode::Tcp {
             err(
-                field("listen"),
+                field("plugin"),
+                "a WASM plugin filters HTTP requests and requires mode = \"http\"".to_owned(),
+                "mode = \"http\"".to_owned(),
+                &section,
+            );
+        }
+        if plugin.path.trim().is_empty() {
+            err(
+                field("plugin.path"),
+                "path is empty".to_owned(),
+                "path = \"plugins/filter.wasm\"".to_owned(),
+                &section,
+            );
+        }
+        if !(1..=100_000_000).contains(&plugin.fuel) {
+            err(
+                field("plugin.fuel"),
+                format!("{} is outside 1..=100000000 instructions", plugin.fuel),
+                "fuel = 10000000".to_owned(),
+                &section,
+            );
+        }
+        if plugin.timeout < Duration::from_millis(1) || plugin.timeout > Duration::from_secs(5) {
+            err(
+                field("plugin.timeout"),
                 format!(
-                    "\"{}\" is not a valid address (expected IP:PORT)",
-                    listener.listen
+                    "{:?} is outside 1ms..=5s (epoch resolution is 1 ms)",
+                    plugin.timeout
                 ),
-                "listen = \"127.0.0.1:8080\"".to_owned(),
+                "timeout = \"50ms\"".to_owned(),
                 &section,
             );
         }
-
-        // Backend validations run per section (not per listener):
-        // they are checked in the backend loop below.
-        if !config.backend.contains_key(&listener.backend) {
+        if !(1_048_576..=268_435_456).contains(&plugin.memory_bytes) {
             err(
-                field("backend"),
-                format!("backend \"{}\" does not exist", listener.backend),
+                field("plugin.memory_bytes"),
                 format!(
-                    "backend = \"{}\" requires a [backend.{}] section with server = \"127.0.0.1:9000\"",
-                    listener.backend, listener.backend
+                    "{} is outside 1048576..=268435456 bytes",
+                    plugin.memory_bytes
                 ),
+                "memory_bytes = 16777216".to_owned(),
                 &section,
             );
         }
-
-        if listener.maxconn == 0 {
+        if !(1..=64).contains(&plugin.max_header_ops) {
             err(
-                field("maxconn"),
-                "maxconn must be at least 1".to_owned(),
-                "maxconn = 1024".to_owned(),
+                field("plugin.max_header_ops"),
+                format!("{} is outside 1..=64 mutations", plugin.max_header_ops),
+                "max_header_ops = 16".to_owned(),
                 &section,
             );
         }
-
-        if listener.connect_timeout.is_zero() {
-            err(
-                field("connect_timeout"),
-                "connect_timeout must be greater than 0".to_owned(),
-                "connect_timeout = \"5s\"".to_owned(),
-                &section,
-            );
-        }
-
-        if listener.idle_timeout.is_zero() {
-            err(
-                field("idle_timeout"),
-                "idle_timeout must be greater than 0".to_owned(),
-                "idle_timeout = \"60s\"".to_owned(),
-                &section,
-            );
-        }
-
-        if listener.client_header_timeout.is_zero() {
-            err(
-                field("client_header_timeout"),
-                "client_header_timeout must be greater than 0".to_owned(),
-                "client_header_timeout = \"5s\"".to_owned(),
-                &section,
-            );
-        }
-
-        if listener.server_header_timeout.is_zero() {
-            err(
-                field("server_header_timeout"),
-                "server_header_timeout must be greater than 0".to_owned(),
-                "server_header_timeout = \"30s\"".to_owned(),
-                &section,
-            );
-        }
-
-        // Message and buffer limits (B-N19/B-I17/B-E19): the bounds keep a
-        // typo (`max_head_bytes = 16`, thought of as KiB) from turning into
-        // an outage, and a zero-sized pipe from deadlocking every stream.
-        if !(1024..=1_048_576).contains(&listener.limits.max_head_bytes) {
+        // ABI v1 hands the plugin at most 64 KiB of request head; the
+        // listener budget must not be larger, or a valid request would
+        // become a plugin failure. Keep in sync with
+        // eqproxy-net::plugin::MAX_PLUGIN_INPUT (layering prevents the
+        // config crate from depending on the dataplane crate).
+        if listener.limits.max_head_bytes > 65_536 {
             err(
                 field("limits.max_head_bytes"),
                 format!(
-                    "{} is outside 1024..=1048576 bytes",
+                    "{} exceeds the 65536-byte WASM plugin input budget; lower it or remove the plugin",
                     listener.limits.max_head_bytes
                 ),
                 "max_head_bytes = 16384".to_owned(),
                 &section,
             );
         }
+    }
+}
 
-        if !(1..=1000).contains(&listener.limits.max_headers) {
+/// PROXY protocol reception (B-H9).
+fn check_listener_proxy(
+    name: &str,
+    listener: &ListenerConfig,
+    source: &str,
+    file: &Path,
+    result: &mut CheckResult,
+) {
+    let mut err = |field: String, cause: String, example: String, needle: &str| {
+        result.errors.push(ConfigError {
+            file: file.to_path_buf(),
+            location: find_line(source, needle).map(|line| Location { line, column: None }),
+            field: Some(field),
+            cause,
+            example,
+        });
+    };
+    let section = format!("[listener.{name}]");
+    let field = |suffix: &str| format!("listener.{name}.{suffix}");
+
+    if listener.proxy_receive {
+        if listener.proxy_allow.is_empty() {
             err(
-                field("limits.max_headers"),
-                format!(
-                    "{} is outside 1..=1000 header fields",
-                    listener.limits.max_headers
-                ),
-                "max_headers = 100".to_owned(),
+                field("proxy_allow"),
+                "proxy_receive = true requires at least one trusted origin".to_owned(),
+                "proxy_allow = [\"10.0.0.0/8\"] (IP or CIDR list)".to_owned(),
                 &section,
             );
         }
-
-        if let Some(buffer) = listener.limits.stream_buffer_bytes
-            && !(1024..=1_048_576).contains(&buffer)
-        {
-            err(
-                field("limits.stream_buffer_bytes"),
-                format!("{buffer} is outside 1024..=1048576 bytes"),
-                "stream_buffer_bytes = 16384 (omit for the protocol default)".to_owned(),
-                &section,
-            );
-        }
-
-        // WASM request filter (B-I5/B-E4, ADR-0031): the file is loaded and
-        // compiled at resolution, but the bounds belong to the gate so a typo
-        // is reported with field, line and example instead of a runtime 503.
-        if let Some(plugin) = &listener.plugin {
-            if listener.mode == ListenerMode::Tcp {
-                err(
-                    field("plugin"),
-                    "a WASM plugin filters HTTP requests and requires mode = \"http\"".to_owned(),
-                    "mode = \"http\"".to_owned(),
-                    &section,
-                );
-            }
-            if plugin.path.trim().is_empty() {
-                err(
-                    field("plugin.path"),
-                    "path is empty".to_owned(),
-                    "path = \"plugins/filter.wasm\"".to_owned(),
-                    &section,
-                );
-            }
-            if !(1..=100_000_000).contains(&plugin.fuel) {
-                err(
-                    field("plugin.fuel"),
-                    format!("{} is outside 1..=100000000 instructions", plugin.fuel),
-                    "fuel = 10000000".to_owned(),
-                    &section,
-                );
-            }
-            if plugin.timeout < Duration::from_millis(1) || plugin.timeout > Duration::from_secs(5)
-            {
-                err(
-                    field("plugin.timeout"),
-                    format!(
-                        "{:?} is outside 1ms..=5s (epoch resolution is 1 ms)",
-                        plugin.timeout
-                    ),
-                    "timeout = \"50ms\"".to_owned(),
-                    &section,
-                );
-            }
-            if !(1_048_576..=268_435_456).contains(&plugin.memory_bytes) {
-                err(
-                    field("plugin.memory_bytes"),
-                    format!(
-                        "{} is outside 1048576..=268435456 bytes",
-                        plugin.memory_bytes
-                    ),
-                    "memory_bytes = 16777216".to_owned(),
-                    &section,
-                );
-            }
-            if !(1..=64).contains(&plugin.max_header_ops) {
-                err(
-                    field("plugin.max_header_ops"),
-                    format!("{} is outside 1..=64 mutations", plugin.max_header_ops),
-                    "max_header_ops = 16".to_owned(),
-                    &section,
-                );
-            }
-            // ABI v1 hands the plugin at most 64 KiB of request head; the
-            // listener budget must not be larger, or a valid request would
-            // become a plugin failure. Keep in sync with
-            // eqproxy-net::plugin::MAX_PLUGIN_INPUT (layering prevents the
-            // config crate from depending on the dataplane crate).
-            if listener.limits.max_head_bytes > 65_536 {
-                err(
-                    field("limits.max_head_bytes"),
-                    format!(
-                        "{} exceeds the 65536-byte WASM plugin input budget; lower it or remove the plugin",
-                        listener.limits.max_head_bytes
-                    ),
-                    "max_head_bytes = 16384".to_owned(),
-                    &section,
-                );
-            }
-        }
-
-        if listener.proxy_receive {
-            if listener.proxy_allow.is_empty() {
+        for entry in &listener.proxy_allow {
+            if let Err(cause) = IpBlock::parse(entry) {
                 err(
                     field("proxy_allow"),
-                    "proxy_receive = true requires at least one trusted origin".to_owned(),
-                    "proxy_allow = [\"10.0.0.0/8\"] (IP or CIDR list)".to_owned(),
+                    cause,
+                    "proxy_allow = [\"10.0.0.0/8\", \"192.0.2.1\"]".to_owned(),
                     &section,
                 );
             }
-            for entry in &listener.proxy_allow {
-                if let Err(cause) = IpBlock::parse(entry) {
+        }
+    }
+}
+
+/// HTTP response cache (B-N7/H1, ADR-0034).
+fn check_listener_cache(
+    name: &str,
+    listener: &ListenerConfig,
+    source: &str,
+    file: &Path,
+    result: &mut CheckResult,
+) {
+    let mut err = |field: String, cause: String, example: String, needle: &str| {
+        result.errors.push(ConfigError {
+            file: file.to_path_buf(),
+            location: find_line(source, needle).map(|line| Location { line, column: None }),
+            field: Some(field),
+            cause,
+            example,
+        });
+    };
+    let section = format!("[listener.{name}]");
+    let field = |suffix: &str| format!("listener.{name}.{suffix}");
+
+    // HTTP response cache (B-N7/H1, ADR-0034): the file is loaded at
+    // resolution, but the bounds belong to the gate so a typo is
+    // reported with field, line and example instead of a silent
+    // misbehaviour (a zero TTL would revalidate every request; an
+    // entry larger than memory would never fit).
+    if let Some(cache) = &listener.cache {
+        if listener.mode == ListenerMode::Tcp {
+            err(
+                field("cache"),
+                "a response cache needs HTTP semantics and requires mode = \"http\"".to_owned(),
+                "mode = \"http\"".to_owned(),
+                &section,
+            );
+        }
+        if cache.default_ttl < Duration::from_secs(1)
+            || cache.default_ttl > Duration::from_secs(86_400)
+        {
+            err(
+                field("cache.default_ttl"),
+                format!(
+                    "{:?} is outside 1s..=1day (origins can only shorten it)",
+                    cache.default_ttl
+                ),
+                "default_ttl = \"60s\"".to_owned(),
+                &section,
+            );
+        }
+        if !(1_048_576..=1_073_741_824).contains(&cache.max_memory_bytes) {
+            err(
+                field("cache.max_memory_bytes"),
+                format!(
+                    "{} is outside 1048576..=1073741824 bytes",
+                    cache.max_memory_bytes
+                ),
+                "max_memory_bytes = 67108864".to_owned(),
+                &section,
+            );
+        }
+        if !(65_536..=67_108_864).contains(&cache.max_entry_bytes) {
+            err(
+                field("cache.max_entry_bytes"),
+                format!(
+                    "{} is outside 65536..=67108864 bytes",
+                    cache.max_entry_bytes
+                ),
+                "max_entry_bytes = 1048576".to_owned(),
+                &section,
+            );
+        }
+        if cache.max_entry_bytes > cache.max_memory_bytes {
+            err(
+                field("cache.max_entry_bytes"),
+                format!(
+                    "{} exceeds max_memory_bytes ({}): no entry would ever fit",
+                    cache.max_entry_bytes, cache.max_memory_bytes
+                ),
+                "max_entry_bytes = 1048576 (at most max_memory_bytes)".to_owned(),
+                &section,
+            );
+        }
+        if let Some(disk) = &cache.disk_path
+            && disk.as_os_str().is_empty()
+        {
+            err(
+                field("cache.disk_path"),
+                "disk_path is empty".to_owned(),
+                "disk_path = \"cache/web\" (omit for memory only)".to_owned(),
+                &section,
+            );
+        }
+    }
+}
+
+/// HTTP/3 over QUIC (B-H2).
+fn check_listener_quic(
+    name: &str,
+    listener: &ListenerConfig,
+    source: &str,
+    file: &Path,
+    result: &mut CheckResult,
+) {
+    let mut err = |field: String, cause: String, example: String, needle: &str| {
+        result.errors.push(ConfigError {
+            file: file.to_path_buf(),
+            location: find_line(source, needle).map(|line| Location { line, column: None }),
+            field: Some(field),
+            cause,
+            example,
+        });
+    };
+    let section = format!("[listener.{name}]");
+    let field = |suffix: &str| format!("listener.{name}.{suffix}");
+
+    // HTTP/3 (B-H2): QUIC terminates HTTP over TLS 1.3 on the same
+    // address, over UDP. There is no connection preamble to carry a
+    // PROXY v1 line, and a byte tunnel never parses HTTP.
+    if listener.quic {
+        if listener.tls.is_none() {
+            err(
+                field("quic"),
+                "quic = true requires TLS: QUIC always runs over TLS 1.3".to_owned(),
+                format!("add [listener.{name}.tls] with cert/key, or quic = false"),
+                &section,
+            );
+        }
+        if listener.mode != ListenerMode::Http {
+            err(
+                field("quic"),
+                "quic = true requires mode = \"http\" (HTTP/3 is an HTTP transport)".to_owned(),
+                "mode = \"http\"".to_owned(),
+                &section,
+            );
+        }
+        if listener.proxy_receive {
+            err(
+                field("quic"),
+                "quic = true cannot receive a PROXY v1 header: QUIC has no connection preamble"
+                    .to_owned(),
+                "quic = false or proxy_receive = false".to_owned(),
+                &section,
+            );
+        }
+        if listener
+            .tls
+            .as_ref()
+            .is_some_and(|tls| tls.max_version == Some(TlsVersion::V1_2))
+        {
+            err(
+                field("tls.max_version"),
+                "quic = true needs TLS 1.3, but tls.max_version = \"1.2\" caps the listener at 1.2"
+                    .to_owned(),
+                "tls.max_version = \"1.3\" (or remove it), or quic = false".to_owned(),
+                &section,
+            );
+        }
+    }
+}
+
+/// `h3` belongs to the QUIC endpoint, never to TCP ALPN.
+fn check_listener_alpn(
+    name: &str,
+    listener: &ListenerConfig,
+    source: &str,
+    file: &Path,
+    result: &mut CheckResult,
+) {
+    let mut err = |field: String, cause: String, example: String, needle: &str| {
+        result.errors.push(ConfigError {
+            file: file.to_path_buf(),
+            location: find_line(source, needle).map(|line| Location { line, column: None }),
+            field: Some(field),
+            cause,
+            example,
+        });
+    };
+    let section = format!("[listener.{name}]");
+    let field = |suffix: &str| format!("listener.{name}.{suffix}");
+
+    if let Some(tls) = &listener.tls
+        && tls
+            .alpn
+            .iter()
+            .any(|proto| proto.eq_ignore_ascii_case("h3"))
+    {
+        err(
+            field("tls.alpn"),
+            "alpn \"h3\" belongs to the QUIC endpoint and is offered there automatically"
+                .to_owned(),
+            "remove \"h3\" from tls.alpn (list \"h2\" and \"http/1.1\" for TCP)".to_owned(),
+            &section,
+        );
+    }
+}
+
+/// Forwarded headers need HTTP semantics.
+fn check_listener_forwarded(
+    name: &str,
+    listener: &ListenerConfig,
+    source: &str,
+    file: &Path,
+    result: &mut CheckResult,
+) {
+    let mut err = |field: String, cause: String, example: String, needle: &str| {
+        result.errors.push(ConfigError {
+            file: file.to_path_buf(),
+            location: find_line(source, needle).map(|line| Location { line, column: None }),
+            field: Some(field),
+            cause,
+            example,
+        });
+    };
+    let section = format!("[listener.{name}]");
+    let field = |suffix: &str| format!("listener.{name}.{suffix}");
+
+    if listener.forwarded_headers != ForwardedHeaders::Off && listener.mode != ListenerMode::Http {
+        err(
+            field("forwarded_headers"),
+            "forwarded_headers is only meaningful in mode = \"http\"".to_owned(),
+            "mode = \"http\" or forwarded_headers = \"off\"".to_owned(),
+            &section,
+        );
+    }
+}
+
+/// Custom local response (C9).
+fn check_listener_local_response(
+    name: &str,
+    listener: &ListenerConfig,
+    source: &str,
+    file: &Path,
+    result: &mut CheckResult,
+) {
+    let mut err = |field: String, cause: String, example: String, needle: &str| {
+        result.errors.push(ConfigError {
+            file: file.to_path_buf(),
+            location: find_line(source, needle).map(|line| Location { line, column: None }),
+            field: Some(field),
+            cause,
+            example,
+        });
+    };
+    let section = format!("[listener.{name}]");
+    let field = |suffix: &str| format!("listener.{name}.{suffix}");
+
+    if let Some(local) = &listener.local_response {
+        if !(400..=599).contains(&local.status) {
+            err(
+                field("local_response.status"),
+                format!(
+                    "local_response.status = {} out of range (rule: local responses are 400-599)",
+                    local.status
+                ),
+                "status = 503".to_owned(),
+                &section,
+            );
+        }
+        if local.body.len() > MAX_LOCAL_RESPONSE_BYTES {
+            err(
+                field("local_response.body"),
+                format!(
+                    "local_response.body is {} bytes (rule: maximum {MAX_LOCAL_RESPONSE_BYTES})",
+                    local.body.len()
+                ),
+                "shorten the body (8 KiB budget)".to_owned(),
+                &section,
+            );
+        }
+        if local.content_type.trim().is_empty() {
+            err(
+                field("local_response.content_type"),
+                "local_response.content_type must not be empty".to_owned(),
+                "content_type = \"text/plain; charset=utf-8\"".to_owned(),
+                &section,
+            );
+        }
+        if listener.mode != ListenerMode::Http {
+            err(
+                field("local_response"),
+                "local_response is only meaningful in mode = \"http\"".to_owned(),
+                "mode = \"http\" or remove local_response".to_owned(),
+                &section,
+            );
+        }
+    }
+}
+
+/// Custom error pages (B-H15/B-E18/B-N14).
+fn check_listener_error_pages(
+    name: &str,
+    listener: &ListenerConfig,
+    source: &str,
+    file: &Path,
+    result: &mut CheckResult,
+) {
+    let mut err = |field: String, cause: String, example: String, needle: &str| {
+        result.errors.push(ConfigError {
+            file: file.to_path_buf(),
+            location: find_line(source, needle).map(|line| Location { line, column: None }),
+            field: Some(field),
+            cause,
+            example,
+        });
+    };
+    let section = format!("[listener.{name}]");
+    let field = |suffix: &str| format!("listener.{name}.{suffix}");
+
+    // Custom error pages (B-H15/B-E18/B-N14): the structural rules are
+    // checked here; file existence and the `raw` syntax are checked when
+    // the snapshot is resolved (the same place certificates are read).
+    if !listener.error_pages.is_empty() {
+        if listener.mode != ListenerMode::Http {
+            err(
+                field("error_pages"),
+                "error_pages is only meaningful in mode = \"http\"".to_owned(),
+                "mode = \"http\" or remove [[listener.<name>.error_pages]]".to_owned(),
+                &section,
+            );
+        }
+        if listener.error_pages.len() > MAX_ERROR_PAGES {
+            err(
+                field("error_pages"),
+                format!(
+                    "{} error pages declared (rule: maximum {MAX_ERROR_PAGES})",
+                    listener.error_pages.len()
+                ),
+                "group the codes into fewer pages".to_owned(),
+                &section,
+            );
+        }
+        let mut seen: Vec<(u16, usize)> = Vec::new();
+        for (index, page) in listener.error_pages.iter().enumerate() {
+            let at = format!("error_pages[{index}]");
+            if page.codes.is_empty() {
+                err(
+                    field(&format!("{at}.codes")),
+                    "codes is empty: an error page must name at least one status".to_owned(),
+                    "codes = [502, 503, 504]".to_owned(),
+                    &section,
+                );
+            }
+            for code in &page.codes {
+                if !(400..=599).contains(code) {
                     err(
-                        field("proxy_allow"),
-                        cause,
-                        "proxy_allow = [\"10.0.0.0/8\", \"192.0.2.1\"]".to_owned(),
+                        field(&format!("{at}.codes")),
+                        format!("code {code} out of range (rule: error pages cover 400-599)"),
+                        "codes = [502, 503, 504]".to_owned(),
                         &section,
                     );
                 }
+                if let Some((_, other)) = seen.iter().find(|(seen, _)| seen == code) {
+                    err(
+                        field(&format!("{at}.codes")),
+                        format!(
+                            "code {code} is already covered by error_pages[{other}]: one page per code"
+                        ),
+                        "remove the duplicate code".to_owned(),
+                        &section,
+                    );
+                } else {
+                    seen.push((*code, index));
+                }
             }
-        }
-
-        // HTTP response cache (B-N7/H1, ADR-0034): the file is loaded at
-        // resolution, but the bounds belong to the gate so a typo is
-        // reported with field, line and example instead of a silent
-        // misbehaviour (a zero TTL would revalidate every request; an
-        // entry larger than memory would never fit).
-        if let Some(cache) = &listener.cache {
-            if listener.mode == ListenerMode::Tcp {
-                err(
-                    field("cache"),
-                    "a response cache needs HTTP semantics and requires mode = \"http\"".to_owned(),
-                    "mode = \"http\"".to_owned(),
+            match (&page.file, &page.body, &page.location) {
+                (Some(file), None, None) => {
+                    if file.trim().is_empty() {
+                        err(
+                            field(&format!("{at}.file")),
+                            "file is empty".to_owned(),
+                            "file = \"errors/50x.html\"".to_owned(),
+                            &section,
+                        );
+                    }
+                }
+                (None, Some(body), None) => {
+                    if page.format == ErrorPageFormat::Raw {
+                        err(
+                            field(&format!("{at}.format")),
+                            "format = \"raw\" needs a file: the status line lives in it"
+                                .to_owned(),
+                            "format = \"body\" or add the file".to_owned(),
+                            &section,
+                        );
+                    }
+                    if body.len() > MAX_ERROR_PAGE_BYTES {
+                        err(
+                            field(&format!("{at}.body")),
+                            format!(
+                                "body is {} bytes (rule: maximum {MAX_ERROR_PAGE_BYTES})",
+                                body.len()
+                            ),
+                            "shorten the body or use a file".to_owned(),
+                            &section,
+                        );
+                    }
+                    if body.trim().is_empty() {
+                        err(
+                            field(&format!("{at}.body")),
+                            "body is empty: it would serve a blank page".to_owned(),
+                            "a short HTML body or a file".to_owned(),
+                            &section,
+                        );
+                    }
+                }
+                (None, None, Some(location)) => {
+                    if page.format == ErrorPageFormat::Raw {
+                        err(
+                            field(&format!("{at}.format")),
+                            "format = \"raw\" cannot be a redirect: the file carries a status line"
+                                .to_owned(),
+                            "format = \"body\" with location, or a file".to_owned(),
+                            &section,
+                        );
+                    }
+                    if let Some(cause) = error_location_problem(location) {
+                        err(
+                            field(&format!("{at}.location")),
+                            cause,
+                            "location = \"/maintenance\" or \"https://status.example.com/\""
+                                .to_owned(),
+                            &section,
+                        );
+                    }
+                }
+                (Some(_), Some(_), None) => err(
+                    field(&at),
+                    "file and body are mutually exclusive".to_owned(),
+                    "keep one of the two".to_owned(),
                     &section,
-                );
-            }
-            if cache.default_ttl < Duration::from_secs(1)
-                || cache.default_ttl > Duration::from_secs(86_400)
-            {
-                err(
-                    field("cache.default_ttl"),
-                    format!(
-                        "{:?} is outside 1s..=1day (origins can only shorten it)",
-                        cache.default_ttl
-                    ),
-                    "default_ttl = \"60s\"".to_owned(),
+                ),
+                (_, _, Some(_)) => err(
+                    field(&at),
+                    "location, file and body are mutually exclusive".to_owned(),
+                    "keep only location".to_owned(),
                     &section,
-                );
-            }
-            if !(1_048_576..=1_073_741_824).contains(&cache.max_memory_bytes) {
-                err(
-                    field("cache.max_memory_bytes"),
-                    format!(
-                        "{} is outside 1048576..=1073741824 bytes",
-                        cache.max_memory_bytes
-                    ),
-                    "max_memory_bytes = 67108864".to_owned(),
-                    &section,
-                );
-            }
-            if !(65_536..=67_108_864).contains(&cache.max_entry_bytes) {
-                err(
-                    field("cache.max_entry_bytes"),
-                    format!(
-                        "{} is outside 65536..=67108864 bytes",
-                        cache.max_entry_bytes
-                    ),
-                    "max_entry_bytes = 1048576".to_owned(),
-                    &section,
-                );
-            }
-            if cache.max_entry_bytes > cache.max_memory_bytes {
-                err(
-                    field("cache.max_entry_bytes"),
-                    format!(
-                        "{} exceeds max_memory_bytes ({}): no entry would ever fit",
-                        cache.max_entry_bytes, cache.max_memory_bytes
-                    ),
-                    "max_entry_bytes = 1048576 (at most max_memory_bytes)".to_owned(),
-                    &section,
-                );
-            }
-            if let Some(disk) = &cache.disk_path
-                && disk.as_os_str().is_empty()
-            {
-                err(
-                    field("cache.disk_path"),
-                    "disk_path is empty".to_owned(),
-                    "disk_path = \"cache/web\" (omit for memory only)".to_owned(),
-                    &section,
-                );
-            }
-        }
-
-        // HTTP/3 (B-H2): QUIC terminates HTTP over TLS 1.3 on the same
-        // address, over UDP. There is no connection preamble to carry a
-        // PROXY v1 line, and a byte tunnel never parses HTTP.
-        if listener.quic {
-            if listener.tls.is_none() {
-                err(
-                    field("quic"),
-                    "quic = true requires TLS: QUIC always runs over TLS 1.3".to_owned(),
-                    format!("add [listener.{name}.tls] with cert/key, or quic = false"),
-                    &section,
-                );
-            }
-            if listener.mode != ListenerMode::Http {
-                err(
-                    field("quic"),
-                    "quic = true requires mode = \"http\" (HTTP/3 is an HTTP transport)".to_owned(),
-                    "mode = \"http\"".to_owned(),
-                    &section,
-                );
-            }
-            if listener.proxy_receive {
-                err(
-                    field("quic"),
-                    "quic = true cannot receive a PROXY v1 header: QUIC has no connection preamble"
+                ),
+                (None, None, None) => err(
+                    field(&at),
+                    "an error page needs a file, a body or a location".to_owned(),
+                    "file = \"errors/50x.html\", body = \"<h1>down</h1>\" or location = \"/maintenance\""
                         .to_owned(),
-                    "quic = false or proxy_receive = false".to_owned(),
                     &section,
-                );
+                ),
             }
-            if listener
-                .tls
-                .as_ref()
-                .is_some_and(|tls| tls.max_version == Some(TlsVersion::V1_2))
+            if page.location.is_some()
+                && let Some(status) = page.status
+                && (!(300..=399).contains(&status) || status == 304)
             {
                 err(
-                    field("tls.max_version"),
-                    "quic = true needs TLS 1.3, but tls.max_version = \"1.2\" caps the listener at 1.2"
-                        .to_owned(),
-                    "tls.max_version = \"1.3\" (or remove it), or quic = false".to_owned(),
+                    field(&format!("{at}.status")),
+                    format!(
+                        "status = {status} cannot carry a redirect (rule: 300-399, without 304)"
+                    ),
+                    "status = 302 (or remove it)".to_owned(),
                     &section,
                 );
             }
-        }
-        if let Some(tls) = &listener.tls
-            && tls
-                .alpn
-                .iter()
-                .any(|proto| proto.eq_ignore_ascii_case("h3"))
-        {
-            err(
-                field("tls.alpn"),
-                "alpn \"h3\" belongs to the QUIC endpoint and is offered there automatically"
-                    .to_owned(),
-                "remove \"h3\" from tls.alpn (list \"h2\" and \"http/1.1\" for TCP)".to_owned(),
-                &section,
-            );
-        }
-
-        if listener.forwarded_headers != ForwardedHeaders::Off
-            && listener.mode != ListenerMode::Http
-        {
-            err(
-                field("forwarded_headers"),
-                "forwarded_headers is only meaningful in mode = \"http\"".to_owned(),
-                "mode = \"http\" or forwarded_headers = \"off\"".to_owned(),
-                &section,
-            );
-        }
-
-        if let Some(local) = &listener.local_response {
-            if !(400..=599).contains(&local.status) {
+            if let Some(status) = page.status
+                && (!(200..=599).contains(&status) || status == 204 || status == 304)
+            {
                 err(
-                    field("local_response.status"),
+                    field(&format!("{at}.status")),
                     format!(
-                        "local_response.status = {} out of range (rule: local responses are 400-599)",
-                        local.status
+                        "status = {status} cannot carry a page (rule: 200-599, without 204/304)"
                     ),
                     "status = 503".to_owned(),
                     &section,
                 );
             }
-            if local.body.len() > MAX_LOCAL_RESPONSE_BYTES {
+            if page.content_type.trim().is_empty() {
                 err(
-                    field("local_response.body"),
-                    format!(
-                        "local_response.body is {} bytes (rule: maximum {MAX_LOCAL_RESPONSE_BYTES})",
-                        local.body.len()
-                    ),
-                    "shorten the body (8 KiB budget)".to_owned(),
+                    field(&format!("{at}.content_type")),
+                    "content_type must not be empty".to_owned(),
+                    "content_type = \"text/html; charset=utf-8\"".to_owned(),
                     &section,
                 );
             }
-            if local.content_type.trim().is_empty() {
+            if page.status.is_some() && page.format == ErrorPageFormat::Raw {
                 err(
-                    field("local_response.content_type"),
-                    "local_response.content_type must not be empty".to_owned(),
-                    "content_type = \"text/plain; charset=utf-8\"".to_owned(),
+                    field(&format!("{at}.status")),
+                    "a raw page carries its own status line: `status` would contradict it"
+                        .to_owned(),
+                    "remove status, or use format = \"body\"".to_owned(),
                     &section,
                 );
             }
-            if listener.mode != ListenerMode::Http {
+            if page.intercept && page.format == ErrorPageFormat::Raw {
                 err(
-                    field("local_response"),
-                    "local_response is only meaningful in mode = \"http\"".to_owned(),
-                    "mode = \"http\" or remove local_response".to_owned(),
+                    field(&format!("{at}.intercept")),
+                    "intercept is not allowed on a raw page: its status line is fixed".to_owned(),
+                    "remove intercept, or use format = \"body\"".to_owned(),
                     &section,
                 );
-            }
-        }
-
-        // Custom error pages (B-H15/B-E18/B-N14): the structural rules are
-        // checked here; file existence and the `raw` syntax are checked when
-        // the snapshot is resolved (the same place certificates are read).
-        if !listener.error_pages.is_empty() {
-            if listener.mode != ListenerMode::Http {
-                err(
-                    field("error_pages"),
-                    "error_pages is only meaningful in mode = \"http\"".to_owned(),
-                    "mode = \"http\" or remove [[listener.<name>.error_pages]]".to_owned(),
-                    &section,
-                );
-            }
-            if listener.error_pages.len() > MAX_ERROR_PAGES {
-                err(
-                    field("error_pages"),
-                    format!(
-                        "{} error pages declared (rule: maximum {MAX_ERROR_PAGES})",
-                        listener.error_pages.len()
-                    ),
-                    "group the codes into fewer pages".to_owned(),
-                    &section,
-                );
-            }
-            let mut seen: Vec<(u16, usize)> = Vec::new();
-            for (index, page) in listener.error_pages.iter().enumerate() {
-                let at = format!("error_pages[{index}]");
-                if page.codes.is_empty() {
-                    err(
-                        field(&format!("{at}.codes")),
-                        "codes is empty: an error page must name at least one status".to_owned(),
-                        "codes = [502, 503, 504]".to_owned(),
-                        &section,
-                    );
-                }
-                for code in &page.codes {
-                    if !(400..=599).contains(code) {
-                        err(
-                            field(&format!("{at}.codes")),
-                            format!("code {code} out of range (rule: error pages cover 400-599)"),
-                            "codes = [502, 503, 504]".to_owned(),
-                            &section,
-                        );
-                    }
-                    if let Some((_, other)) = seen.iter().find(|(seen, _)| seen == code) {
-                        err(
-                            field(&format!("{at}.codes")),
-                            format!(
-                                "code {code} is already covered by error_pages[{other}]: one page per code"
-                            ),
-                            "remove the duplicate code".to_owned(),
-                            &section,
-                        );
-                    } else {
-                        seen.push((*code, index));
-                    }
-                }
-                match (&page.file, &page.body, &page.location) {
-                    (Some(file), None, None) => {
-                        if file.trim().is_empty() {
-                            err(
-                                field(&format!("{at}.file")),
-                                "file is empty".to_owned(),
-                                "file = \"errors/50x.html\"".to_owned(),
-                                &section,
-                            );
-                        }
-                    }
-                    (None, Some(body), None) => {
-                        if page.format == ErrorPageFormat::Raw {
-                            err(
-                                field(&format!("{at}.format")),
-                                "format = \"raw\" needs a file: the status line lives in it"
-                                    .to_owned(),
-                                "format = \"body\" or add the file".to_owned(),
-                                &section,
-                            );
-                        }
-                        if body.len() > MAX_ERROR_PAGE_BYTES {
-                            err(
-                                field(&format!("{at}.body")),
-                                format!(
-                                    "body is {} bytes (rule: maximum {MAX_ERROR_PAGE_BYTES})",
-                                    body.len()
-                                ),
-                                "shorten the body or use a file".to_owned(),
-                                &section,
-                            );
-                        }
-                        if body.trim().is_empty() {
-                            err(
-                                field(&format!("{at}.body")),
-                                "body is empty: it would serve a blank page".to_owned(),
-                                "a short HTML body or a file".to_owned(),
-                                &section,
-                            );
-                        }
-                    }
-                    (None, None, Some(location)) => {
-                        if page.format == ErrorPageFormat::Raw {
-                            err(
-                                field(&format!("{at}.format")),
-                                "format = \"raw\" cannot be a redirect: the file carries a status line"
-                                    .to_owned(),
-                                "format = \"body\" with location, or a file".to_owned(),
-                                &section,
-                            );
-                        }
-                        if let Some(cause) = error_location_problem(location) {
-                            err(
-                                field(&format!("{at}.location")),
-                                cause,
-                                "location = \"/maintenance\" or \"https://status.example.com/\""
-                                    .to_owned(),
-                                &section,
-                            );
-                        }
-                    }
-                    (Some(_), Some(_), None) => err(
-                        field(&at),
-                        "file and body are mutually exclusive".to_owned(),
-                        "keep one of the two".to_owned(),
-                        &section,
-                    ),
-                    (_, _, Some(_)) => err(
-                        field(&at),
-                        "location, file and body are mutually exclusive".to_owned(),
-                        "keep only location".to_owned(),
-                        &section,
-                    ),
-                    (None, None, None) => err(
-                        field(&at),
-                        "an error page needs a file, a body or a location".to_owned(),
-                        "file = \"errors/50x.html\", body = \"<h1>down</h1>\" or location = \"/maintenance\""
-                            .to_owned(),
-                        &section,
-                    ),
-                }
-                if page.location.is_some()
-                    && let Some(status) = page.status
-                    && (!(300..=399).contains(&status) || status == 304)
-                {
-                    err(
-                        field(&format!("{at}.status")),
-                        format!(
-                            "status = {status} cannot carry a redirect (rule: 300-399, without 304)"
-                        ),
-                        "status = 302 (or remove it)".to_owned(),
-                        &section,
-                    );
-                }
-                if let Some(status) = page.status
-                    && (!(200..=599).contains(&status) || status == 204 || status == 304)
-                {
-                    err(
-                        field(&format!("{at}.status")),
-                        format!(
-                            "status = {status} cannot carry a page (rule: 200-599, without 204/304)"
-                        ),
-                        "status = 503".to_owned(),
-                        &section,
-                    );
-                }
-                if page.content_type.trim().is_empty() {
-                    err(
-                        field(&format!("{at}.content_type")),
-                        "content_type must not be empty".to_owned(),
-                        "content_type = \"text/html; charset=utf-8\"".to_owned(),
-                        &section,
-                    );
-                }
-                if page.status.is_some() && page.format == ErrorPageFormat::Raw {
-                    err(
-                        field(&format!("{at}.status")),
-                        "a raw page carries its own status line: `status` would contradict it"
-                            .to_owned(),
-                        "remove status, or use format = \"body\"".to_owned(),
-                        &section,
-                    );
-                }
-                if page.intercept && page.format == ErrorPageFormat::Raw {
-                    err(
-                        field(&format!("{at}.intercept")),
-                        "intercept is not allowed on a raw page: its status line is fixed"
-                            .to_owned(),
-                        "remove intercept, or use format = \"body\"".to_owned(),
-                        &section,
-                    );
-                }
-            }
-        }
-
-        // Response compression (B-N6/H6): an http-only feature whose options
-        // are validated with the same grammar the dataplane applies.
-        if listener.compression.gzip || listener.compression.brotli {
-            if listener.mode != ListenerMode::Http {
-                err(
-                    field("compression"),
-                    "compression is only meaningful in mode = \"http\"".to_owned(),
-                    "mode = \"http\" or remove [listener.<name>.compression]".to_owned(),
-                    &section,
-                );
-            }
-            if !(1..=9).contains(&listener.compression.level) {
-                err(
-                    field("compression.level"),
-                    format!(
-                        "compression.level = {} is outside 1-9 (rule: 1 fastest to 9 smallest)",
-                        listener.compression.level
-                    ),
-                    "level = 6".to_owned(),
-                    &section,
-                );
-            }
-            if listener.compression.brotli_quality > 11 {
-                err(
-                    field("compression.brotli_quality"),
-                    format!(
-                        "compression.brotli_quality = {} is outside 0-11 (rule: 0 fastest to 11 smallest)",
-                        listener.compression.brotli_quality
-                    ),
-                    "brotli_quality = 5".to_owned(),
-                    &section,
-                );
-            }
-            if listener.compression.types.is_empty() {
-                err(
-                    field("compression.types"),
-                    "compression.types is empty: no response could ever be compressed".to_owned(),
-                    "types = [\"text/*\", \"application/json\"] or disable compression".to_owned(),
-                    &section,
-                );
-            }
-            for spec in &listener.compression.types {
-                if let Err(why) = eqproxy_core::compression::MediaType::parse(spec) {
-                    err(
-                        field("compression.types"),
-                        why,
-                        "types = [\"text/*\", \"application/json\"]".to_owned(),
-                        &section,
-                    );
-                }
-            }
-        }
-
-        // Routing rules (v0.6, B-H3/B-H4): http only, bounded count, sound
-        // references and a compilable matcher (the gate shares the runtime
-        // grammar via `Rule::compile`).
-        if !listener.rules.is_empty() {
-            if listener.mode != ListenerMode::Http {
-                err(
-                    field("rules"),
-                    "routing rules are only meaningful in mode = \"http\"".to_owned(),
-                    format!("mode = \"http\" or remove [[listener.{name}.rules]]"),
-                    &section,
-                );
-            }
-            if listener.rules.len() > MAX_RULES {
-                err(
-                    field("rules"),
-                    format!(
-                        "too many rules: {} (maximum {MAX_RULES} per listener)",
-                        listener.rules.len()
-                    ),
-                    format!("reduce to {MAX_RULES} [[listener.{name}.rules]] tables"),
-                    &section,
-                );
-            }
-            for (i, rule) in listener.rules.iter().enumerate() {
-                let rule_field = |suffix: &str| {
-                    if suffix.is_empty() {
-                        field(&format!("rules[{i}]"))
-                    } else {
-                        field(&format!("rules[{i}].{suffix}"))
-                    }
-                };
-                // Exactly one action per rule (v0.6 slice 2).
-                let actions = u8::from(rule.use_backend.is_some())
-                    + u8::from(rule.split.is_some())
-                    + u8::from(rule.redirect.is_some())
-                    + u8::from(rule.direct_response.is_some());
-                if actions != 1 {
-                    err(
-                        rule_field(""),
-                        "set exactly one of use_backend, split, redirect or direct_response"
-                            .to_owned(),
-                        "use_backend = \"api\" (route) | split = [{ backend = \"stable\", weight = 90 }, { backend = \"canary\", weight = 10 }] | redirect = { status = 301, location = \"https://$host$request_uri\" } | direct_response = { status = 200, body = \"ok\" }".to_owned(),
-                        &section,
-                    );
-                }
-                // Weighted traffic split (B-I11): sound references,
-                // bounded targets, no duplicates, at least one enabled.
-                if let Some(targets) = &rule.split {
-                    if targets.len() < 2 {
-                        err(
-                            rule_field("split"),
-                            "a split needs at least two targets (use use_backend for one backend)"
-                                .to_owned(),
-                            "split = [{ backend = \"stable\", weight = 90 }, { backend = \"canary\", weight = 10 }]".to_owned(),
-                            &section,
-                        );
-                    }
-                    if targets.len() > MAX_SPLIT_TARGETS {
-                        err(
-                            rule_field("split"),
-                            format!(
-                                "too many targets: {} (maximum {MAX_SPLIT_TARGETS})",
-                                targets.len()
-                            ),
-                            format!("reduce split to {MAX_SPLIT_TARGETS} targets"),
-                            &section,
-                        );
-                    }
-                    let mut seen = std::collections::BTreeSet::new();
-                    for (j, target) in targets.iter().enumerate() {
-                        if !seen.insert(target.backend.as_str()) {
-                            err(
-                                rule_field(&format!("split[{j}].backend")),
-                                format!("backend \"{}\" is listed twice", target.backend),
-                                "each backend appears exactly once in split".to_owned(),
-                                &section,
-                            );
-                        }
-                        if !config.backend.contains_key(&target.backend) {
-                            err(
-                                rule_field(&format!("split[{j}].backend")),
-                                format!("backend \"{}\" does not exist", target.backend),
-                                format!(
-                                    "split = [{{ backend = \"{}\", weight = 90 }}] requires a [backend.{}] section",
-                                    target.backend, target.backend
-                                ),
-                                &section,
-                            );
-                        }
-                        if target.weight > MAX_SERVER_WEIGHT {
-                            err(
-                                rule_field(&format!("split[{j}].weight")),
-                                format!(
-                                    "weight = {} out of range (0..={MAX_SERVER_WEIGHT})",
-                                    target.weight
-                                ),
-                                "weight = 10 (0 = target disabled)".to_owned(),
-                                &section,
-                            );
-                        }
-                    }
-                    if !targets.iter().any(|target| target.weight > 0) {
-                        err(
-                            rule_field("split"),
-                            "every target has weight = 0 (no request would ever be routed)"
-                                .to_owned(),
-                            "give at least one target a weight above 0".to_owned(),
-                            &section,
-                        );
-                    }
-                }
-                if let Some(backend) = &rule.use_backend
-                    && !config.backend.contains_key(backend)
-                {
-                    err(
-                        rule_field("use_backend"),
-                        format!("backend \"{backend}\" does not exist"),
-                        format!(
-                            "use_backend = \"{backend}\" requires a [backend.{backend}] section"
-                        ),
-                        &section,
-                    );
-                } // `rewrite` modifies a forwarding action only.
-                if let Some(rewrite) = &rule.rewrite {
-                    if !rule.forwards() {
-                        err(
-                            rule_field("rewrite"),
-                            "rewrite only applies to forwarding rules (use_backend or split)"
-                                .to_owned(),
-                            "use_backend = \"api\" + [listener.LISTENER.rules.rewrite] (or use redirect)"
-                                .to_owned(),
-                            &section,
-                        );
-                    }
-                    if rewrite.path_prefix_rewrite.is_none() && rewrite.host_rewrite.is_none() {
-                        err(
-                            rule_field("rewrite"),
-                            "rewrite sets no field".to_owned(),
-                            "path_prefix_rewrite = \"/v2\" or host_rewrite = \"internal\""
-                                .to_owned(),
-                            &section,
-                        );
-                    }
-                    if let Some(prefix) = &rewrite.path_prefix_rewrite {
-                        if rule.path_prefix.is_none() {
-                            err(
-                                rule_field("rewrite.path_prefix_rewrite"),
-                                "path_prefix_rewrite needs the rule's path_prefix to replace"
-                                    .to_owned(),
-                                "path_prefix = \"/api\" plus path_prefix_rewrite = \"/v2\""
-                                    .to_owned(),
-                                &section,
-                            );
-                        }
-                        if !(prefix.is_empty() || prefix.starts_with('/'))
-                            || prefix
-                                .bytes()
-                                .any(|b| b <= 0x20 || b == 0x7f || b == b'?' || b == b'#')
-                        {
-                            err(
-                                rule_field("rewrite.path_prefix_rewrite"),
-                                "not a valid path prefix".to_owned(),
-                                "path_prefix_rewrite = \"/v2\" (starts with /; no spaces, ? or #)"
-                                    .to_owned(),
-                                &section,
-                            );
-                        }
-                    }
-                    if let Some(host) = &rewrite.host_rewrite
-                        && (host.is_empty() || host.bytes().any(|b| b <= 0x20 || b == 0x7f))
-                    {
-                        err(
-                            rule_field("rewrite.host_rewrite"),
-                            "not a valid host value".to_owned(),
-                            "host_rewrite = \"internal.svc\" (no spaces or control characters)"
-                                .to_owned(),
-                            &section,
-                        );
-                    }
-                }
-                // Hash policy (B-H3, Envoy `hash_policy`): the key selects
-                // among the split targets, so it needs a split with two or
-                // more active targets. Per-server stickiness is
-                // `[backend.*.affinity]`, not this field.
-                if let Some(hash) = &rule.hash_policy {
-                    match hash_key_problem(&hash.key) {
-                        Some(cause) => err(
-                            rule_field("hash_policy.key"),
-                            cause,
-                            "key = \"cookie:session\" (or header:NAME, source, path, host)"
-                                .to_owned(),
-                            &section,
-                        ),
-                        None => match &rule.split {
-                            None => err(
-                                rule_field("hash_policy"),
-                                "hash_policy needs a split action: with one backend there is nothing to hash between (use [backend.*.affinity] for per-server stickiness)"
-                                    .to_owned(),
-                                "split = [{ backend = \"a\", weight = 1 }, { backend = \"b\", weight = 1 }] + hash_policy = { key = \"cookie:session\" }".to_owned(),
-                                &section,
-                            ),
-                            Some(targets)
-                                if targets.iter().filter(|t| t.weight > 0).count() < 2 => err(
-                                    rule_field("hash_policy"),
-                                    "hash_policy needs at least two targets with weight > 0"
-                                        .to_owned(),
-                                    "give two split targets a weight above 0".to_owned(),
-                                    &section,
-                                ),
-                            Some(_) => {}
-                        },
-                    }
-                }
-                // Mirror policy (B-H3, Envoy `request_mirror_policies`):
-                // a copy of the request to another backend, fire-and-forget.
-                if let Some(mirror) = &rule.request_mirror {
-                    if !rule.forwards() {
-                        err(
-                            rule_field("request_mirror"),
-                            "request_mirror only applies to forwarding rules (use_backend or split)"
-                                .to_owned(),
-                            "use_backend = \"api\" + [listener.LISTENER.rules.request_mirror] backend = \"shadow\"".to_owned(),
-                            &section,
-                        );
-                    }
-                    if !config.backend.contains_key(&mirror.backend) {
-                        err(
-                            rule_field("request_mirror.backend"),
-                            format!("backend \"{}\" does not exist", mirror.backend),
-                            format!(
-                                "request_mirror = {{ backend = \"{}\" }} requires a [backend.{}] section",
-                                mirror.backend, mirror.backend
-                            ),
-                            &section,
-                        );
-                    }
-                    if mirror.percentage == 0 || mirror.percentage > 100 {
-                        err(
-                            rule_field("request_mirror.percentage"),
-                            format!("percentage = {} out of range (1..=100)", mirror.percentage),
-                            "percentage = 10 (one in every ten requests); omit it for 100"
-                                .to_owned(),
-                            &section,
-                        );
-                    }
-                }
-                // Header actions (B-N4/B-I4/B-E17). Request-side ones
-                // modify a forwarded request: forwarding actions only
-                // (like `rewrite`). The proxy owns the framing headers.
-                let request_header_ops = !rule.set_headers.is_empty()
-                    || !rule.add_headers.is_empty()
-                    || !rule.del_headers.is_empty();
-                if request_header_ops && !rule.forwards() {
-                    err(
-                        rule_field("set_headers"),
-                        "set_headers/add_headers/del_headers only apply to forwarding rules (use_backend or split)"
-                            .to_owned(),
-                        "use_backend = \"api\" + set_headers = [{ name = \"x-beta\", value = \"on\" }] (or use response_headers)".to_owned(),
-                        &section,
-                    );
-                }
-                for (op_field, ops) in [
-                    ("set_headers", &rule.set_headers),
-                    ("add_headers", &rule.add_headers),
-                    ("response_headers", &rule.response_headers),
-                ] {
-                    for (j, op) in ops.iter().enumerate() {
-                        let name = op.name.to_ascii_lowercase();
-                        if op.name.is_empty()
-                            || op.name.bytes().any(|b| b <= 0x20 || b == 0x7f || b == b':')
-                        {
-                            err(
-                                rule_field(&format!("{op_field}[{j}].name")),
-                                "not a valid header name".to_owned(),
-                                "name = \"x-beta\" (no spaces, control characters or :)".to_owned(),
-                                &section,
-                            );
-                        }
-                        if matches!(name.as_str(), "content-length" | "transfer-encoding") {
-                            err(
-                                rule_field(&format!("{op_field}[{j}].name")),
-                                format!("{name} is a framing header the proxy owns"),
-                                "a custom header like \"x-backend-hint\" (framing stays the proxy's job)"
-                                    .to_owned(),
-                                &section,
-                            );
-                        }
-                        if let Err(cause) = validate_header_value(&op.value) {
-                            err(
-                                rule_field(&format!("{op_field}[{j}].value")),
-                                cause,
-                                "value = \"$scheme\" (literal text or $remote_addr, $host, $scheme)"
-                                    .to_owned(),
-                                &section,
-                            );
-                        }
-                    }
-                }
-                for (j, name) in rule.del_headers.iter().enumerate() {
-                    let lowered = name.to_ascii_lowercase();
-                    if name.is_empty() || name.bytes().any(|b| b <= 0x20 || b == 0x7f || b == b':')
-                    {
-                        err(
-                            rule_field(&format!("del_headers[{j}]")),
-                            "not a valid header name".to_owned(),
-                            "del_headers = [\"x-gone\"]".to_owned(),
-                            &section,
-                        );
-                    }
-                    if matches!(lowered.as_str(), "content-length" | "transfer-encoding") {
-                        err(
-                            rule_field(&format!("del_headers[{j}]")),
-                            format!("{lowered} is a framing header the proxy owns"),
-                            "del_headers = [\"x-gone\"] (a custom header; framing stays the proxy's job)"
-                                .to_owned(),
-                            &section,
-                        );
-                    }
-                }
-                // CORS policy (B-I10).
-                if let Some(cors) = &rule.cors {
-                    if !rule.forwards() {
-                        err(
-                            rule_field("cors"),
-                            "cors only applies to forwarding rules (use_backend or split)"
-                                .to_owned(),
-                            "use_backend = \"api\" + [listener.LISTENER.rules.cors]".to_owned(),
-                            &section,
-                        );
-                    }
-                    if cors.allow_origin.is_empty()
-                        || cors.allow_origin.bytes().any(|b| b <= 0x20 || b == 0x7f)
-                    {
-                        err(
-                            rule_field("cors.allow_origin"),
-                            "not a valid origin value".to_owned(),
-                            "allow_origin = \"https://app.example.com\"".to_owned(),
-                            &section,
-                        );
-                    }
-                    if cors.allow_origin == "*" && cors.allow_credentials {
-                        err(
-                            rule_field("cors.allow_origin"),
-                            "\"*\" cannot be combined with allow_credentials (the browser rejects that pair)"
-                                .to_owned(),
-                            "allow_origin = \"https://app.example.com\" with allow_credentials = true"
-                                .to_owned(),
-                            &section,
-                        );
-                    }
-                    for (op_field, value) in [
-                        ("cors.allow_methods", cors.allow_methods.as_deref()),
-                        ("cors.allow_headers", cors.allow_headers.as_deref()),
-                        ("cors.expose_headers", cors.expose_headers.as_deref()),
-                    ] {
-                        if let Some(value) = value
-                            && value.bytes().any(|b| b < 0x20 || b == 0x7f)
-                        {
-                            err(
-                                rule_field(op_field),
-                                "value contains control characters".to_owned(),
-                                "comma-separated header list (e.g. \"GET, POST\")".to_owned(),
-                                &section,
-                            );
-                        }
-                    }
-                }
-                // Rate limit (B-N8/B-I7/B-E16): explicit values only.
-                if let Some(limit) = &rule.rate_limit {
-                    if limit.rate == 0 {
-                        err(
-                            rule_field("rate_limit.rate"),
-                            "rate must be at least 1".to_owned(),
-                            "rate = 10".to_owned(),
-                            &section,
-                        );
-                    }
-                    if limit.per.is_zero() {
-                        err(
-                            rule_field("rate_limit.per"),
-                            "per must be greater than zero".to_owned(),
-                            "per = \"1s\"".to_owned(),
-                            &section,
-                        );
-                    }
-                    if limit.burst == Some(0) {
-                        err(
-                            rule_field("rate_limit.burst"),
-                            "burst must be at least 1".to_owned(),
-                            "burst = 20".to_owned(),
-                            &section,
-                        );
-                    }
-                }
-                // Authentication (B-N9/B-I9): at least one mechanism;
-                // htpasswd entries are parsed with the same code the
-                // dataplane verifies with (defined once, Q8).
-                if let Some(auth) = &rule.auth {
-                    if auth.url.is_none() && auth.kind.is_none() {
-                        err(
-                            rule_field("auth"),
-                            "auth needs at least one of url or type".to_owned(),
-                            "url = \"http://127.0.0.1:9000/verify\" (or type = \"basic\")"
-                                .to_owned(),
-                            &section,
-                        );
-                    }
-                    if let Some(url) = &auth.url
-                        && let Err(cause) = eqproxy_core::auth::parse_auth_url(url)
-                    {
-                        err(
-                            rule_field("auth.url"),
-                            cause,
-                            "url = \"http://127.0.0.1:9000/verify\"".to_owned(),
-                            &section,
-                        );
-                    }
-                    if auth.kind.is_none() && (!auth.users.is_empty() || auth.realm.is_some()) {
-                        err(
-                            rule_field("auth.type"),
-                            "users and realm only apply to type = \"basic\"".to_owned(),
-                            "type = \"basic\"".to_owned(),
-                            &section,
-                        );
-                    }
-                    if auth.kind.is_some() && auth.users.is_empty() {
-                        err(
-                            rule_field("auth.users"),
-                            "basic auth needs at least one user".to_owned(),
-                            "users = [\"alice:$apr1$…\"]".to_owned(),
-                            &section,
-                        );
-                    }
-                    if auth.users.len() > MAX_AUTH_USERS {
-                        err(
-                            rule_field("auth.users"),
-                            format!(
-                                "too many users: {} (maximum {MAX_AUTH_USERS} per rule)",
-                                auth.users.len()
-                            ),
-                            format!("at most {MAX_AUTH_USERS} users entries"),
-                            &section,
-                        );
-                    }
-                    if let Err(cause) = eqproxy_core::auth::BasicUsers::parse(&auth.users) {
-                        err(
-                            rule_field("auth.users"),
-                            cause,
-                            "users = [\"alice:$apr1$…\"] (htpasswd entries)".to_owned(),
-                            &section,
-                        );
-                    }
-                    if let Some(realm) = &auth.realm
-                        && (realm.is_empty()
-                            || realm
-                                .bytes()
-                                .any(|b| b < 0x20 || b == 0x7f || b == b'"' || b == b'\\'))
-                    {
-                        err(
-                            rule_field("auth.realm"),
-                            "not a valid realm (no control characters, quotes or backslashes)"
-                                .to_owned(),
-                            "realm = \"EQProxy\"".to_owned(),
-                            &section,
-                        );
-                    }
-                }
-                if let Some(redirect) = &rule.redirect {
-                    if let Some(status) = redirect.status
-                        && !matches!(status, 301 | 302 | 303 | 307 | 308)
-                    {
-                        err(
-                            rule_field("redirect.status"),
-                            format!(
-                                "redirect status {status} is not a redirect (301, 302, 303, 307, 308)"
-                            ),
-                            "status = 308".to_owned(),
-                            &section,
-                        );
-                    }
-                    if let Err(cause) = validate_location(&redirect.location) {
-                        err(
-                            rule_field("redirect.location"),
-                            cause,
-                            "location = \"https://$host$request_uri\"".to_owned(),
-                            &section,
-                        );
-                    }
-                }
-                if let Some(direct) = &rule.direct_response {
-                    if !(200..=599).contains(&direct.status) {
-                        err(
-                            rule_field("direct_response.status"),
-                            format!(
-                                "direct_response.status = {} out of range (200-599)",
-                                direct.status
-                            ),
-                            "status = 200".to_owned(),
-                            &section,
-                        );
-                    }
-                    if let Some(content_type) = &direct.content_type
-                        && content_type.bytes().any(|b| b < 0x20 || b == 0x7f)
-                    {
-                        err(
-                            rule_field("direct_response.content_type"),
-                            "content_type contains control characters".to_owned(),
-                            "content_type = \"text/plain\"".to_owned(),
-                            &section,
-                        );
-                    }
-                    if let Some(body) = &direct.body
-                        && body.len() > MAX_LOCAL_RESPONSE_BYTES
-                    {
-                        err(
-                            rule_field("direct_response.body"),
-                            format!(
-                                "direct_response.body is {} bytes (maximum {MAX_LOCAL_RESPONSE_BYTES})",
-                                body.len()
-                            ),
-                            "shorter body, or a backend for large payloads".to_owned(),
-                            &section,
-                        );
-                    }
-                }
-                // Map-backed condition (C10): the referenced map must
-                // exist (shape problems land in Rule::compile below).
-                if let Some(map) = &rule.map
-                    && !config.maps.contains_key(&map.name)
-                {
-                    err(
-                        rule_field("map.name"),
-                        format!("map \"{}\" does not exist", map.name),
-                        format!(
-                            "map = {{ name = \"{}\", key = \"host\" }} requires a [maps.{}] section",
-                            map.name, map.name
-                        ),
-                        &section,
-                    );
-                }
-                if let Err(cause) = Rule::compile(&rule.to_spec(i)) {
-                    let example = if cause.example.is_empty() {
-                        format!("rule \"{}\"", rule.name.clone().unwrap_or_default())
-                    } else {
-                        cause.example
-                    };
-                    err(rule_field(&cause.field), cause.cause, example, &section);
-                }
-            }
-        }
-
-        if let Ok(addr) = listener.listen.parse::<SocketAddr>() {
-            if !addr.ip().is_loopback() && listener.tls.is_none() {
-                result.warnings.push(format!(
-                    "listener \"{name}\" listens on {addr} without TLS: expose it only on trusted networks or enable [listener.{name}.tls]"
-                ));
-            }
-            if listener.maxconn > 65_535 {
-                result.warnings.push(format!(
-                    "listener \"{name}\" maxconn={} needs ~{} descriptors; check `ulimit -n`",
-                    listener.maxconn,
-                    u64::from(listener.maxconn) * 2
-                ));
             }
         }
     }
+}
 
+/// Response compression (B-N6/H6).
+fn check_listener_compression(
+    name: &str,
+    listener: &ListenerConfig,
+    source: &str,
+    file: &Path,
+    result: &mut CheckResult,
+) {
+    let mut err = |field: String, cause: String, example: String, needle: &str| {
+        result.errors.push(ConfigError {
+            file: file.to_path_buf(),
+            location: find_line(source, needle).map(|line| Location { line, column: None }),
+            field: Some(field),
+            cause,
+            example,
+        });
+    };
+    let section = format!("[listener.{name}]");
+    let field = |suffix: &str| format!("listener.{name}.{suffix}");
+
+    // Response compression (B-N6/H6): an http-only feature whose options
+    // are validated with the same grammar the dataplane applies.
+    if listener.compression.gzip || listener.compression.brotli {
+        if listener.mode != ListenerMode::Http {
+            err(
+                field("compression"),
+                "compression is only meaningful in mode = \"http\"".to_owned(),
+                "mode = \"http\" or remove [listener.<name>.compression]".to_owned(),
+                &section,
+            );
+        }
+        if !(1..=9).contains(&listener.compression.level) {
+            err(
+                field("compression.level"),
+                format!(
+                    "compression.level = {} is outside 1-9 (rule: 1 fastest to 9 smallest)",
+                    listener.compression.level
+                ),
+                "level = 6".to_owned(),
+                &section,
+            );
+        }
+        if listener.compression.brotli_quality > 11 {
+            err(
+                field("compression.brotli_quality"),
+                format!(
+                    "compression.brotli_quality = {} is outside 0-11 (rule: 0 fastest to 11 smallest)",
+                    listener.compression.brotli_quality
+                ),
+                "brotli_quality = 5".to_owned(),
+                &section,
+            );
+        }
+        if listener.compression.types.is_empty() {
+            err(
+                field("compression.types"),
+                "compression.types is empty: no response could ever be compressed".to_owned(),
+                "types = [\"text/*\", \"application/json\"] or disable compression".to_owned(),
+                &section,
+            );
+        }
+        for spec in &listener.compression.types {
+            if let Err(why) = eqproxy_core::compression::MediaType::parse(spec) {
+                err(
+                    field("compression.types"),
+                    why,
+                    "types = [\"text/*\", \"application/json\"]".to_owned(),
+                    &section,
+                );
+            }
+        }
+    }
+}
+
+/// Routing rules (v0.6, B-H3/B-H4): one validator per concern.
+fn check_listener_rules(
+    name: &str,
+    listener: &ListenerConfig,
+    config: &Config,
+    source: &str,
+    file: &Path,
+    result: &mut CheckResult,
+) {
+    let mut err = |field: String, cause: String, example: String, needle: &str| {
+        result.errors.push(ConfigError {
+            file: file.to_path_buf(),
+            location: find_line(source, needle).map(|line| Location { line, column: None }),
+            field: Some(field),
+            cause,
+            example,
+        });
+    };
+    let section = format!("[listener.{name}]");
+    let field = |suffix: &str| format!("listener.{name}.{suffix}");
+
+    if !listener.rules.is_empty() {
+        if listener.mode != ListenerMode::Http {
+            err(
+                field("rules"),
+                "routing rules are only meaningful in mode = \"http\"".to_owned(),
+                format!("mode = \"http\" or remove [[listener.{name}.rules]]"),
+                &section,
+            );
+        }
+        if listener.rules.len() > MAX_RULES {
+            err(
+                field("rules"),
+                format!(
+                    "too many rules: {} (maximum {MAX_RULES} per listener)",
+                    listener.rules.len()
+                ),
+                format!("reduce to {MAX_RULES} [[listener.{name}.rules]] tables"),
+                &section,
+            );
+        }
+        for (i, rule) in listener.rules.iter().enumerate() {
+            check_rule_action(name, i, rule, config, source, file, result);
+            check_rule_hash_and_mirror(name, i, rule, config, source, file, result);
+            check_rule_headers(name, i, rule, source, file, result);
+            check_rule_rate_and_auth(name, i, rule, source, file, result);
+            check_rule_terminal(name, i, rule, config, source, file, result);
+        }
+    }
+}
+
+/// Exactly one action, its targets and the rewrite that shapes it.
+fn check_rule_action(
+    name: &str,
+    i: usize,
+    rule: &RuleConfig,
+    config: &Config,
+    source: &str,
+    file: &Path,
+    result: &mut CheckResult,
+) {
+    let mut err = |field: String, cause: String, example: String, needle: &str| {
+        result.errors.push(ConfigError {
+            file: file.to_path_buf(),
+            location: find_line(source, needle).map(|line| Location { line, column: None }),
+            field: Some(field),
+            cause,
+            example,
+        });
+    };
+    let section = format!("[listener.{name}]");
+    let rule_field = |suffix: &str| {
+        if suffix.is_empty() {
+            format!("listener.{name}.rules[{i}]")
+        } else {
+            format!("listener.{name}.rules[{i}].{suffix}")
+        }
+    };
+
+    // Exactly one action per rule (v0.6 slice 2).
+    let actions = u8::from(rule.use_backend.is_some())
+        + u8::from(rule.split.is_some())
+        + u8::from(rule.redirect.is_some())
+        + u8::from(rule.direct_response.is_some());
+    if actions != 1 {
+        err(
+            rule_field(""),
+            "set exactly one of use_backend, split, redirect or direct_response"
+                .to_owned(),
+            "use_backend = \"api\" (route) | split = [{ backend = \"stable\", weight = 90 }, { backend = \"canary\", weight = 10 }] | redirect = { status = 301, location = \"https://$host$request_uri\" } | direct_response = { status = 200, body = \"ok\" }".to_owned(),
+            &section,
+        );
+    }
+    // Weighted traffic split (B-I11): sound references,
+    // bounded targets, no duplicates, at least one enabled.
+    if let Some(targets) = &rule.split {
+        if targets.len() < 2 {
+            err(
+                rule_field("split"),
+                "a split needs at least two targets (use use_backend for one backend)"
+                    .to_owned(),
+                "split = [{ backend = \"stable\", weight = 90 }, { backend = \"canary\", weight = 10 }]".to_owned(),
+                &section,
+            );
+        }
+        if targets.len() > MAX_SPLIT_TARGETS {
+            err(
+                rule_field("split"),
+                format!(
+                    "too many targets: {} (maximum {MAX_SPLIT_TARGETS})",
+                    targets.len()
+                ),
+                format!("reduce split to {MAX_SPLIT_TARGETS} targets"),
+                &section,
+            );
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for (j, target) in targets.iter().enumerate() {
+            if !seen.insert(target.backend.as_str()) {
+                err(
+                    rule_field(&format!("split[{j}].backend")),
+                    format!("backend \"{}\" is listed twice", target.backend),
+                    "each backend appears exactly once in split".to_owned(),
+                    &section,
+                );
+            }
+            if !config.backend.contains_key(&target.backend) {
+                err(
+                    rule_field(&format!("split[{j}].backend")),
+                    format!("backend \"{}\" does not exist", target.backend),
+                    format!(
+                        "split = [{{ backend = \"{}\", weight = 90 }}] requires a [backend.{}] section",
+                        target.backend, target.backend
+                    ),
+                    &section,
+                );
+            }
+            if target.weight > MAX_SERVER_WEIGHT {
+                err(
+                    rule_field(&format!("split[{j}].weight")),
+                    format!(
+                        "weight = {} out of range (0..={MAX_SERVER_WEIGHT})",
+                        target.weight
+                    ),
+                    "weight = 10 (0 = target disabled)".to_owned(),
+                    &section,
+                );
+            }
+        }
+        if !targets.iter().any(|target| target.weight > 0) {
+            err(
+                rule_field("split"),
+                "every target has weight = 0 (no request would ever be routed)".to_owned(),
+                "give at least one target a weight above 0".to_owned(),
+                &section,
+            );
+        }
+    }
+    if let Some(backend) = &rule.use_backend
+        && !config.backend.contains_key(backend)
+    {
+        err(
+            rule_field("use_backend"),
+            format!("backend \"{backend}\" does not exist"),
+            format!("use_backend = \"{backend}\" requires a [backend.{backend}] section"),
+            &section,
+        );
+    } // `rewrite` modifies a forwarding action only.
+    if let Some(rewrite) = &rule.rewrite {
+        if !rule.forwards() {
+            err(
+                rule_field("rewrite"),
+                "rewrite only applies to forwarding rules (use_backend or split)".to_owned(),
+                "use_backend = \"api\" + [listener.LISTENER.rules.rewrite] (or use redirect)"
+                    .to_owned(),
+                &section,
+            );
+        }
+        if rewrite.path_prefix_rewrite.is_none() && rewrite.host_rewrite.is_none() {
+            err(
+                rule_field("rewrite"),
+                "rewrite sets no field".to_owned(),
+                "path_prefix_rewrite = \"/v2\" or host_rewrite = \"internal\"".to_owned(),
+                &section,
+            );
+        }
+        if let Some(prefix) = &rewrite.path_prefix_rewrite {
+            if rule.path_prefix.is_none() {
+                err(
+                    rule_field("rewrite.path_prefix_rewrite"),
+                    "path_prefix_rewrite needs the rule's path_prefix to replace".to_owned(),
+                    "path_prefix = \"/api\" plus path_prefix_rewrite = \"/v2\"".to_owned(),
+                    &section,
+                );
+            }
+            if !(prefix.is_empty() || prefix.starts_with('/'))
+                || prefix
+                    .bytes()
+                    .any(|b| b <= 0x20 || b == 0x7f || b == b'?' || b == b'#')
+            {
+                err(
+                    rule_field("rewrite.path_prefix_rewrite"),
+                    "not a valid path prefix".to_owned(),
+                    "path_prefix_rewrite = \"/v2\" (starts with /; no spaces, ? or #)".to_owned(),
+                    &section,
+                );
+            }
+        }
+        if let Some(host) = &rewrite.host_rewrite
+            && (host.is_empty() || host.bytes().any(|b| b <= 0x20 || b == 0x7f))
+        {
+            err(
+                rule_field("rewrite.host_rewrite"),
+                "not a valid host value".to_owned(),
+                "host_rewrite = \"internal.svc\" (no spaces or control characters)".to_owned(),
+                &section,
+            );
+        }
+    }
+}
+
+/// Hash policy and request mirror (B-H3).
+fn check_rule_hash_and_mirror(
+    name: &str,
+    i: usize,
+    rule: &RuleConfig,
+    config: &Config,
+    source: &str,
+    file: &Path,
+    result: &mut CheckResult,
+) {
+    let mut err = |field: String, cause: String, example: String, needle: &str| {
+        result.errors.push(ConfigError {
+            file: file.to_path_buf(),
+            location: find_line(source, needle).map(|line| Location { line, column: None }),
+            field: Some(field),
+            cause,
+            example,
+        });
+    };
+    let section = format!("[listener.{name}]");
+    let rule_field = |suffix: &str| {
+        if suffix.is_empty() {
+            format!("listener.{name}.rules[{i}]")
+        } else {
+            format!("listener.{name}.rules[{i}].{suffix}")
+        }
+    };
+
+    // Hash policy (B-H3, Envoy `hash_policy`): the key selects
+    // among the split targets, so it needs a split with two or
+    // more active targets. Per-server stickiness is
+    // `[backend.*.affinity]`, not this field.
+    if let Some(hash) = &rule.hash_policy {
+        match hash_key_problem(&hash.key) {
+            Some(cause) => err(
+                rule_field("hash_policy.key"),
+                cause,
+                "key = \"cookie:session\" (or header:NAME, source, path, host)"
+                    .to_owned(),
+                &section,
+            ),
+            None => match &rule.split {
+                None => err(
+                    rule_field("hash_policy"),
+                    "hash_policy needs a split action: with one backend there is nothing to hash between (use [backend.*.affinity] for per-server stickiness)"
+                        .to_owned(),
+                    "split = [{ backend = \"a\", weight = 1 }, { backend = \"b\", weight = 1 }] + hash_policy = { key = \"cookie:session\" }".to_owned(),
+                    &section,
+                ),
+                Some(targets)
+                    if targets.iter().filter(|t| t.weight > 0).count() < 2 => err(
+                        rule_field("hash_policy"),
+                        "hash_policy needs at least two targets with weight > 0"
+                            .to_owned(),
+                        "give two split targets a weight above 0".to_owned(),
+                        &section,
+                    ),
+                Some(_) => {}
+            },
+        }
+    }
+    // Mirror policy (B-H3, Envoy `request_mirror_policies`):
+    // a copy of the request to another backend, fire-and-forget.
+    if let Some(mirror) = &rule.request_mirror {
+        if !rule.forwards() {
+            err(
+                rule_field("request_mirror"),
+                "request_mirror only applies to forwarding rules (use_backend or split)"
+                    .to_owned(),
+                "use_backend = \"api\" + [listener.LISTENER.rules.request_mirror] backend = \"shadow\"".to_owned(),
+                &section,
+            );
+        }
+        if !config.backend.contains_key(&mirror.backend) {
+            err(
+                rule_field("request_mirror.backend"),
+                format!("backend \"{}\" does not exist", mirror.backend),
+                format!(
+                    "request_mirror = {{ backend = \"{}\" }} requires a [backend.{}] section",
+                    mirror.backend, mirror.backend
+                ),
+                &section,
+            );
+        }
+        if mirror.percentage == 0 || mirror.percentage > 100 {
+            err(
+                rule_field("request_mirror.percentage"),
+                format!("percentage = {} out of range (1..=100)", mirror.percentage),
+                "percentage = 10 (one in every ten requests); omit it for 100".to_owned(),
+                &section,
+            );
+        }
+    }
+}
+
+/// Header mutations and CORS (B-N4/B-I4/B-E17/B-I10).
+fn check_rule_headers(
+    name: &str,
+    i: usize,
+    rule: &RuleConfig,
+    source: &str,
+    file: &Path,
+    result: &mut CheckResult,
+) {
+    let mut err = |field: String, cause: String, example: String, needle: &str| {
+        result.errors.push(ConfigError {
+            file: file.to_path_buf(),
+            location: find_line(source, needle).map(|line| Location { line, column: None }),
+            field: Some(field),
+            cause,
+            example,
+        });
+    };
+    let section = format!("[listener.{name}]");
+    let rule_field = |suffix: &str| {
+        if suffix.is_empty() {
+            format!("listener.{name}.rules[{i}]")
+        } else {
+            format!("listener.{name}.rules[{i}].{suffix}")
+        }
+    };
+
+    // Header actions (B-N4/B-I4/B-E17). Request-side ones
+    // modify a forwarded request: forwarding actions only
+    // (like `rewrite`). The proxy owns the framing headers.
+    let request_header_ops = !rule.set_headers.is_empty()
+        || !rule.add_headers.is_empty()
+        || !rule.del_headers.is_empty();
+    if request_header_ops && !rule.forwards() {
+        err(
+            rule_field("set_headers"),
+            "set_headers/add_headers/del_headers only apply to forwarding rules (use_backend or split)"
+                .to_owned(),
+            "use_backend = \"api\" + set_headers = [{ name = \"x-beta\", value = \"on\" }] (or use response_headers)".to_owned(),
+            &section,
+        );
+    }
+    for (op_field, ops) in [
+        ("set_headers", &rule.set_headers),
+        ("add_headers", &rule.add_headers),
+        ("response_headers", &rule.response_headers),
+    ] {
+        for (j, op) in ops.iter().enumerate() {
+            let name = op.name.to_ascii_lowercase();
+            if op.name.is_empty() || op.name.bytes().any(|b| b <= 0x20 || b == 0x7f || b == b':') {
+                err(
+                    rule_field(&format!("{op_field}[{j}].name")),
+                    "not a valid header name".to_owned(),
+                    "name = \"x-beta\" (no spaces, control characters or :)".to_owned(),
+                    &section,
+                );
+            }
+            if matches!(name.as_str(), "content-length" | "transfer-encoding") {
+                err(
+                    rule_field(&format!("{op_field}[{j}].name")),
+                    format!("{name} is a framing header the proxy owns"),
+                    "a custom header like \"x-backend-hint\" (framing stays the proxy's job)"
+                        .to_owned(),
+                    &section,
+                );
+            }
+            if let Err(cause) = validate_header_value(&op.value) {
+                err(
+                    rule_field(&format!("{op_field}[{j}].value")),
+                    cause,
+                    "value = \"$scheme\" (literal text or $remote_addr, $host, $scheme)".to_owned(),
+                    &section,
+                );
+            }
+        }
+    }
+    for (j, name) in rule.del_headers.iter().enumerate() {
+        let lowered = name.to_ascii_lowercase();
+        if name.is_empty() || name.bytes().any(|b| b <= 0x20 || b == 0x7f || b == b':') {
+            err(
+                rule_field(&format!("del_headers[{j}]")),
+                "not a valid header name".to_owned(),
+                "del_headers = [\"x-gone\"]".to_owned(),
+                &section,
+            );
+        }
+        if matches!(lowered.as_str(), "content-length" | "transfer-encoding") {
+            err(
+                rule_field(&format!("del_headers[{j}]")),
+                format!("{lowered} is a framing header the proxy owns"),
+                "del_headers = [\"x-gone\"] (a custom header; framing stays the proxy's job)"
+                    .to_owned(),
+                &section,
+            );
+        }
+    }
+    // CORS policy (B-I10).
+    if let Some(cors) = &rule.cors {
+        if !rule.forwards() {
+            err(
+                rule_field("cors"),
+                "cors only applies to forwarding rules (use_backend or split)".to_owned(),
+                "use_backend = \"api\" + [listener.LISTENER.rules.cors]".to_owned(),
+                &section,
+            );
+        }
+        if cors.allow_origin.is_empty() || cors.allow_origin.bytes().any(|b| b <= 0x20 || b == 0x7f)
+        {
+            err(
+                rule_field("cors.allow_origin"),
+                "not a valid origin value".to_owned(),
+                "allow_origin = \"https://app.example.com\"".to_owned(),
+                &section,
+            );
+        }
+        if cors.allow_origin == "*" && cors.allow_credentials {
+            err(
+                rule_field("cors.allow_origin"),
+                "\"*\" cannot be combined with allow_credentials (the browser rejects that pair)"
+                    .to_owned(),
+                "allow_origin = \"https://app.example.com\" with allow_credentials = true"
+                    .to_owned(),
+                &section,
+            );
+        }
+        for (op_field, value) in [
+            ("cors.allow_methods", cors.allow_methods.as_deref()),
+            ("cors.allow_headers", cors.allow_headers.as_deref()),
+            ("cors.expose_headers", cors.expose_headers.as_deref()),
+        ] {
+            if let Some(value) = value
+                && value.bytes().any(|b| b < 0x20 || b == 0x7f)
+            {
+                err(
+                    rule_field(op_field),
+                    "value contains control characters".to_owned(),
+                    "comma-separated header list (e.g. \"GET, POST\")".to_owned(),
+                    &section,
+                );
+            }
+        }
+    }
+}
+
+/// Rate limit and authentication (B-N8/B-I7/B-E16, B-N9/B-I9).
+fn check_rule_rate_and_auth(
+    name: &str,
+    i: usize,
+    rule: &RuleConfig,
+    source: &str,
+    file: &Path,
+    result: &mut CheckResult,
+) {
+    let mut err = |field: String, cause: String, example: String, needle: &str| {
+        result.errors.push(ConfigError {
+            file: file.to_path_buf(),
+            location: find_line(source, needle).map(|line| Location { line, column: None }),
+            field: Some(field),
+            cause,
+            example,
+        });
+    };
+    let section = format!("[listener.{name}]");
+    let rule_field = |suffix: &str| {
+        if suffix.is_empty() {
+            format!("listener.{name}.rules[{i}]")
+        } else {
+            format!("listener.{name}.rules[{i}].{suffix}")
+        }
+    };
+
+    // Rate limit (B-N8/B-I7/B-E16): explicit values only.
+    if let Some(limit) = &rule.rate_limit {
+        if limit.rate == 0 {
+            err(
+                rule_field("rate_limit.rate"),
+                "rate must be at least 1".to_owned(),
+                "rate = 10".to_owned(),
+                &section,
+            );
+        }
+        if limit.per.is_zero() {
+            err(
+                rule_field("rate_limit.per"),
+                "per must be greater than zero".to_owned(),
+                "per = \"1s\"".to_owned(),
+                &section,
+            );
+        }
+        if limit.burst == Some(0) {
+            err(
+                rule_field("rate_limit.burst"),
+                "burst must be at least 1".to_owned(),
+                "burst = 20".to_owned(),
+                &section,
+            );
+        }
+    }
+    // Authentication (B-N9/B-I9): at least one mechanism;
+    // htpasswd entries are parsed with the same code the
+    // dataplane verifies with (defined once, Q8).
+    if let Some(auth) = &rule.auth {
+        if auth.url.is_none() && auth.kind.is_none() {
+            err(
+                rule_field("auth"),
+                "auth needs at least one of url or type".to_owned(),
+                "url = \"http://127.0.0.1:9000/verify\" (or type = \"basic\")".to_owned(),
+                &section,
+            );
+        }
+        if let Some(url) = &auth.url
+            && let Err(cause) = eqproxy_core::auth::parse_auth_url(url)
+        {
+            err(
+                rule_field("auth.url"),
+                cause,
+                "url = \"http://127.0.0.1:9000/verify\"".to_owned(),
+                &section,
+            );
+        }
+        if auth.kind.is_none() && (!auth.users.is_empty() || auth.realm.is_some()) {
+            err(
+                rule_field("auth.type"),
+                "users and realm only apply to type = \"basic\"".to_owned(),
+                "type = \"basic\"".to_owned(),
+                &section,
+            );
+        }
+        if auth.kind.is_some() && auth.users.is_empty() {
+            err(
+                rule_field("auth.users"),
+                "basic auth needs at least one user".to_owned(),
+                "users = [\"alice:$apr1$…\"]".to_owned(),
+                &section,
+            );
+        }
+        if auth.users.len() > MAX_AUTH_USERS {
+            err(
+                rule_field("auth.users"),
+                format!(
+                    "too many users: {} (maximum {MAX_AUTH_USERS} per rule)",
+                    auth.users.len()
+                ),
+                format!("at most {MAX_AUTH_USERS} users entries"),
+                &section,
+            );
+        }
+        if let Err(cause) = eqproxy_core::auth::BasicUsers::parse(&auth.users) {
+            err(
+                rule_field("auth.users"),
+                cause,
+                "users = [\"alice:$apr1$…\"] (htpasswd entries)".to_owned(),
+                &section,
+            );
+        }
+        if let Some(realm) = &auth.realm
+            && (realm.is_empty()
+                || realm
+                    .bytes()
+                    .any(|b| b < 0x20 || b == 0x7f || b == b'"' || b == b'\\'))
+        {
+            err(
+                rule_field("auth.realm"),
+                "not a valid realm (no control characters, quotes or backslashes)".to_owned(),
+                "realm = \"EQProxy\"".to_owned(),
+                &section,
+            );
+        }
+    }
+}
+
+/// Redirect, direct response, map reference and compile check.
+fn check_rule_terminal(
+    name: &str,
+    i: usize,
+    rule: &RuleConfig,
+    config: &Config,
+    source: &str,
+    file: &Path,
+    result: &mut CheckResult,
+) {
+    let mut err = |field: String, cause: String, example: String, needle: &str| {
+        result.errors.push(ConfigError {
+            file: file.to_path_buf(),
+            location: find_line(source, needle).map(|line| Location { line, column: None }),
+            field: Some(field),
+            cause,
+            example,
+        });
+    };
+    let section = format!("[listener.{name}]");
+    let rule_field = |suffix: &str| {
+        if suffix.is_empty() {
+            format!("listener.{name}.rules[{i}]")
+        } else {
+            format!("listener.{name}.rules[{i}].{suffix}")
+        }
+    };
+
+    if let Some(redirect) = &rule.redirect {
+        if let Some(status) = redirect.status
+            && !matches!(status, 301 | 302 | 303 | 307 | 308)
+        {
+            err(
+                rule_field("redirect.status"),
+                format!("redirect status {status} is not a redirect (301, 302, 303, 307, 308)"),
+                "status = 308".to_owned(),
+                &section,
+            );
+        }
+        if let Err(cause) = validate_location(&redirect.location) {
+            err(
+                rule_field("redirect.location"),
+                cause,
+                "location = \"https://$host$request_uri\"".to_owned(),
+                &section,
+            );
+        }
+    }
+    if let Some(direct) = &rule.direct_response {
+        if !(200..=599).contains(&direct.status) {
+            err(
+                rule_field("direct_response.status"),
+                format!(
+                    "direct_response.status = {} out of range (200-599)",
+                    direct.status
+                ),
+                "status = 200".to_owned(),
+                &section,
+            );
+        }
+        if let Some(content_type) = &direct.content_type
+            && content_type.bytes().any(|b| b < 0x20 || b == 0x7f)
+        {
+            err(
+                rule_field("direct_response.content_type"),
+                "content_type contains control characters".to_owned(),
+                "content_type = \"text/plain\"".to_owned(),
+                &section,
+            );
+        }
+        if let Some(body) = &direct.body
+            && body.len() > MAX_LOCAL_RESPONSE_BYTES
+        {
+            err(
+                rule_field("direct_response.body"),
+                format!(
+                    "direct_response.body is {} bytes (maximum {MAX_LOCAL_RESPONSE_BYTES})",
+                    body.len()
+                ),
+                "shorter body, or a backend for large payloads".to_owned(),
+                &section,
+            );
+        }
+    }
+    // Map-backed condition (C10): the referenced map must
+    // exist (shape problems land in Rule::compile below).
+    if let Some(map) = &rule.map
+        && !config.maps.contains_key(&map.name)
+    {
+        err(
+            rule_field("map.name"),
+            format!("map \"{}\" does not exist", map.name),
+            format!(
+                "map = {{ name = \"{}\", key = \"host\" }} requires a [maps.{}] section",
+                map.name, map.name
+            ),
+            &section,
+        );
+    }
+    if let Err(cause) = Rule::compile(&rule.to_spec(i)) {
+        let example = if cause.example.is_empty() {
+            format!("rule \"{}\"", rule.name.clone().unwrap_or_default())
+        } else {
+            cause.example
+        };
+        err(rule_field(&cause.field), cause.cause, example, &section);
+    }
+}
+
+/// Warnings that depend on the listener as a whole.
+fn check_listener_warnings(name: &str, listener: &ListenerConfig, result: &mut CheckResult) {
+    if let Ok(addr) = listener.listen.parse::<SocketAddr>() {
+        if !addr.ip().is_loopback() && listener.tls.is_none() {
+            result.warnings.push(format!(
+                "listener \"{name}\" listens on {addr} without TLS: expose it only on trusted networks or enable [listener.{name}.tls]"
+            ));
+        }
+        if listener.maxconn > 65_535 {
+            result.warnings.push(format!(
+                "listener \"{name}\" maxconn={} needs ~{} descriptors; check `ulimit -n`",
+                listener.maxconn,
+                u64::from(listener.maxconn) * 2
+            ));
+        }
+    }
+}
+
+fn check_backends(config: &Config, source: &str, file: &Path, result: &mut CheckResult) {
+    let mut err = |field: String, cause: String, example: String, needle: &str| {
+        result.errors.push(ConfigError {
+            file: file.to_path_buf(),
+            location: find_line(source, needle).map(|line| Location { line, column: None }),
+            field: Some(field),
+            cause,
+            example,
+        });
+    };
     for (name, backend) in &config.backend {
         let section = format!("[backend.{name}]");
         let field = |suffix: &str| format!("backend.{name}.{suffix}");
@@ -2098,7 +2521,18 @@ pub fn check(config: &Config, source: &str, file: &Path) -> CheckResult {
             }
         }
     }
+}
 
+fn check_listener_tls(config: &Config, source: &str, file: &Path, result: &mut CheckResult) {
+    let mut err = |field: String, cause: String, example: String, needle: &str| {
+        result.errors.push(ConfigError {
+            file: file.to_path_buf(),
+            location: find_line(source, needle).map(|line| Location { line, column: None }),
+            field: Some(field),
+            cause,
+            example,
+        });
+    };
     for (name, listener) in &config.listener {
         if let Some(tls) = &listener.tls {
             let section = format!("[listener.{name}]");
@@ -2175,8 +2609,6 @@ pub fn check(config: &Config, source: &str, file: &Path) -> CheckResult {
             }
         }
     }
-
-    result
 }
 
 /// Problems of an error-page redirect target (`errorloc`, B-H16).

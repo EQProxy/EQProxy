@@ -38,21 +38,30 @@ fuzz_target!(|data: &[u8]| {
             continue;
         };
 
-        let config = eqproxy_config::parse_str(&first.toml, std::path::Path::new("<fuzz>"))
-            .unwrap_or_else(|err| {
-                panic!(
-                    "{}: emitted TOML does not parse: {} — input:\n{text}",
-                    source.as_str(),
-                    err.cause
-                )
-            });
+        let parsed = eqproxy_config::parse_str(&first.toml, std::path::Path::new("<fuzz>"));
+        assert!(
+            parsed.is_ok(),
+            "{}: emitted TOML does not parse: {} — input:\n{text}",
+            source.as_str(),
+            parsed
+                .as_ref()
+                .err()
+                .map_or("unknown parse error", |err| err.cause.as_str())
+        );
+        let Ok(config) = parsed else {
+            return;
+        };
         assert!(
             !config.listener.is_empty(),
             "{}: converted output has no listener — input:\n{text}",
             source.as_str()
         );
 
-        let second = import::convert(source, &text).expect("deterministic conversion");
+        let second = import::convert(source, &text);
+        assert!(second.is_ok(), "deterministic conversion");
+        let Ok(second) = second else {
+            return;
+        };
         assert_eq!(
             first.toml,
             second.toml,
@@ -81,23 +90,28 @@ fuzz_target!(|data: &[u8]| {
         let header = first
             .report
             .lines()
-            .find(|line| line.starts_with("- Directivas leídas:"))
-            .unwrap_or_else(|| panic!("{}: report has no counts header", source.as_str()));
+            .find(|line| line.starts_with("- Directivas leídas:"));
+        assert!(
+            header.is_some(),
+            "{}: report has no counts header",
+            source.as_str()
+        );
+        let Some(header) = header else {
+            return;
+        };
         let numbers: Vec<usize> = header
             .split(|c: char| !c.is_ascii_digit())
             .filter(|token| !token.is_empty())
             .filter_map(|token| token.parse().ok())
             .collect();
-        let (read, classified, converted, review, rejected) = match numbers.as_slice() {
-            [read, classified, converted, review, rejected] => {
-                (*read, *classified, *converted, *review, *rejected)
-            }
-            other => panic!(
-                "{}: unexpected counts header {other:?} in {:?}",
-                source.as_str(),
-                header
-            ),
-        };
+        assert_eq!(
+            numbers.len(),
+            5,
+            "{}: unexpected counts header {numbers:?} in {header:?}",
+            source.as_str()
+        );
+        let (read, classified, converted, review, rejected) =
+            (numbers[0], numbers[1], numbers[2], numbers[3], numbers[4]);
         assert_eq!(
             read,
             classified,

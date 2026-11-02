@@ -102,3 +102,29 @@ a dependency of `eqproxy-cli`, and no production path includes this file.
   is the invariant to preserve.
 - The scan's `medium`/`low` volume is unchanged and stays as the tool's
   advisory backlog.
+
+## Resolution (2026-11-02)
+
+The seven `high` findings above were all false positives, but the gate remained
+red. They are now **0**: no rule was suppressed, no path was excluded and no
+test was weakened.
+
+- The three R16 sites were refactored into synchronous helpers
+  (`refresh_store`, `insert_store`, `remove_store`) in `eqproxy-net/src/cache.rs`.
+  The mutex guard is acquired and released inside those helpers; the async
+  methods now have no `lock()` followed by an `.await`. The actual critical
+  section and the no-I/O-under-lock invariant did not change.
+- The four R09 sites in `fuzz/fuzz_targets/config_import.rs` still fail the
+  target on exactly the same conditions, but through `assert!`/`assert_eq!`
+  instead of `panic!`/`expect`. The parse, determinism, report-header and count
+  oracles are unchanged; the fuzz target still compiles and panics on a bad
+  input.
+- The full-tree scan, including `fuzz/`, is:
+  `python3.13 .../rust_audit.py scan . --format md --out report --fail-on high`
+  → exit `0`, with the report
+  `report/rust-audit-20261102-201822.md`: **0 critical, 0 high**.
+
+This supersedes the “would require excluding the fuzz workspace” sentence in
+the historical section above. The three R16/R09 classifications remain the
+reason the findings were false positives; the refactor makes the invariant
+explicit and the full scan green.

@@ -69,9 +69,30 @@ subcommand. That run is **not** a pass. The journey was repeated with
 The `config apply` plan in both runs reported one HTTP listener on the chosen
 port and one backend server pointing at nginx.
 
-## 3. Docker Scout — NOT EXECUTED
+## 3. Docker Scout — transferred native images
 
-Docker Scout CLI `v1.29.0` was installed on both hosts and invoked:
+Docker Scout `v1.29.0` was installed on both servers, but their CLI refused to
+scan without a Docker Hub login. The exact server-built images were then
+exported, transferred to the Mac and loaded without rebuilding:
+
+```bash
+ssh netcup-bench 'docker save eqproxy:native-amd64 -o /tmp/eqproxy-native-amd64.tar'
+ssh oracle-quasar 'docker save eqproxy:native-arm64 -o /tmp/eqproxy-native-arm64.tar'
+scp netcup-bench:/tmp/eqproxy-native-amd64.tar /tmp/
+scp oracle-quasar:/tmp/eqproxy-native-arm64.tar /tmp/
+docker load -i /tmp/eqproxy-native-amd64.tar
+docker load -i /tmp/eqproxy-native-arm64.tar
+```
+
+The tar hashes and the loaded Image IDs match the server-side images:
+
+| Image | Tar sha256 | Remote / local Image ID |
+|---|---|---|
+| `native-amd64` | `91fa34ad12767a6935f725d6fbdaba5c3ae602306a581bf2e46e8e5720644676` | `sha256:68662b27…` / same |
+| `native-arm64` | `162910587d83545c46f5537d62ea6f85dcb4109cbf77f5d1d43ad6ea41039b91` | `sha256:757d55de…` / same |
+
+Scout `v1.27.0` on the Mac then scanned those images, not the older
+Mac-built `eqproxy:local-*` images:
 
 ```bash
 docker scout cves --only-severity critical,high --exit-code \
@@ -80,14 +101,12 @@ docker scout cves --only-severity critical,high --exit-code \
   --platform linux/arm64 eqproxy:native-arm64
 ```
 
-Both commands exited `1` before scanning and answered:
-
-> Log in with your Docker ID or email address to use docker scout.
-
-No Docker Hub credentials were available on the evidence hosts, and none were
-copied from the macOS Docker Desktop session. The native Scout gate is therefore
-**NOT EXECUTED**. The earlier 0C/0H result over the macOS-built local images is
-historical and is not presented as evidence for these native images.
+Both commands exited `0`; each indexed **36 packages** with
+**0 critical / 0 high / 0 medium / 0 low**. Reports:
+`report/scout-native-amd64.log`, `report/scout-native-arm64.log`. The arm64
+image's runtime base is Wolfi; that base is included in those 36 packages and
+is clean in this scan. This is a package-level result, not a scan of the Rust
+binary's own code.
 
 ## 4. Ubuntu root and non-root suites
 
@@ -159,6 +178,7 @@ Root: **2 printed, 2 declared**, exit `0`. Non-root: **0 printed**, exit `0`.
   GitHub Actions execution.
 - The first root run had one observed timing failure. It is not declared as a
   clean run; the retry is clean and the isolated test passes.
-- Docker Scout is blocked by missing Docker Hub authentication, as stated above;
-  no zero-vulnerability claim is made for the native images.
+- Scout was run on the Mac against the server-built images after byte-for-byte
+transfer; it is a static package scan, not a server-local process. It does not
+scan the Rust binary's own code and is not a registry-promotion result.
 - This page does not establish production readiness.

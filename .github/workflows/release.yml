@@ -13,6 +13,17 @@ name: Release
 # A manual run (workflow_dispatch) exercises the whole pipeline as a dry
 # run: release creation and registry push are gated on `ref_type == tag`,
 # so a branch run can never publish anything.
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   GHCR_TOKEN           Classic PAT owned by the `exyonq` GitHub account with
+#                        the `write:packages` scope. The `ghcr.io/exyonq/eqproxy`
+#                        package lives in that user namespace; the repository
+#                        transfer to `EQProxy/EQProxy` did not move it, and the
+#                        workflow's GITHUB_TOKEN now belongs to the new owner,
+#                        so it cannot write there. GitHub Packages rejects
+#                        fine-grained PATs: the token must be classic.
+#   DOCKERHUB_USERNAME   Docker Hub account that owns `exyonq/eqproxy`.
+#   DOCKERHUB_TOKEN      Docker Hub token with read/write on that repository.
 
 on:
   push:
@@ -31,6 +42,26 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+
+      # A tag run publishes to `ghcr.io/exyonq/eqproxy`, a package that lives
+      # in the `exyonq` account and is pushed with `GHCR_TOKEN`, not with this
+      # repository's GITHUB_TOKEN. Fail here — before the toolchain, the
+      # suites or any image byte — instead of inside docker/login-action after
+      # darwin and linux have already built: a missing secret is a
+      # configuration mistake, and the message says how to fix it. Tag-only,
+      # because a workflow_dispatch dry run pushes nothing and must not
+      # require the secret.
+      - name: GHCR token is configured
+        if: github.ref_type == 'tag'
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GHCR_TOKEN:-}" ]; then
+            echo "::error::GHCR_TOKEN is not set. Tag runs push ghcr.io/exyonq/eqproxy, whose package belongs to the 'exyonq' account. Create a classic PAT with the 'write:packages' scope on that account and add it as a repository secret named GHCR_TOKEN (Settings -> Secrets and variables -> Actions). See CONTRIBUTING.md#releases."
+            exit 1
+          fi
+          echo "GHCR_TOKEN is set (value not printed)."
 
       # CI runs the three gates on every push. A tag push does not trigger CI,
       # so a release cannot trust a commit whose gates only ran somewhere
@@ -611,9 +642,12 @@ jobs:
     name: Multi-arch image (build + Scout both archs + E2E + promote)
     needs: [darwin, linux]
     runs-on: ubuntu-latest
+    # No `packages: write`: the GHCR push authenticates with the `exyonq` PAT
+    # below, not with this workflow's GITHUB_TOKEN, which belongs to the
+    # repository owner (EQProxy) and has no rights over a package in another
+    # user's namespace.
     permissions:
       contents: read
-      packages: write
     steps:
       - uses: actions/checkout@v7
 
@@ -621,11 +655,20 @@ jobs:
 
       - uses: docker/setup-buildx-action@v4
 
-      - uses: docker/login-action@v4
+      # The package stays in the `exyonq` namespace after the repository
+      # transfer, so the login identity is the account that owns it, not
+      # `github.actor` or `github.repository_owner` (both are now EQProxy).
+      # `GHCR_TOKEN` is a classic PAT of `exyonq` with `write:packages`;
+      # `GITHUB_TOKEN` cannot write to another owner's package. Tag-only, like
+      # every step that touches a registry: a dry run builds without pushing
+      # and must not fail on a repository that has not set the secret yet.
+      - name: Log in to GHCR (exyonq package namespace)
+        if: github.ref_type == 'tag'
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: exyonq
+          password: ${{ secrets.GHCR_TOKEN }}
 
       # Publish gate (owner decision 2026-10-20, extended the same day to
       # **both** architectures): the image is built once and pushed under a

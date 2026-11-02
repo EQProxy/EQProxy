@@ -123,6 +123,31 @@ Before pushing, this check must print nothing:
 git log origin/main..HEAD --format=%b | grep -iE '^co-authored-by:'
 ```
 
+## Releases
+
+Only a `v*` tag publishes. The release workflow needs three repository
+secrets (Settings → Secrets and variables → Actions); none of them belongs in
+the tree:
+
+| Secret | Value |
+|---|---|
+| `GHCR_TOKEN` | Classic PAT of the `exyonq` GitHub account with `write:packages`. |
+| `DOCKERHUB_USERNAME` | Docker Hub account that owns `exyonq/eqproxy`. |
+| `DOCKERHUB_TOKEN` | Docker Hub token with read/write on that repository. |
+
+`GHCR_TOKEN` exists because packages do not follow a repository transfer: the
+image stays in the `exyonq` user namespace after the move to
+[`EQProxy/EQProxy`](https://github.com/EQProxy/EQProxy), while the workflow's
+`GITHUB_TOKEN` belongs to the new owner and cannot write there. GitHub
+Packages only accepts **classic** tokens, so a fine-grained PAT will fail the
+push with a permission error even if it looks correctly scoped.
+
+To rotate it, create a new classic token on `exyonq` with `write:packages`,
+update the `GHCR_TOKEN` secret, and re-run the failed tag. Revoke the old
+token afterwards. If the image is ever moved to the `EQProxy` namespace, the
+PAT and the literal `ghcr.io/exyonq/eqproxy` references in the workflow go
+away together.
+
 ## Commit style
 
 Subject in the imperative, prefixed with the area it touches, body explaining

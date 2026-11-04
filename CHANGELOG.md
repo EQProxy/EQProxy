@@ -16,6 +16,18 @@ Fixed); versions are `vMAJOR.MINOR.PATCH` git tags.
   head. The administration plane keeps its own responses. Evidence:
   [v092-server-banner](docs/evidence/v092-server-banner.md).
 
+### Security
+
+- **Test TLS keys are generated, not committed.** Debug and test builds now
+  create the self-signed certificate/key fixtures in `OUT_DIR/fixtures` with
+  OpenSSL; release builds skip generation, so the release binary and image
+  carry no test keys and the build does not need OpenSSL. The 12 test
+  fixtures and the 22 private keys kept with historical benchmark evidence
+  are removed; the 11 public evidence certificates remain. CI runs
+  `.github/scripts/check-secrets.py` (self-test + scan of tracked files) with
+  no allowlist and fails on private keys and provider credentials; the
+  release workflow also rejects a source tarball containing a private key.
+
 ## [v0.9.1] — 2026-11-01
 
 ### Added

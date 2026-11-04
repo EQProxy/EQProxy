@@ -7,6 +7,17 @@ used to open the README: what 0.9.1 adds, what the earlier lines added, the
 measured performance including the losses, and the release gates. Moved from
 the README on 2026-11-01; only link targets were adjusted for this directory.
 
+> **TLS material (2026-11-04).** Test TLS and mTLS private keys are generated
+> at build time into `OUT_DIR/fixtures`; they are not committed. The
+> historical benchmark records keep their public certificates, but their
+> private key halves (`key.pem` and the combined `haproxy.pem`) were removed
+> from the tracked tree on 2026-11-04; regenerate ephemeral keys to
+> reproduce a run. Evidence documents dated before this change cite
+> `eqproxy-net/tests/fixtures/*.pem` because that was the tree they ran
+> against; their commands and results are preserved as run. Current tests
+> must not add `.pem`/`.key` private keys; CI rejects private keys with no
+> allowlist, and the release workflow scans the source tarball.
+
 ## Release status
 
 **Status: v0.9.1 (2026-11-01) — released and published; artifact gate met.

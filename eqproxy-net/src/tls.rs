@@ -686,13 +686,13 @@ impl ServerCertVerifier for NoVerifier {
 mod tests {
     use super::*;
 
-    const CERT: &[u8] = include_bytes!("../tests/fixtures/cert.pem");
-    const KEY: &[u8] = include_bytes!("../tests/fixtures/key.pem");
-    const ALPHA: &[u8] = include_bytes!("../tests/fixtures/alpha.pem");
-    const ALPHA_KEY: &[u8] = include_bytes!("../tests/fixtures/alpha.key");
-    const BETA: &[u8] = include_bytes!("../tests/fixtures/beta.pem");
-    const BETA_KEY: &[u8] = include_bytes!("../tests/fixtures/beta.key");
-    const MTLS_CA: &[u8] = include_bytes!("../tests/fixtures/mtls-ca.pem");
+    const CERT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/cert.pem"));
+    const KEY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/key.pem"));
+    const ALPHA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/alpha.pem"));
+    const ALPHA_KEY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/alpha.key"));
+    const BETA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/beta.pem"));
+    const BETA_KEY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/beta.key"));
+    const MTLS_CA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/mtls-ca.pem"));
 
     /// Leaf DER of a PEM chain (what the handshake serves).
     fn leaf(pem: &[u8]) -> Vec<u8> {

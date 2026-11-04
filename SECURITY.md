@@ -9,8 +9,8 @@ table, residual risk).
 
 | Version | Security fixes |
 |---|---|
-| `0.8.x` — latest patch of the current minor | Yes |
-| `0.7.x` and earlier | No (upgrade to `0.8.x`) |
+| `0.9.x` — latest patch of the current minor | Yes |
+| `0.8.x` and earlier | No (upgrade to `0.9.x`) |
 
 EQProxy is pre-1.0: fixes land in the current minor line and are released as a
 new patch, never back-ported. The list of fixes of each release is in

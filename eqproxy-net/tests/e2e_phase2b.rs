@@ -22,8 +22,8 @@ use eqproxy_net::{
 mod common;
 
 const WAIT: Duration = Duration::from_secs(5);
-const CERT: &[u8] = include_bytes!("fixtures/cert.pem");
-const KEY: &[u8] = include_bytes!("fixtures/key.pem");
+const CERT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/cert.pem"));
+const KEY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/key.pem"));
 
 // ---------------------------------------------------------------- helpers ---
 

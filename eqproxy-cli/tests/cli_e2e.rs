@@ -12,32 +12,14 @@ fn bin() -> Command {
 }
 
 /// Test certificates shared with the eqproxy-net e2e tests.
-const FIXTURE_CERT: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../eqproxy-net/tests/fixtures/cert.pem"
-);
-const FIXTURE_KEY: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../eqproxy-net/tests/fixtures/key.pem"
-);
+const FIXTURE_CERT: &str = concat!(env!("OUT_DIR"), "/fixtures/cert.pem");
+const FIXTURE_KEY: &str = concat!(env!("OUT_DIR"), "/fixtures/key.pem");
 /// Additional SNI certificates (B-I2/B-H10/B-E9): `alpha.example.test`
 /// (exact) and `*.beta.example.test` (wildcard).
-const FIXTURE_ALPHA_CERT: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../eqproxy-net/tests/fixtures/alpha.pem"
-);
-const FIXTURE_ALPHA_KEY: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../eqproxy-net/tests/fixtures/alpha.key"
-);
-const FIXTURE_BETA_CERT: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../eqproxy-net/tests/fixtures/beta.pem"
-);
-const FIXTURE_BETA_KEY: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../eqproxy-net/tests/fixtures/beta.key"
-);
+const FIXTURE_ALPHA_CERT: &str = concat!(env!("OUT_DIR"), "/fixtures/alpha.pem");
+const FIXTURE_ALPHA_KEY: &str = concat!(env!("OUT_DIR"), "/fixtures/alpha.key");
+const FIXTURE_BETA_CERT: &str = concat!(env!("OUT_DIR"), "/fixtures/beta.pem");
+const FIXTURE_BETA_KEY: &str = concat!(env!("OUT_DIR"), "/fixtures/beta.key");
 
 fn temp_config(name: &str, contents: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!(

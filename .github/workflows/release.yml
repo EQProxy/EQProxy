@@ -524,6 +524,15 @@ jobs:
               echo "source tarball contains the local-only path $forbidden"; exit 1
             fi
           done
+          # A published source asset must not carry private key material,
+          # even when the path is not on the local-only list. The HEAD gate
+          # scans tracked files; this checks the bytes that will be uploaded.
+          SCAN="${RUNNER_TEMP:-/tmp}/src-private-scan.txt"
+          tar -xzOf "dist/$SRC" > "$SCAN" 2>/dev/null || true
+          if grep -q -E '^-----BEGIN (RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----$' "$SCAN"; then
+            echo "source tarball contains a private key"; exit 1
+          fi
+          rm -f "$SCAN"
           # Every workspace member plus the lockfile, or the tarball does not
           # build: a truncated export is a broken source release.
           for required in Cargo.toml Cargo.lock; do

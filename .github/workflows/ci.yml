@@ -40,6 +40,12 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Self-test the secret gate
+        run: python3 .github/scripts/check-secrets.py --self-test
+
+      - name: No private keys or provider credentials in tracked files
+        run: python3 .github/scripts/check-secrets.py
+
       - name: Format
         run: cargo fmt --all -- --check
 

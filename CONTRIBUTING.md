@@ -1,10 +1,10 @@
 # Contributing to EQProxy
 
-EQProxy is a reverse proxy and load balancer in Rust. It is pre-1.0: v0.6.3 is
-released and the v0.7 work (HTTP/2 to backends, gRPC, WebSockets over h2,
-HTTP/3) lands on `main`. Issues and pull requests are welcome; for a change
-that touches behaviour, configuration or the wire protocol, open an issue
-first so the scope can be agreed before code is written.
+EQProxy is a reverse proxy and load balancer in Rust. It is pre-1.0: v0.9.1 is
+the latest release and v0.9.2 is in progress. Issues and pull requests are
+welcome; for a change that touches behaviour, configuration or the wire
+protocol, open an issue first so the scope can be agreed before code is
+written.
 
 ## Development setup
 
@@ -22,6 +22,12 @@ cargo build --workspace
 cargo test --workspace
 ```
 
+Debug and test builds generate the self-signed TLS/mTLS fixtures with the
+`openssl` CLI into `OUT_DIR/fixtures`; keep `openssl` on `PATH` (the CI
+runners and macOS provide it). Release builds skip generation, so the release
+binary and image neither need OpenSSL nor ship test keys. The generated PEMs
+are never committed.
+
 Run the proxy against the example configuration, which is also the quickest
 smoke test of a change:
 
@@ -35,13 +41,19 @@ listeners until `SIGINT`.
 
 ## Before opening a PR
 
-Run the three build gates CI runs on every push, with the same flags:
+Run the build gates CI runs on every push, with the same flags:
 
 ```bash
+python3 .github/scripts/check-secrets.py --self-test
+python3 .github/scripts/check-secrets.py
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
+
+The secret gate scans `git ls-files` and rejects private keys with no
+allowlist; public certificates are not matches. The release workflow also
+scans the exported source tarball for private keys.
 
 CI also runs the admin-socket ACL journey on native Linux runners
 (`.github/scripts/admin-unix-acl-e2e.sh`, amd64 and arm64). It needs root, `setpriv`
@@ -114,7 +126,11 @@ said.
 
 ## What never enters a commit
 
-Credentials, private notes and generated artifacts stay out of the diff.
+Credentials, private notes and generated artifacts stay out of the diff. Test
+TLS material is generated at build time: do not add `.pem` or `.key` files to
+the tree. Imported conversation or tool attachments (for example
+`.cloud-attachments/`) are local-only and belong in `.git/info/exclude`, not
+in a commit or the Docker context.
 
 Before pushing, this check must print nothing:
 

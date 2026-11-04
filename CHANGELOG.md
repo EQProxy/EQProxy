@@ -7,6 +7,13 @@ Fixed); versions are `vMAJOR.MINOR.PATCH` git tags.
 
 ### Changed
 
+- **HTTP/2 stream pipe: 16 KiB default.** The per-stream pipe between an h2
+  client stream and the h1 engine drops from 64 KiB to 16 KiB, matching h3
+  and reducing the memory held by the 400-stream shape. The change follows
+  the v0.9.2 H2 profile and ADR-0048; the required five-repetition S-H2-01
+  re-measurement is **NOT EXECUTED**, so this is not a measured speedup and
+  roadmap box 16 remains open.
+
 - **Product banner: the dataplane sends `Server: EQProxy`.** v0.9.1 shipped
   `Server: eqproxy`; the policy is unchanged (the origin's value is replaced,
   never appended, and no build number is advertised), only the capitalisation
@@ -15,6 +22,22 @@ Fixed); versions are `vMAJOR.MINOR.PATCH` git tags.
   local errors, redirects, auth denials, gRPC and the `101`/CONNECT switch
   head. The administration plane keeps its own responses. Evidence:
   [v092-server-banner](docs/evidence/v092-server-banner.md).
+
+### Fixed
+
+- **Graceful shutdown on SIGTERM.** The `run` loop now treats SIGTERM like
+  SIGINT, so `docker stop` drains connections and reports the final metrics
+  instead of killing the process with 143; the profile image also writes its
+  flamegraph on that path. A SIGTERM E2E joins the existing SIGINT one
+  (`run_shuts_down_gracefully_on_sigterm`).
+
+- **Profiler dependency chain: quick-xml advisories cleared.** The optional
+  `profile` feature now renders the flamegraph with `inferno 0.12.8`
+  (`quick-xml 0.41`) instead of `pprof`'s `flamegraph` feature, which pins
+  `inferno 0.11` / `quick-xml 0.26` (RUSTSEC-2026-0194/0195). `deny.toml`
+  allows CDDL-1.0 for `inferno` only, under ADR-0049; the release image does
+  not enable the feature. The SVG format and the `PPROF_SVG_*` markers are
+  unchanged.
 
 ### Security
 

@@ -13,6 +13,9 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+#[cfg(feature = "profile")]
+mod profile;
+
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -193,6 +196,11 @@ enum ConfigCommand {
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
+    // Sampling covers the whole invocation and is dumped after `run` returns,
+    // which is the graceful shutdown path. Without the feature or without
+    // `EQPROXY_PPROF_DIR` this is a no-op and costs nothing.
+    #[cfg(feature = "profile")]
+    let profiler = profile::start();
     let code = match cli.command {
         Command::Run {
             config,
@@ -201,6 +209,8 @@ async fn main() -> ExitCode {
         Command::Config { command } => config_command(command).await,
         Command::Doctor { config } => doctor(config.as_deref()),
     };
+    #[cfg(feature = "profile")]
+    profile::finish(profiler);
     ExitCode::from(code)
 }
 
@@ -3342,9 +3352,9 @@ async fn run(path: PathBuf, metrics_interval: String) -> u8 {
 
     // The shutdown and reload signals are armed before any listener is bound
     // or announced. `tokio::signal::unix::signal` installs the OS handler when
-    // it is called, so a SIGINT or SIGHUP arriving the instant the first
-    // socket is ready finds the handler instead of the default action, which
-    // terminates the process without a clean shutdown or a reload.
+    // it is called, so a SIGINT, SIGTERM or SIGHUP arriving the instant the
+    // first socket is ready finds the handler instead of the default action,
+    // which terminates the process without a clean shutdown or a reload.
     let (handle, signal) = shutdown::channel();
     // One queue for every configuration mutation (ADR-0019): the admin API
     // and SIGHUP both land here, so the revision check and the swap it
@@ -3361,12 +3371,25 @@ async fn run(path: PathBuf, metrics_interval: String) -> u8 {
                     return 1;
                 }
             };
+        // SIGTERM is the default `docker stop` signal, so it must drain and
+        // report the final metrics exactly like Ctrl-C; without this handler
+        // the process dies with 143 and the profiler never writes its dump.
+        let mut terminate =
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(terminate) => terminate,
+                Err(err) => {
+                    eprintln!("ERROR SIGTERM handler unavailable: {err}");
+                    return 1;
+                }
+            };
         let signal_handle = handle.clone();
         tokio::spawn(async move {
-            if interrupt.recv().await.is_some() {
-                eprintln!("INFO shutdown signal received; draining connections");
-                signal_handle.trigger();
+            tokio::select! {
+                _ = interrupt.recv() => {}
+                _ = terminate.recv() => {}
             }
+            eprintln!("INFO shutdown signal received; draining connections");
+            signal_handle.trigger();
         });
 
         // SIGHUP → hot config reload (S-CFG-01, unix). The signal does not

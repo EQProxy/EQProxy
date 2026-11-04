@@ -2006,6 +2006,75 @@ fn run_proxies_traffic_and_shuts_down_gracefully_on_sigint() {
     ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
 )]
 #[test]
+fn run_shuts_down_gracefully_on_sigterm() {
+    // `docker stop` sends SIGTERM by default: it must take the same graceful
+    // path as Ctrl-C, not kill the process with 143.
+    let config = temp_config(
+        "sigterm",
+        "schema_version = 1\nshutdown_grace = \"5s\"\n[listener.web]\nlisten = \"127.0.0.1:0\"\nbackend = \"api\"\nconnect_timeout = \"2s\"\nidle_timeout = \"30s\"\n[backend.api]\nserver = \"127.0.0.1:9\"\n",
+    );
+
+    let mut child = bin()
+        .args(["run", "--config"])
+        .arg(&config)
+        .args(["--metrics-interval", "1h"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn eqproxy run");
+    let mut stderr = BufReader::new(child.stderr.take().expect("stderr piped"));
+
+    let mut announced = false;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut line = String::new();
+    while Instant::now() < deadline {
+        line.clear();
+        let read = stderr.read_line(&mut line).expect("leer stderr");
+        assert!(read > 0, "eqproxy closed stderr without announcing bind");
+        if line.contains("listening on ") {
+            announced = true;
+            break;
+        }
+    }
+    assert!(announced, "the listen address was not announced");
+
+    let pid = child.id();
+    let kill = Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .status()
+        .expect("run kill");
+    assert!(kill.success(), "kill -TERM must be accepted");
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("try_wait") {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("eqproxy did not finish after SIGTERM");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    remove_temp(&config);
+
+    assert_eq!(status.code(), Some(0), "clean shutdown must exit with 0");
+    let mut log = String::new();
+    for line in stderr.lines().map_while(Result::ok) {
+        log.push_str(&line);
+        log.push('\n');
+    }
+    assert!(
+        log.contains("shutdown signal received"),
+        "stderr final:\n{log}"
+    );
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
+)]
+#[test]
 fn validate_accepts_phase2b_config_with_tls_servers_and_health_checks() {
     let config = temp_config(
         "phase2b",

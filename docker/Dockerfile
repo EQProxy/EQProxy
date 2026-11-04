@@ -23,8 +23,14 @@
 # version CI builds and tests with) and checked by the CI gate that compares
 # this value with that file: one compiler for the tested tree and these bytes.
 ARG RUST_VERSION=1.99.1
+# 0 = release binary (default). 1 = profiling variant with the `profile`
+# feature and frame pointers, built as the explicit `profile` target below.
+ARG PROFILE=0
 
 FROM rust:${RUST_VERSION}-alpine AS builder
+# A global ARG is not visible inside a stage: redeclare it here, or the
+# `if [ "$PROFILE" = "1" ]` below silently takes the release branch.
+ARG PROFILE=0
 WORKDIR /src
 
 # musl-dev/cmake/perl build aws-lc-rs (the rustls crypto provider);
@@ -56,7 +62,12 @@ COPY eqproxy-cli eqproxy-cli
 # On the musl target (the default of rust:alpine) this produces a static
 # executable; the `file` gate fails the build if that ever stops being true,
 # because a dynamic binary would not run on `scratch`.
-RUN cargo build --release --locked -p eqproxy-cli \
+RUN if [ "$PROFILE" = "1" ]; then \
+      RUSTFLAGS="-C force-frame-pointers=yes" \
+        cargo build --release --locked -p eqproxy-cli --features eqproxy-cli/profile; \
+    else \
+      cargo build --release --locked -p eqproxy-cli; \
+    fi \
     && cp target/release/eqproxy /opt/eqproxy \
     && file /opt/eqproxy | grep -Eq 'statically linked|static-pie linked'
 
@@ -81,3 +92,14 @@ EXPOSE 8080
 EXPOSE 8443
 ENTRYPOINT ["/opt/eqproxy"]
 CMD ["--help"]
+
+# Profiling variant, never the default target. `perf` is blocked on the
+# evidence hosts (perf_event_paranoid=4); the feature samples with SIGPROF
+# instead. Build with:
+#   docker build -f docker/Dockerfile --target profile \
+#     --build-arg PROFILE=1 -t eqproxy-profile:v092 .
+# The env vars are inert in the release image because the feature is absent.
+FROM runtime AS profile
+ENV EQPROXY_PPROF_DIR=/tmp/eqproxy-profile
+ENV EQPROXY_PROFILE_SAMPLES=1
+ENV MIMALLOC_SHOW_STATS=1

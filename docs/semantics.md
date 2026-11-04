@@ -75,8 +75,10 @@ not hidden behind the same word.
   multiplexed over it (ADR-0006, ADR-0008).
 - **Limits.** At most **128 concurrent streams** per connection; DATA is read
   in 16 KiB units with capacity reserved before each frame (SPEC §13.10). Each
-  stream's internal pipe is bounded (64 KiB by default, configurable with
-  `limits.stream_buffer_bytes`).
+  client-facing h2 stream's internal pipe is bounded (16 KiB by default,
+  configurable with `limits.stream_buffer_bytes`; the v0.9.2 reduction from
+  64 KiB is pending a five-repetition re-measurement, ADR-0048). The backend
+  h2 path and the WebSocket path keep their own pipes.
 - **What it does NOT do.** There is no server push. A classic `CONNECT` over
   h2 answers `501`; WebSocket over h2 uses extended CONNECT (§11). There is no
   h2 over cleartext towards the backend and no h3 towards the backend (§4,

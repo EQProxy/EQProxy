@@ -13,8 +13,8 @@
 //! HTTP/1.1 message on an in-memory duplex and handed to that engine, so an
 //! h2 request sees **the same decisions and the same error surfaces** as an
 //! h1 request, with no second implementation to drift. The cost is one task
-//! and one bounded 64 KiB pipe per stream, plus the translation below; it is
-//! not hidden (see `docs/evidence/v07-http2.md`).
+//! and one bounded pipe per stream, plus the translation below; it is not
+//! hidden (see `docs/evidence/v07-http2.md`).
 //!
 //! Deliberate limits of this slice, all explicit:
 //! - Hop-by-hop h1 headers and the h1 framing headers are stripped in both
@@ -58,7 +58,12 @@ pub(crate) const DATA_CHUNK: usize = 16 * 1024;
 
 /// In-memory pipe between one h2 stream and the h1 engine. Bounded: a slow
 /// backend applies backpressure through it instead of buffering the body.
-const PIPE_BUFFER: usize = 64 * 1024;
+///
+/// 16 KiB, matching h3. ADR-0048 reduces this from 64 KiB after the v0.9.2
+/// profile measured RSS growing with the number of h2 sockets; the required
+/// five-repetition S-H2-01 re-measurement is still pending, so this is not a
+/// performance claim.
+const PIPE_BUFFER: usize = 16 * 1024;
 
 /// h1 headers that must not cross into h2 (RFC 9113 §8.2.2), plus the h1
 /// framing headers the translation replaces with DATA frames.

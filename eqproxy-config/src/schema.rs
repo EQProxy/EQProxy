@@ -1279,9 +1279,10 @@ pub struct LimitsConfig {
     #[serde(default, deserialize_with = "zero_is_none")]
     #[schemars(with = "u64", default = "u64::default")]
     pub max_body_bytes: Option<NonZeroU64>,
-    /// Buffer of each internal h2/h3/WebSocket stream pipe, in bytes.
-    /// Absent = the protocol default (64 KiB; 16 KiB for h3), which is what
-    /// the dataplane used before this knob existed. Present: 1024..=1048576.
+    /// Buffer of each internal stream pipe, in bytes.
+    /// Absent = the protocol default: 16 KiB for the h2 client stream and
+    /// h3; 64 KiB for the h2 backend exchange and WebSocket. Present:
+    /// 1024..=1048576.
     #[serde(default)]
     pub stream_buffer_bytes: Option<usize>,
 }

@@ -18,5 +18,7 @@ in the run's `certs/` directory; the recorded certificate fingerprints and
 measurements remain the ones from the original run. Documents that cite
 `eqproxy-net/tests/fixtures/*.pem` describe the layout before that date.
 
-CI rejects private keys in tracked files, with no allowlist, and the release
-workflow rejects a source tarball that contains one.
+The secret gate rejects private keys with no allowlist in the tracked tree, in
+staged blobs and in every commit added by a push or pull request; the release
+workflow repeats those checks and rejects a source tarball that contains one.
+The pre-commit hook runs the staged check before a commit can be created.

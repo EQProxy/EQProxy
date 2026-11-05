@@ -42,6 +42,24 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # The release guard repeats the secret checks on the exact tagged tree.
+      # The range check is intentionally limited to commits added since main:
+      # historical test keys already on main are not republished by this tag,
+      # but any key added and removed inside the release branch is caught.
+      - name: Self-test the secret gate
+        run: python3 .github/scripts/check-secrets.py --self-test
+
+      - name: No private keys or provider credentials in the tagged tree
+        run: python3 .github/scripts/check-secrets.py
+
+      - name: No private keys added since main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          python3 .github/scripts/check-secrets.py --range origin/main..HEAD
 
       # A tag run publishes to `ghcr.io/exyonq/eqproxy`, a package that lives
       # in the `exyonq` account and is pushed with `GHCR_TOKEN`, not with this

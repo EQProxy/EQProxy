@@ -18,6 +18,7 @@ verification rather than a moving `stable`.
 ```bash
 git clone https://github.com/EQProxy/EQProxy.git
 cd EQProxy
+git config core.hooksPath .githooks
 cargo build --workspace
 cargo test --workspace
 ```
@@ -46,14 +47,19 @@ Run the build gates CI runs on every push, with the same flags:
 ```bash
 python3 .github/scripts/check-secrets.py --self-test
 python3 .github/scripts/check-secrets.py
+python3 .github/scripts/check-secrets.py --range origin/main..HEAD
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-The secret gate scans `git ls-files` and rejects private keys with no
-allowlist; public certificates are not matches. The release workflow also
-scans the exported source tarball for private keys.
+The secret gate rejects private keys with no allowlist; public certificates
+are not matches. It scans the tracked tree, staged blobs (`--staged`, also run
+by the `.githooks/pre-commit` hook after `core.hooksPath` is configured) and
+every commit added by a push or pull request (`--range`). The range mode scans
+added lines, so a key added and then deleted in the same change is still
+caught. The release workflow repeats these checks and scans the exported
+source tarball for private keys.
 
 CI also runs the admin-socket ACL journey on native Linux runners
 (`.github/scripts/admin-unix-acl-e2e.sh`, amd64 and arm64). It needs root, `setpriv`
@@ -131,6 +137,11 @@ TLS material is generated at build time: do not add `.pem` or `.key` files to
 the tree. Imported conversation or tool attachments (for example
 `.cloud-attachments/`) are local-only and belong in `.git/info/exclude`, not
 in a commit or the Docker context.
+
+Enable **GitHub secret scanning and push protection** in
+**Settings → Code security** for the repository. CI and the pre-commit hook
+are the local backstops; push protection is the remote gate that refuses a
+credential before it becomes reachable on GitHub.
 
 Before pushing, this check must print nothing:
 

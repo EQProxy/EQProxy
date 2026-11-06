@@ -1,4 +1,4 @@
-//! Differential harness (v0.6 acceptance gate): one **declared corpus**
+//! Differential harness: one **declared corpus**
 //! of shared-semantics cases ([docs/differential-corpus.md](../../../docs/differential-corpus.md))
 //! runs unchanged against EQProxy (the built binary) and the reference
 //! implementations — HAProxy 3.4.6, the ingress-nginx data plane (the
@@ -11,10 +11,12 @@
 //! Normalization (declared in the corpus doc): the reason phrase is
 //! ignored; `Location` is reduced to path + query when absolute; the
 //! body is compared only when the case declares one (3xx bodies differ
-//! legitimately per implementation); comma-joined header values use
-//! one canonical separator; and the per-implementation client address
-//! (host loopback vs docker gateway) is calibrated at run time and
-//! substituted as `CLIENT` in bodies.
+//! legitimately per implementation); `chunked` bodies are decoded and
+//! `content-encoding: gzip` bodies are gunzipped before comparison; an
+//! empty declared response-header value means the header must be absent;
+//! comma-joined header values use one canonical separator; and the
+//! per-implementation client address (host loopback vs docker gateway) is
+//! calibrated at run time and substituted as `CLIENT` in bodies.
 //!
 //! Header cases (the B-N4/B-I4 executable spec) live on two endpoints,
 //! `main` (forwarded headers append) and `replace` (anti-spoofing),
@@ -27,6 +29,7 @@
 //!
 //! The report is written to `$CARGO_TARGET_TMPDIR/differential-report.md`.
 
+use flate2::read::GzDecoder;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
@@ -37,6 +40,12 @@ const HAPROXY_IMAGE: &str = "haproxy:3.4.6";
 const INGRESS_NGINX_IMAGE: &str = "registry.k8s.io/ingress-nginx/controller:v1.13.0";
 const ENVOY_IMAGE: &str = "envoyproxy/envoy:v1.34.2";
 const BACKEND_IMAGE: &str = "nginx:alpine";
+
+/// Fixed, comma-free body every backend serves under `/z/`. It is long
+/// enough to exceed the reference compression thresholds (HAProxy does not
+/// compress tiny payloads; nginx and Envoy are configured at 0) and is the
+/// same on all three backends, so the case observes compression, not routing.
+const PROBE_BODY: &str = "compression differential probe payload: the quick brown fox jumps over the lazy dog while the proxy negotiates a coding and the origin declares a plain text body long enough for every implementation to compress it";
 
 /// Declared outcome of one case (the shared semantics).
 struct Outcome {
@@ -369,6 +378,126 @@ const CASES: &[Case] = &[
         response_headers: &[("x-marker", "v06")],
         skip: &[],
     },
+    // --- compression cases (the B-N6/H6 executable spec) ----------------
+    // The body is compared after transfer and content decoding: the corpus
+    // declares the payload, not the wire framing each implementation picks.
+    Case {
+        id: "z1-gzip",
+        why: "a gzip-capable client gets gzip and the same decoded body",
+        request: "GET /z/probe HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n",
+        expect: Outcome {
+            status: 200,
+            location: None,
+            body: Some(PROBE_BODY),
+        },
+        endpoint: "main",
+        response_headers: &[("content-encoding", "gzip")],
+        skip: &[],
+    },
+    Case {
+        id: "z2-no-accept-encoding",
+        why: "no Accept-Encoding means identity and no content-encoding",
+        request: "GET /z/probe HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        expect: Outcome {
+            status: 200,
+            location: None,
+            body: Some(PROBE_BODY),
+        },
+        endpoint: "main",
+        // An empty declared value means the header must be absent.
+        response_headers: &[("content-encoding", "")],
+        skip: &[],
+    },
+    Case {
+        id: "z3-identity",
+        why: "Accept-Encoding: identity is not compressed",
+        request: "GET /z/probe HTTP/1.1\r\nHost: x\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n",
+        expect: Outcome {
+            status: 200,
+            location: None,
+            body: Some(PROBE_BODY),
+        },
+        endpoint: "main",
+        response_headers: &[("content-encoding", "")],
+        skip: &[],
+    },
+    // --- custom error page on an upstream connect failure -------------
+    Case {
+        id: "e1-error-page-503",
+        why: "a backend connect failure is replaced by the configured error page",
+        request: "GET /e1/x HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        expect: Outcome {
+            status: 503,
+            location: None,
+            body: Some("custom-503"),
+        },
+        endpoint: "main",
+        response_headers: &[],
+        skip: &[],
+    },
+    // --- TLS termination ------------------------------------------------
+    Case {
+        id: "t1-tls-http",
+        why: "a TLS client completes a real handshake and gets the declared body",
+        request: "GET /tls/ping HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        expect: Outcome {
+            status: 200,
+            location: None,
+            body: Some("tls-ok"),
+        },
+        endpoint: "tls",
+        response_headers: &[],
+        skip: &[],
+    },
+    // --- protocol limit -------------------------------------------------
+    Case {
+        id: "l1-duplicate-content-length",
+        why: "two conflicting Content-Length fields are rejected, never forwarded",
+        request: "POST /l1/x HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\nContent-Length: 2\r\nConnection: close\r\n\r\na",
+        expect: Outcome {
+            status: 400,
+            location: None,
+            body: None,
+        },
+        endpoint: "main",
+        response_headers: &[],
+        skip: &[(
+            "haproxy",
+            "HAProxy closes the connection without an HTTP response on duplicate Content-Length; recorded as a documented divergence",
+        )],
+    },
+];
+
+/// Cache cases: the same request is sent twice. Every backend answers
+/// `/cache/` with a fresh per-request UUID, so two identical bodies prove
+/// the second response was served from the cache without reaching the
+/// origin; two different bodies prove the request bypassed or missed it.
+struct CacheCase {
+    id: &'static str,
+    why: &'static str,
+    request: &'static str,
+    /// Prefix every origin body starts with (it carries the backend id).
+    body_prefix: &'static str,
+    /// `true`: the second response must equal the first (a HIT).
+    /// `false`: it must differ (the origin was reached again).
+    expect_hit: bool,
+}
+
+const CACHE_CASES: &[CacheCase] = &[
+    CacheCase {
+        id: "k1-miss-then-hit",
+        why: "a cacheable GET is fetched once and the second request is served from the cache",
+        request: "GET /cache/k1 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        body_prefix: "cache api ",
+        expect_hit: true,
+    },
+    CacheCase {
+        id: "k2-no-store-bypass",
+        why: "an origin no-store response is never stored, so both requests reach the origin",
+        request: "GET /cache/nostore HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        body_prefix: "cache-nostore api ",
+        expect_hit: false,
+    },
 ];
 
 // --- docker orchestration -------------------------------------------------
@@ -474,15 +603,133 @@ fn container_logs(name: &str) -> String {
 
 // --- requests and normalization ------------------------------------------
 
-fn http_request(addr: &str, raw: &str) -> String {
+/// One parsed response. The body stays as bytes until the transfer and
+/// content codings are undone: gzip output is not UTF-8.
+struct Response {
+    status: u16,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+fn http_request(addr: &str, raw: &str) -> Response {
     let mut stream = TcpStream::connect(addr).expect("connect to implementation");
     stream.write_all(raw.as_bytes()).expect("write request");
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("read timeout");
-    let mut response = Vec::new();
-    let _ = stream.read_to_end(&mut response);
-    String::from_utf8_lossy(&response).into_owned()
+    let mut wire = Vec::new();
+    let _ = stream.read_to_end(&mut wire);
+    parse_response(&wire)
+}
+
+/// Drive the public TLS listener through the host's OpenSSL client. This is
+/// a real TLS handshake, not a plaintext request to a TLS port.
+fn https_request(addr: &str, raw: &str) -> Response {
+    let mut child = Command::new("openssl")
+        .args([
+            "s_client",
+            "-quiet",
+            "-connect",
+            addr,
+            "-servername",
+            "localhost",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn openssl s_client");
+    child
+        .stdin
+        .take()
+        .expect("openssl stdin")
+        .write_all(raw.as_bytes())
+        .expect("write TLS request");
+    let output = child.wait_with_output().expect("wait for openssl");
+    parse_response(&output.stdout)
+}
+
+fn parse_response(wire: &[u8]) -> Response {
+    let split = wire.windows(4).position(|window| window == b"\r\n\r\n");
+    let (head, body) = match split {
+        Some(index) => (&wire[..index], &wire[index + 4..]),
+        None => (wire, &[] as &[u8]),
+    };
+    let head = String::from_utf8_lossy(head);
+    let mut lines = head.lines();
+    let status = lines
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse().ok())
+        .unwrap_or(0);
+    let headers: Vec<(String, String)> = lines
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            Some((name.trim().to_ascii_lowercase(), value.trim().to_owned()))
+        })
+        .collect();
+    let body = decode_body(&headers, body);
+    Response {
+        status,
+        headers,
+        body,
+    }
+}
+
+/// Undo the transfer coding and the content coding each implementation
+/// chooses. The corpus declares the payload, not the framing: the references
+/// differ on `Content-Length` vs `chunked` and on whether they compress.
+fn decode_body(headers: &[(String, String)], raw: &[u8]) -> Vec<u8> {
+    let chunked = headers.iter().any(|(name, value)| {
+        name == "transfer-encoding" && value.to_ascii_lowercase().contains("chunked")
+    });
+    let raw = if chunked { dechunk(raw) } else { raw.to_vec() };
+    let encoding = headers
+        .iter()
+        .find(|(name, _)| name == "content-encoding")
+        .map(|(_, value)| value.to_ascii_lowercase());
+    match encoding.as_deref() {
+        Some("gzip") => {
+            let mut decoded = Vec::new();
+            GzDecoder::new(&raw[..])
+                .read_to_end(&mut decoded)
+                .expect("decode the gzip response body");
+            decoded
+        }
+        Some(other) => panic!("the differential harness cannot decode content-encoding {other:?}"),
+        None => raw,
+    }
+}
+
+/// Decode an HTTP/1.1 chunked body down to its payload. Chunk extensions and
+/// trailers are accepted and discarded; the corpus does not assert framing.
+fn dechunk(raw: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut rest = raw;
+    loop {
+        let Some(end) = rest.windows(2).position(|window| window == b"\r\n") else {
+            panic!("chunked body without a size line");
+        };
+        let line = std::str::from_utf8(&rest[..end]).expect("chunk size is ASCII");
+        let size = usize::from_str_radix(line.split(';').next().unwrap_or("").trim(), 16)
+            .expect("chunk size is hexadecimal");
+        rest = &rest[end + 2..];
+        if size == 0 {
+            return out;
+        }
+        assert!(
+            rest.len() >= size + 2,
+            "chunked body truncated: {size} bytes plus CRLF, {} available",
+            rest.len()
+        );
+        out.extend_from_slice(&rest[..size]);
+        assert_eq!(
+            &rest[size..size + 2],
+            b"\r\n",
+            "chunk not terminated by CRLF"
+        );
+        rest = &rest[size + 2..];
+    }
 }
 
 struct Normalized {
@@ -492,28 +739,19 @@ struct Normalized {
     headers: Vec<(String, String)>,
 }
 
-fn normalize(response: &str, client_ip: &str) -> Normalized {
-    let status = response
-        .split_whitespace()
-        .nth(1)
-        .and_then(|code| code.parse().ok())
-        .unwrap_or(0);
-    let (head, body) = response.split_once("\r\n\r\n").unwrap_or((response, ""));
-    let headers: Vec<(String, String)> = head
-        .lines()
-        .skip(1)
-        .filter_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            Some((name.trim().to_ascii_lowercase(), value.trim().to_owned()))
-        })
-        .collect();
+fn normalize(response: Response, client_ip: &str) -> Normalized {
+    let Response {
+        status,
+        headers,
+        body,
+    } = response;
     let location = headers
         .iter()
         .find_map(|(name, value)| (name == "location").then(|| reduce_location(value)));
     Normalized {
         status,
         location,
-        body: normalize_body(body, client_ip),
+        body: normalize_body(&String::from_utf8_lossy(&body), client_ip),
         headers,
     }
 }
@@ -539,7 +777,7 @@ fn probe_client_ip(addr: &str) -> String {
         addr,
         "GET /h1/probe HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
     );
-    let body = response.split_once("\r\n\r\n").map_or("", |(_, b)| b);
+    let body = String::from_utf8_lossy(&response.body).into_owned();
     let ip = body
         .find("xff=[")
         .map(|i| body[i + 5..].split(']').next().unwrap_or_default())
@@ -565,12 +803,22 @@ fn reduce_location(value: &str) -> String {
     }
 }
 
-fn summary(got: &Normalized) -> String {
+fn summary(got: &Normalized, declared_headers: &[(&str, &str)]) -> String {
     let mut out = got.status.to_string();
     if let Some(location) = &got.location {
         out.push_str(&format!(" -> {location}"));
     }
     out.push_str(&format!(" {:?}", got.body));
+    // Show what the case asserts, including absence, so the report carries
+    // the observable and not only the verdict.
+    for (name, _) in declared_headers {
+        let value = got
+            .headers
+            .iter()
+            .find(|(header, _)| header == name)
+            .map_or("<absent>", |(_, value)| value.as_str());
+        out.push_str(&format!(" {name}={value}"));
+    }
     out
 }
 
@@ -597,6 +845,18 @@ fn check(case: &Case, got: &Normalized) -> Result<(), String> {
             .iter()
             .find(|(n, _)| n.as_str() == *name)
             .map(|(_, v)| v.as_str());
+        // An empty declared value means the header must be absent: the
+        // compression cases assert that identity responses carry no
+        // `content-encoding`, which a body comparison alone cannot see once
+        // the harness decodes it.
+        if want.is_empty() {
+            if got_value.is_some() {
+                return Err(format!(
+                    "response header {name} must be absent, got {got_value:?}"
+                ));
+            }
+            continue;
+        }
         if got_value != Some(*want) {
             return Err(format!(
                 "response header {name} {got_value:?} != declared {want:?}"
@@ -614,8 +874,9 @@ fn check(case: &Case, got: &Normalized) -> Result<(), String> {
 /// (`/h4/` also echoes `X-Forwarded-Proto`, which Envoy sets natively
 /// while the others are opt-in).
 fn backend_conf(id: &str) -> String {
+    let probe = PROBE_BODY;
     format!(
-        "server {{\n    listen 80;\n    server_name _;\n    location /h4 {{\n        return 200 \"{id} $request_uri xff=[$http_x_forwarded_for] real=[$http_x_real_ip] proto=[$http_x_forwarded_proto] beta=[$http_x_beta] gone=[$http_x_gone] added=[$http_x_added]\";\n    }}\n    location /h {{\n        return 200 \"{id} $request_uri xff=[$http_x_forwarded_for] real=[$http_x_real_ip] beta=[$http_x_beta] gone=[$http_x_gone] added=[$http_x_added]\";\n    }}\n    location / {{\n        return 200 \"{id} $request_uri\";\n    }}\n}}\n"
+        "server {{\n    listen 80;\n    server_name _;\n    location /h4 {{\n        return 200 \"{id} $request_uri xff=[$http_x_forwarded_for] real=[$http_x_real_ip] proto=[$http_x_forwarded_proto] beta=[$http_x_beta] gone=[$http_x_gone] added=[$http_x_added]\";\n    }}\n    location /h {{\n        return 200 \"{id} $request_uri xff=[$http_x_forwarded_for] real=[$http_x_real_ip] beta=[$http_x_beta] gone=[$http_x_gone] added=[$http_x_added]\";\n    }}\n    location = /cache/nostore {{\n        default_type text/plain;\n        add_header Cache-Control no-store always;\n        return 200 'cache-nostore {id} $request_id';\n    }}\n    location /cache/ {{\n        default_type text/plain;\n        add_header Cache-Control 'public, max-age=60' always;\n        return 200 'cache {id} $request_id';\n    }}\n    location /z/ {{\n        default_type text/plain;\n        return 200 \"{probe}\";\n    }}\n    location / {{\n        return 200 \"{id} $request_uri\";\n    }}\n}}\n"
     )
 }
 
@@ -629,8 +890,21 @@ defaults
     timeout connect 5s
     timeout client 30s
     timeout server 30s
+    errorfile 503 /usr/local/etc/haproxy/errors/503.http
+cache diffcache
+    total-max-size 8
+    max-object-size 65536
+    max-age 60
 frontend fe
     bind :8080
+    # Cache case (k1): store the cacheable probe for the second request.
+    http-request cache-use diffcache if { path_beg /cache/ }
+    # A response rule cannot evaluate path_beg; the cache itself ignores
+    # responses that are not cacheable (no public max-age).
+    http-response cache-store diffcache
+    # Compression cases (z1-z3): gzip for the origin's text/plain payload.
+    compression algo gzip
+    compression type text/plain
     # Header cases (B-N4/B-I4 spec), scoped to /h/; values quoted
     # because log-format strings may contain spaces.
     http-request set-header X-Forwarded-For "%[hdr(x-forwarded-for)], %[src]" if { path_beg /h } { hdr(x-forwarded-for) -m found }
@@ -644,6 +918,8 @@ frontend fe
     http-request return status 200 content-type "text/plain" string "pong" if { path /c7/ping }
     http-request set-path %[path,regsub(^/c8/v1/,/c8/api/)] if { path_beg /c8/v1/ }
     use_backend api if { path_beg /h }
+    use_backend api if { path_beg /cache/ }
+    use_backend dead if { path_beg /e1/ }
     use_backend api if { path_beg /c1/ }
     use_backend mgmt if { path_beg /c2/ } { req.hdr(host),lower,field(1,:) -m str special.example.com }
     use_backend mgmt if { path_beg /c3/ } { method POST }
@@ -652,6 +928,10 @@ frontend fe
     use_backend api if { path_beg /c5/ }
     use_backend api if { path_beg /c8/api/ }
     use_backend mgmt if { path_beg /c11/ } { path -m reg \.json$ }
+    default_backend fallback
+frontend fe-tls
+    bind :8443 ssl crt /usr/local/etc/haproxy/tls.pem
+    http-request return status 200 content-type "text/plain" string "tls-ok" if { path /tls/ping }
     default_backend fallback
 frontend fe2
     bind :8081
@@ -666,6 +946,8 @@ backend mgmt
     server s1 172.23.0.12:80
 backend fallback
     server s1 172.23.0.13:80
+backend dead
+    server s1 172.23.0.11:1
 "#
     .to_owned()
 }
@@ -691,7 +973,31 @@ static_resources:
                 strip_any_host_port: true
                 use_remote_address: true
                 skip_xff_append: true
+                local_reply_config:
+                  mappers:
+                    - filter:
+                        status_code_filter:
+                          comparison:
+                            op: EQ
+                            value:
+                              default_value: 503
+                              runtime_key: differential_local_503
+                      status_code: 503
+                      body:
+                        inline_string: "custom-503"
                 http_filters:
+                  - name: envoy.filters.http.compressor
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.compressor.v3.Compressor
+                      compressor_library:
+                        name: gzip
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.compression.gzip.compressor.v3.Gzip
+                      response_direction_config:
+                        common_config:
+                          min_content_length: 0
+                          content_type:
+                            - text/plain
                   - name: envoy.filters.http.router
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
@@ -744,8 +1050,41 @@ static_resources:
                           response_headers_to_add: [{ header: { key: "x-marker", value: "v06" } }]
                         - match: { prefix: "/h" }
                           route: { cluster: api }
+                        - match: { prefix: "/e1/" }
+                          route: { cluster: dead }
                         - match: { prefix: "/" }
                           route: { cluster: fallback }
+    - name: tls
+      address:
+        socket_address: { address: 0.0.0.0, port_value: 8443 }
+      filter_chains:
+        - transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+              common_tls_context:
+                tls_certificates:
+                  - certificate_chain: { filename: /tmp/diff-cert.pem }
+                    private_key: { filename: /tmp/diff-key.pem }
+          filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: tls
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                route_config:
+                  name: tls
+                  virtual_hosts:
+                    - name: all
+                      domains: ["*"]
+                      routes:
+                        - match: { path: "/tls/ping" }
+                          direct_response: { status: 200, body: { inline_string: "tls-ok" } }
+                        - match: { prefix: "/" }
+                          direct_response: { status: 404 }
     - name: replace
       address:
         socket_address: { address: 0.0.0.0, port_value: 8081 }
@@ -776,6 +1115,34 @@ static_resources:
                             - header: { key: "x-real-ip", value: "%DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT%" }
                         - match: { prefix: "/" }
                           route: { cluster: api }
+    - name: cache
+      address:
+        socket_address: { address: 0.0.0.0, port_value: 8082 }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: cache
+                http_filters:
+                  - name: envoy.filters.http.cache
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.cache.v3.CacheConfig
+                      typed_config:
+                        "@type": type.googleapis.com/envoy.extensions.http.cache.simple_http_cache.v3.SimpleHttpCacheConfig
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                route_config:
+                  name: cache
+                  virtual_hosts:
+                    - name: all
+                      domains: ["*"]
+                      routes:
+                        - match: { prefix: "/cache/" }
+                          route: { cluster: api }
+                        - match: { prefix: "/" }
+                          route: { cluster: fallback }
   clusters:
     - name: api
       connect_timeout: 5s
@@ -807,6 +1174,16 @@ static_resources:
               - endpoint:
                   address:
                     socket_address: { address: 172.23.0.13, port_value: 80 }
+    - name: dead
+      connect_timeout: 5s
+      type: STATIC
+      load_assignment:
+        cluster_name: dead
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: 172.23.0.11, port_value: 1 }
 "#
     .to_owned()
 }
@@ -823,6 +1200,7 @@ events { worker_connections 128; }
 http {
     client_body_temp_path /tmp/diff-client-body;
     proxy_temp_path /tmp/diff-proxy-temp;
+    proxy_cache_path /tmp/diff-cache levels=1:2 keys_zone=diffcache:10m max_size=16m inactive=60s use_temp_path=off;
     access_log off;
     map $request_method $c3_backend {
         "POST"  172.23.0.12:80;
@@ -845,12 +1223,31 @@ http {
     server {
         listen 8080 default_server;
         server_name _;
+        gzip on;
+        gzip_types text/plain;
+        gzip_min_length 0;
+        location = /cache/nostore {
+            proxy_cache diffcache;
+            proxy_cache_valid 200 60s;
+            proxy_pass http://172.23.0.11:80;
+        }
+        location /cache/ {
+            proxy_cache diffcache;
+            proxy_cache_valid 200 60s;
+            proxy_pass http://172.23.0.11:80;
+        }
         location /c1/ { proxy_pass http://172.23.0.11:80; }
         location /c3/ { proxy_pass http://$c3_backend; }
         location /c4/ { proxy_pass http://$c4_backend; }
         location /c5/ { proxy_pass http://$c5_backend; }
         location = /c6/old { return 301 /c6/new; }
         location = /c7/ping { return 200 "pong"; }
+        location /e1/ {
+            proxy_pass http://172.23.0.11:1;
+            proxy_intercept_errors on;
+            error_page 502 = @custom502;
+        }
+        location @custom502 { return 503 "custom-503"; }
         location /c8/v1/ { rewrite ^/c8/v1/(.*)$ /c8/api/$1 break; proxy_pass http://172.23.0.11:80; }
         location ~* ^/c11/.*\.json$ { proxy_pass http://172.23.0.12:80; }
         location /h4 {
@@ -885,6 +1282,14 @@ http {
         location / { proxy_pass http://172.23.0.13:80; }
     }
     server {
+        listen 8443 ssl;
+        server_name _;
+        ssl_certificate /tmp/diff-cert.pem;
+        ssl_certificate_key /tmp/diff-key.pem;
+        location = /tls/ping { return 200 "tls-ok"; }
+        location / { return 404; }
+    }
+    server {
         listen 8081;
         server_name _;
         location /h {
@@ -901,7 +1306,15 @@ http {
 
 /// EQProxy: the same corpus as typed routing rules (the format under
 /// test), backends on the published host ports of the backend containers.
-fn eqproxy_toml(api: u16, mgmt: u16, fallback: u16) -> String {
+fn eqproxy_toml(
+    api: u16,
+    mgmt: u16,
+    fallback: u16,
+    cert: &std::path::Path,
+    key: &std::path::Path,
+) -> String {
+    let cert = cert.display();
+    let key = key.display();
     format!(
         r#"schema_version = 1
 [listener.web]
@@ -909,6 +1322,29 @@ listen = "127.0.0.1:0"
 mode = "http"
 backend = "fallback"
 forwarded_headers = "append"
+
+# Compression cases (z1-z3): the body below the default 1024-byte gate is
+# still eligible, and only text/plain is compressed.
+[listener.web.compression]
+gzip = true
+min_size = 0
+types = ["text/plain"]
+
+[[listener.web.error_pages]]
+codes = [502]
+status = 503
+body = "custom-503"
+
+
+[[listener.web.rules]]
+name = "cache"
+path_prefix = "/cache/"
+use_backend = "api"
+
+[[listener.web.rules]]
+name = "e1"
+path_prefix = "/e1/"
+use_backend = "dead"
 
 [[listener.web.rules]]
 name = "c1"
@@ -1005,12 +1441,43 @@ mode = "http"
 backend = "api"
 forwarded_headers = "replace"
 
+# Cache case (k1): a dedicated listener so the cache never serves a
+# different case's response (the corpus reuses paths across headers).
+[listener.cache]
+listen = "127.0.0.1:0"
+mode = "http"
+backend = "api"
+
+[listener.cache.cache]
+default_ttl = "60s"
+
+[[listener.cache.rules]]
+name = "cache"
+path_prefix = "/cache/"
+use_backend = "api"
+
+[listener.secure]
+listen = "127.0.0.1:0"
+mode = "http"
+backend = "fallback"
+[listener.secure.tls]
+cert = "{cert}"
+key = "{key}"
+[[listener.secure.rules]]
+name = "tls"
+path = "/tls/ping"
+[listener.secure.rules.direct_response]
+status = 200
+body = "tls-ok"
+
 [backend.api]
 server = "127.0.0.1:{api}"
 [backend.mgmt]
 server = "127.0.0.1:{mgmt}"
 [backend.fallback]
 server = "127.0.0.1:{fallback}"
+[backend.dead]
+server = "127.0.0.1:1"
 "#
     )
 }
@@ -1094,6 +1561,16 @@ fn differential_shared_semantics_corpus() {
     let haproxy_cfg = write("haproxy.cfg", &haproxy_cfg());
     let envoy_yaml = write("envoy.yaml", &envoy_yaml());
     let nginx_conf = write("ingress-nginx.conf", &ingress_nginx_conf());
+    let haproxy_error = write(
+        "haproxy-503.http",
+        "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: 10\r\n\r\ncustom-503",
+    );
+    let tls_cert = PathBuf::from(env!("OUT_DIR")).join("fixtures/cert.pem");
+    let tls_key = PathBuf::from(env!("OUT_DIR")).join("fixtures/key.pem");
+    let mut hap_tls_bytes = std::fs::read(&tls_cert).expect("read TLS certificate");
+    hap_tls_bytes.extend(std::fs::read(&tls_key).expect("read TLS key"));
+    let haproxy_tls = work.join("haproxy-tls.pem");
+    std::fs::write(&haproxy_tls, hap_tls_bytes).expect("write combined HAProxy PEM");
 
     let mut scope = Scope::new();
 
@@ -1142,10 +1619,22 @@ fn differential_shared_semantics_corpus() {
             "127.0.0.1::8080",
             "-p",
             "127.0.0.1::8081",
+            "-p",
+            "127.0.0.1::8443",
             "-v",
             &format!(
                 "{}:/usr/local/etc/haproxy/haproxy.cfg:ro",
                 haproxy_cfg.display()
+            ),
+            "-v",
+            &format!(
+                "{}:/usr/local/etc/haproxy/tls.pem:ro",
+                haproxy_tls.display()
+            ),
+            "-v",
+            &format!(
+                "{}:/usr/local/etc/haproxy/errors/503.http:ro",
+                haproxy_error.display()
             ),
         ],
         &[],
@@ -1161,8 +1650,16 @@ fn differential_shared_semantics_corpus() {
             "127.0.0.1::8080",
             "-p",
             "127.0.0.1::8081",
+            "-p",
+            "127.0.0.1::8082",
+            "-p",
+            "127.0.0.1::8443",
             "-v",
             &format!("{}:/etc/envoy/envoy.yaml:ro", envoy_yaml.display()),
+            "-v",
+            &format!("{}:/tmp/diff-cert.pem:ro", tls_cert.display()),
+            "-v",
+            &format!("{}:/tmp/diff-key.pem:ro", tls_key.display()),
         ],
         &[],
     );
@@ -1178,8 +1675,14 @@ fn differential_shared_semantics_corpus() {
             "127.0.0.1::8080",
             "-p",
             "127.0.0.1::8081",
+            "-p",
+            "127.0.0.1::8443",
             "-v",
             &ing_mount,
+            "-v",
+            &format!("{}:/tmp/diff-cert.pem:ro", tls_cert.display()),
+            "-v",
+            &format!("{}:/tmp/diff-key.pem:ro", tls_key.display()),
             "--entrypoint",
             "nginx",
         ],
@@ -1191,6 +1694,10 @@ fn differential_shared_semantics_corpus() {
     let ing_port = published_port(&ing_name, 8080);
     let hap2_port = published_port(&hap_name, 8081);
     let env2_port = published_port(&env_name, 8081);
+    let env_cache_port = published_port(&env_name, 8082);
+    let hap_tls_port = published_port(&hap_name, 8443);
+    let env_tls_port = published_port(&env_name, 8443);
+    let ing_tls_port = published_port(&ing_name, 8443);
     let ing2_port = published_port(&ing_name, 8081);
     wait_tcp(
         &format!("127.0.0.1:{hap_port}"),
@@ -1207,6 +1714,22 @@ fn differential_shared_semantics_corpus() {
         "ingress-nginx",
         &container_logs(&ing_name),
     );
+    wait_tcp(
+        &format!("127.0.0.1:{env_cache_port}"),
+        "envoy cache listener",
+        &container_logs(&env_name),
+    );
+    for (port, label) in [
+        (hap_tls_port, "haproxy TLS"),
+        (env_tls_port, "envoy TLS"),
+        (ing_tls_port, "ingress-nginx TLS"),
+    ] {
+        wait_tcp(
+            &format!("127.0.0.1:{port}"),
+            label,
+            &container_logs(&hap_name),
+        );
+    }
 
     // EQProxy: the freshly built binary, natively.
     let eq_config = write(
@@ -1215,6 +1738,8 @@ fn differential_shared_semantics_corpus() {
             backend_host_ports[0],
             backend_host_ports[1],
             backend_host_ports[2],
+            &tls_cert,
+            &tls_key,
         ),
     );
     let eq_bin = env!("CARGO_BIN_EXE_eqproxy");
@@ -1230,6 +1755,8 @@ fn differential_shared_semantics_corpus() {
     let mut stderr = BufReader::new(guard.0.stderr.take().expect("eqproxy stderr piped"));
     let mut main_addr = String::new();
     let mut replace_addr = String::new();
+    let mut cache_addr = String::new();
+    let mut secure_addr = String::new();
     let mut seen = String::new();
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut line = String::new();
@@ -1247,15 +1774,26 @@ fn differential_shared_semantics_corpus() {
                 main_addr = addr;
             } else if line.contains("listener replace listening on") {
                 replace_addr = addr;
+            } else if line.contains("listener cache listening on") {
+                cache_addr = addr;
+            } else if line.contains("listener secure listening on") {
+                secure_addr = addr;
             }
-            if !main_addr.is_empty() && !replace_addr.is_empty() {
+            if !main_addr.is_empty()
+                && !replace_addr.is_empty()
+                && !cache_addr.is_empty()
+                && !secure_addr.is_empty()
+            {
                 break;
             }
         }
     }
     assert!(
-        !main_addr.is_empty() && !replace_addr.is_empty(),
-        "eqproxy did not announce both listeners\n--- eqproxy stderr ---\n{seen}"
+        !main_addr.is_empty()
+            && !replace_addr.is_empty()
+            && !cache_addr.is_empty()
+            && !secure_addr.is_empty(),
+        "eqproxy did not announce all four listeners\n--- eqproxy stderr ---\n{seen}"
     );
 
     // --- run the corpus against every implementation --------------------
@@ -1269,6 +1807,10 @@ fn differential_shared_semantics_corpus() {
     let hap2_addr = format!("127.0.0.1:{hap2_port}");
     let ing2_addr = format!("127.0.0.1:{ing2_port}");
     let env2_addr = format!("127.0.0.1:{env2_port}");
+    let env_cache_addr = format!("127.0.0.1:{env_cache_port}");
+    let hap_tls_addr = format!("127.0.0.1:{hap_tls_port}");
+    let env_tls_addr = format!("127.0.0.1:{env_tls_port}");
+    let ing_tls_addr = format!("127.0.0.1:{ing_tls_port}");
     let main_addrs: [(&str, &str); 4] = [
         ("eqproxy", main_addr.as_str()),
         ("haproxy", hap_addr.as_str()),
@@ -1281,6 +1823,21 @@ fn differential_shared_semantics_corpus() {
         ("ingress-nginx", ing2_addr.as_str()),
         ("envoy", env2_addr.as_str()),
     ];
+    // Cache endpoints: EQProxy and Envoy use a dedicated listener so the
+    // cache cannot serve a different case's response; HAProxy and nginx
+    // scope their cache to /cache/ on the main endpoint.
+    let cache_addrs: [(&str, &str); 4] = [
+        ("eqproxy", cache_addr.as_str()),
+        ("haproxy", hap_addr.as_str()),
+        ("ingress-nginx", ing_addr.as_str()),
+        ("envoy", env_cache_addr.as_str()),
+    ];
+    let tls_addrs: [(&str, &str); 4] = [
+        ("eqproxy", secure_addr.as_str()),
+        ("haproxy", hap_tls_addr.as_str()),
+        ("ingress-nginx", ing_tls_addr.as_str()),
+        ("envoy", env_tls_addr.as_str()),
+    ];
     let client_ips: Vec<String> = main_addrs
         .iter()
         .map(|(_, addr)| probe_client_ip(addr))
@@ -1291,10 +1848,10 @@ fn differential_shared_semantics_corpus() {
     let mut exclusions: Vec<String> = Vec::new();
     let mut agreed = 0usize;
     for case in CASES {
-        let addrs: &[(&str, &str)] = if case.endpoint == "replace" {
-            &replace_addrs
-        } else {
-            &main_addrs
+        let addrs: &[(&str, &str)] = match case.endpoint {
+            "replace" => &replace_addrs,
+            "tls" => &tls_addrs,
+            _ => &main_addrs,
         };
         let mut row = vec![case.id.to_owned(), case.why.to_owned()];
         let mut case_ok = true;
@@ -1304,16 +1861,20 @@ fn differential_shared_semantics_corpus() {
                 exclusions.push(format!("{} @ {impl_name}: {reason}", case.id));
                 continue;
             }
-            let got = normalize(&http_request(addr, case.request), &client_ips[idx]);
+            let got = if case.endpoint == "tls" {
+                normalize(https_request(addr, case.request), &client_ips[idx])
+            } else {
+                normalize(http_request(addr, case.request), &client_ips[idx])
+            };
             match check(case, &got) {
-                Ok(()) => row.push(format!("OK {}", summary(&got))),
+                Ok(()) => row.push(format!("OK {}", summary(&got, case.response_headers))),
                 Err(why) => {
-                    row.push(format!("DIVERGED {}", summary(&got)));
+                    row.push(format!("DIVERGED {}", summary(&got, case.response_headers)));
                     case_ok = false;
                     failures.push(format!(
                         "{} @ {impl_name}: {why} (got {})",
                         case.id,
-                        summary(&got)
+                        summary(&got, case.response_headers)
                     ));
                 }
             }
@@ -1324,9 +1885,56 @@ fn differential_shared_semantics_corpus() {
         rows.push(row);
     }
 
+    // Cache cases: two requests per case. The backend answers with a fresh
+    // UUID for every origin fetch, so identical bodies prove the second
+    // response came from the cache without reaching the origin.
+    let mut cache_rows: Vec<Vec<String>> = Vec::new();
+    for case in CACHE_CASES {
+        let mut row = vec![case.id.to_owned(), case.why.to_owned()];
+        let mut case_ok = true;
+        for (idx, (impl_name, addr)) in cache_addrs.iter().enumerate() {
+            let first = normalize(http_request(addr, case.request), &client_ips[idx]);
+            let second = normalize(http_request(addr, case.request), &client_ips[idx]);
+            let origin_id = first.body.strip_prefix(case.body_prefix);
+            let first_reached_origin = origin_id.is_some_and(|id| id.len() >= 32);
+            let bodies_agree = second.body == first.body;
+            if first.status == 200
+                && second.status == 200
+                && first_reached_origin
+                && bodies_agree == case.expect_hit
+            {
+                let verdict = if case.expect_hit { "HIT" } else { "MISS" };
+                // Both bodies are printed: the HIT/MISS verdict is enforced
+                // above, and the evidence shows the UUIDs it was decided on.
+                row.push(format!(
+                    "OK {verdict} first={} second={}",
+                    first.body, second.body
+                ));
+            } else {
+                row.push(format!(
+                    "DIVERGED first {} second {}",
+                    summary(&first, &[]),
+                    summary(&second, &[])
+                ));
+                case_ok = false;
+                failures.push(format!(
+                    "{} @ {impl_name}: first {} second {} (a fresh origin id and {} bodies are required)",
+                    case.id,
+                    summary(&first, &[]),
+                    summary(&second, &[]),
+                    if case.expect_hit { "equal" } else { "different" }
+                ));
+            }
+        }
+        if case_ok {
+            agreed += 1;
+        }
+        cache_rows.push(row);
+    }
+
     // --- report ---------------------------------------------------------
     let mut report = String::new();
-    report.push_str("# Differential report — shared-semantics corpus (v0.6 gate)\n\n");
+    report.push_str("# Differential report — shared-semantics corpus\n\n");
     report.push_str(&format!(
         "- date (UTC epoch): {}\n",
         SystemTime::now()
@@ -1355,16 +1963,26 @@ fn differential_shared_semantics_corpus() {
         image_id(BACKEND_IMAGE)
     ));
     report.push_str(
-        "- normalization: status code only (reason phrase ignored); `Location` reduced to\n  path + query when absolute; body compared only when the case declares one;\n  comma-joined header values normalized to the `\", \"` separator; the client\n  address of each implementation is calibrated at run time and substituted\n  as `CLIENT`.\n\n",
+        "- normalization: status code only (reason phrase ignored); `Location` reduced to\n  path + query when absolute; body compared only when the case declares one;\n  `chunked` bodies decoded and `content-encoding: gzip` bodies gunzipped before\n  the comparison; an empty declared header value means the header must be\n  absent; comma-joined header values normalized to the `\", \"` separator; the\n  client address of each implementation is calibrated at run time and\n  substituted as `CLIENT`.\n\n",
     );
     report.push_str("| case | shared semantics | eqproxy | haproxy | ingress-nginx | envoy |\n");
     report.push_str("|---|---|---|---|---|---|\n");
     for row in &rows {
         report.push_str(&format!("| {} |\n", row.join(" | ")));
     }
+    report.push_str(
+        "\nCache cases send the same request twice. The backend answers with a fresh\nUUID for every origin fetch, so an identical body on the second request proves\na HIT.\n\n",
+    );
+    report.push_str(
+        "| cache case | shared semantics | eqproxy | haproxy | ingress-nginx | envoy |\n",
+    );
+    report.push_str("|---|---|---|---|---|---|\n");
+    for row in &cache_rows {
+        report.push_str(&format!("| {} |\n", row.join(" | ")));
+    }
     report.push_str(&format!(
         "\nverdict: {agreed}/{} cases agree across their applicable implementations ({} documented exclusion(s)).\n",
-        CASES.len(),
+        CASES.len() + CACHE_CASES.len(),
         exclusions.len()
     ));
     if !failures.is_empty() {

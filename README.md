@@ -7,23 +7,23 @@ EQProxy — the reverse proxy and load balancer that imports your HAProxy and ng
 ![Status](https://img.shields.io/badge/status-pre--1.0-orange)
 
 **65/65 migration checks** against HAProxy 3.4.6, nginx, ingress-nginx and
-static Envoy 1.34.2 · **23/23** differential cases · **715 tests** across 36
+static Envoy 1.34.2 · **31/31** differential cases · **738 tests** across 36
 targets · a single static Linux binary (musl).
 
 ```bash
 # 1. Translate the config you already have. The report names every directive
 #    that was converted, needs review or was refused.
 docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/w" -w /w \
-  exyonq/eqproxy:0.9.1 \
+  exyonq/eqproxy:latest \
   config import --input haproxy.cfg --output eqproxy.toml --report report.md
 
 # 2. Validate offline (binds nothing). `config explain` traces a request when you need it.
 docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/w" -w /w \
-  exyonq/eqproxy:0.9.1 config validate --config eqproxy.toml
+  exyonq/eqproxy:latest config validate --config eqproxy.toml
 
 # 3. Run it.
 docker run --rm -p 8080:8080 -v "$PWD/eqproxy.toml:/etc/eqproxy.toml:ro" \
-  exyonq/eqproxy:0.9.1 run --config /etc/eqproxy.toml
+  exyonq/eqproxy:latest run --config /etc/eqproxy.toml
 ```
 
 `config import` exits **0** on a clean conversion, **2** when the file is valid
@@ -50,7 +50,7 @@ cover the operational path.
 
 ## Status
 
-**v0.9.1 · pre-1.0 · not production-ready.** 715 tests green across 36 targets,
+**Pre-1.0 · not production-ready.** 738 tests green across 36 targets,
 real HTTP/1.1, HTTP/2 and HTTP/3 dataplanes — but no users outside the author
 yet. Try it on a staging config and tell me what breaks:
 [KNOWN_GAPS.md](KNOWN_GAPS.md) · [open an issue](https://github.com/EQProxy/EQProxy/issues).
@@ -69,12 +69,15 @@ metrics; and a server-rendered panel with no JavaScript.
 ## Install
 
 Binaries and checksums live on the
-[release page](https://github.com/EQProxy/EQProxy/releases/tag/v0.9.1). Every
+[release page](https://github.com/EQProxy/EQProxy/releases/latest). Every
 release carries four prebuilt binaries — `eqproxy-darwin-arm64`,
 `eqproxy-darwin-amd64`, `eqproxy-linux-arm64` and `eqproxy-linux-amd64` — the
 matching sources as `eqproxy-<version>-src.tar.gz`, the SBOM of each crate and
 the Docker Scout report of both image architectures, all checked by one
-`SHA256SUMS.txt`.
+`SHA256SUMS.txt`. Both images must pass
+`docker scout cves --only-severity critical,high --exit-code` on
+`linux/amd64` and `linux/arm64` at **0 critical / 0 high** before the release
+can be promoted; the reports are attached to the release.
 
 The Linux binaries are **statically linked against musl** (`file` reports
 `static-pie linked` on amd64 and `statically linked` on arm64, no `NEEDED`
@@ -86,8 +89,8 @@ packages: they run on any Linux distribution of that architecture, and on
 # Pick your platform artifact:
 #   eqproxy-darwin-arm64 | eqproxy-darwin-amd64
 #   eqproxy-linux-arm64  | eqproxy-linux-amd64   (static, musl)
-curl -sSLO https://github.com/EQProxy/EQProxy/releases/download/v0.9.1/eqproxy-linux-amd64
-curl -sSLO https://github.com/EQProxy/EQProxy/releases/download/v0.9.1/SHA256SUMS.txt
+curl -sSLO https://github.com/EQProxy/EQProxy/releases/latest/download/eqproxy-linux-amd64
+curl -sSLO https://github.com/EQProxy/EQProxy/releases/latest/download/SHA256SUMS.txt
 shasum -a 256 -c SHA256SUMS.txt --ignore-missing   # Linux: sha256sum -c --ignore-missing SHA256SUMS.txt
 chmod +x eqproxy-linux-amd64
 ./eqproxy-linux-amd64 --version
@@ -96,17 +99,20 @@ chmod +x eqproxy-linux-amd64
 Docker (linux/amd64 + linux/arm64, Wolfi base), same digests on both registries:
 
 ```bash
-docker pull exyonq/eqproxy:0.9.1           # Docker Hub
-docker pull ghcr.io/exyonq/eqproxy:0.9.1   # GitHub Container Registry
-docker run --rm exyonq/eqproxy:0.9.1 --version
+docker pull exyonq/eqproxy:latest           # Docker Hub
+docker pull ghcr.io/exyonq/eqproxy:latest   # GitHub Container Registry
+docker run --rm exyonq/eqproxy:latest --version
 ```
+
+The examples use the moving `latest` tag; pin a release tag when you need a
+reproducible pull.
 
 ## Docs
 
 | Document | Contents |
 |---|---|
 | [Migration matrix](docs/migration/README.md) | 65/65: four real source configs and their translation |
-| [Differential corpus](docs/differential-corpus.md) | 23/23 against HAProxy, nginx, ingress-nginx, Envoy |
+| [Differential corpus](docs/differential-corpus.md) | 31/31 against HAProxy, nginx, ingress-nginx, Envoy |
 | [SPEC.md](SPEC.md) · [THREAT_MODEL.md](THREAT_MODEL.md) | Goals, architecture, non-protections |
 | [docs/semantics.md](docs/semantics.md) | Per-feature semantics, limits and what EQProxy does **not** do |
 | [ADRs](docs/adr/) | 47 design decisions, one file each |
@@ -129,13 +135,14 @@ evidence behind each number — is in
   [docs/parity-matrix.md](docs/parity-matrix.md).
 - **Performance vs 3.4.6** (netcup-bench amd64, medians of 5): S-H1-04
   **18 207 vs 15 957 rps**, S-H1-05 **15 624 vs 3 466 rps**
-  ([v06-bench](docs/evidence/v06-bench/)); the v0.7 gate scenarios publish the
-  losses too — S-H2-01 **0.742×**, S-H3-01 **0.668×**, S-H3-02 **0.768×**
+  ([benchmark evidence](docs/evidence/v06-bench/)); the HTTP/2 and HTTP/3 gate
+  scenarios publish the losses too — S-H2-01 **0.742×**, S-H3-01 **0.668×**, S-H3-02 **0.768×**
   ([pool sizing](docs/evidence/v07-h2-pool-sizing.md),
   [h3 offload](docs/evidence/v07-h3-profile.md)).
-- **Release:** tag `v0.9.1`, run 41299478887 green on all six jobs, image index
-  `sha256:95170d9a…` scanned **0 critical / 0 high** on both architectures and
-  promoted unchanged — [artifact gate](docs/release-0.9.1.md#51-result-2026-11-01).
+- **Release:** the release workflow builds and E2E-verifies the binaries, scans
+  both image architectures with Docker Scout at **0 critical / 0 high**, and
+  publishes the SBOM, Scout reports and `SHA256SUMS.txt` with the tagged
+  release.
 
 ## Key decisions
 

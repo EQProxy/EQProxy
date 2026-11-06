@@ -60,9 +60,9 @@ pub(crate) const DATA_CHUNK: usize = 16 * 1024;
 /// backend applies backpressure through it instead of buffering the body.
 ///
 /// 16 KiB, matching h3. ADR-0048 reduces this from 64 KiB after the v0.9.2
-/// profile measured RSS growing with the number of h2 sockets; the required
-/// five-repetition S-H2-01 re-measurement is still pending, so this is not a
-/// performance claim.
+/// profile measured RSS growing with the number of h2 sockets. The
+/// five-repetition re-measurement kept it as a memory-bounded default, not a
+/// throughput win; S-H2-01 remains Worse on RPS.
 const PIPE_BUFFER: usize = 16 * 1024;
 
 /// h1 headers that must not cross into h2 (RFC 9113 §8.2.2), plus the h1

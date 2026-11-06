@@ -212,7 +212,12 @@ fn smaps_rollup() -> (Option<u64>, Option<u64>) {
 /// `pprof`'s `flamegraph` feature pins inferno 0.11, whose `quick-xml 0.26`
 /// carries RUSTSEC-2026-0194/0195. The folded-stack format is the one
 /// `pprof` uses; only the renderer moves to inferno 0.12 (ADR-0049).
-fn write_flamegraph<W: std::io::Write>(report: &pprof::Report, writer: W) -> Result<(), String> {
+///
+/// Returns `Ok(false)` when the report has no samples: no SVG is produced,
+/// so `finish` can report the empty report instead of claiming a dump. The
+/// first 20-request SIGTERM run produced exactly this case and left a
+/// zero-byte SVG; the harness correctly rejected it.
+fn write_flamegraph<W: std::io::Write>(report: &pprof::Report, writer: W) -> Result<bool, String> {
     let lines: Vec<String> = report
         .data
         .iter()
@@ -231,18 +236,20 @@ fn write_flamegraph<W: std::io::Write>(report: &pprof::Report, writer: W) -> Res
         })
         .collect();
     if lines.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
     let mut options = inferno::flamegraph::Options::default();
     inferno::flamegraph::from_lines(&mut options, lines.iter().map(String::as_str), writer)
-        .map_err(|err| err.to_string())
+        .map_err(|err| err.to_string())?;
+    Ok(true)
 }
 
 /// Writes the flamegraph (and a textual stack counter) and stops sampling.
 ///
-/// A failure is reported, never converted into a successful measurement: the
-/// harness records whether the SVG exists and treats its absence as
-/// NOT EXECUTED for that run.
+/// A failure or an empty report is reported, never converted into a
+/// successful measurement: the harness records whether the SVG exists and
+/// treats its absence as NOT EXECUTED for that run. An empty report does not
+/// create a zero-byte SVG and does not emit the `PPROF_SVG_*` markers.
 pub fn finish(profiler: Option<Profiler>) {
     let Some(profiler) = profiler else {
         return;
@@ -267,15 +274,14 @@ pub fn finish(profiler: Option<Profiler>) {
         }
     };
     let svg = profiler.dir.join(format!("{stem}.svg"));
-    match File::create(&svg) {
-        Ok(file) => match write_flamegraph(&report, file) {
+    let mut svg_bytes = Vec::new();
+    match write_flamegraph(&report, &mut svg_bytes) {
+        Ok(true) => match std::fs::write(&svg, &svg_bytes) {
             Ok(()) => eprintln!("INFO pprof flamegraph written to {}", svg.display()),
             Err(err) => eprintln!("warning: pprof could not write {}: {err}", svg.display()),
         },
-        Err(err) => eprintln!(
-            "warning: cannot create pprof flamegraph {}: {err}",
-            svg.display()
-        ),
+        Ok(false) => eprintln!("warning: pprof report has no samples; no flamegraph written"),
+        Err(err) => eprintln!("warning: pprof could not render {}: {err}", svg.display()),
     }
     // The text report is the same sample counts in Debug form; it lets the
     // analysis attribute self time without parsing SVG.
@@ -294,10 +300,9 @@ pub fn finish(profiler: Option<Profiler>) {
     // Also emit the SVG to stderr: the harnesses save `docker logs` before
     // removing the container, so the dump survives even when the container
     // filesystem does not. The markers keep it extractable from the log.
-    let mut buffer = Vec::new();
-    if write_flamegraph(&report, &mut buffer).is_ok() {
+    if !svg_bytes.is_empty() {
         eprintln!("PPROF_SVG_BEGIN");
-        let _ = std::io::stderr().write_all(&buffer);
+        let _ = std::io::stderr().write_all(&svg_bytes);
         eprintln!("\nPPROF_SVG_END");
     }
 }
@@ -326,9 +331,20 @@ mod tests {
             timing: Default::default(),
         };
         let mut svg = Vec::new();
-        write_flamegraph(&report, &mut svg).expect("flamegraph");
+        assert!(write_flamegraph(&report, &mut svg).expect("flamegraph"));
         let svg = String::from_utf8(svg).expect("utf8 svg");
         assert!(svg.contains("<svg"), "must be an SVG document");
         assert!(svg.contains("main"), "the sampled frame must be present");
+    }
+
+    #[test]
+    fn empty_report_is_not_rendered() {
+        let report = pprof::Report {
+            data: HashMap::new(),
+            timing: Default::default(),
+        };
+        let mut svg = Vec::new();
+        assert_eq!(write_flamegraph(&report, &mut svg), Ok(false));
+        assert!(svg.is_empty(), "an empty report must not produce an SVG");
     }
 }

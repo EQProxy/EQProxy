@@ -1,0 +1,7 @@
+EQProxy exhaustion summary
+binary: /root/eqproxy-v092/eqproxy-v093 sha256=854fbd02ea2f6883e6aef209b8fbe6f544b394c9f900136056e0c648c29c2579
+host: {'system': 'Linux', 'release': '6.8.0-147-generic', 'machine': 'x86_64', 'cpus': 8}
+fd: PASS {"accept_failures_logged": 24, "alive_during_exhaustion": true, "connect_errors": 1, "connections_opened": 183, "nofile": 64, "panic": false, "proxy_exit_code": 0, "recovery_status": 200}
+queue: PASS {"alive": true, "backend_requests": 1, "clients": 3, "proxy_exit_code": 0, "statuses": [503, 503, 200]}
+memory: PASS {"alive": true, "backend_requests_after_big": 0, "declared_body_bytes": 131072, "limit_bytes": 65536, "proxy_exit_code": 0, "recovery_status": 200, "status": 413}
+VERDICT: PASS

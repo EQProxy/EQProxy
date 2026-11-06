@@ -3,7 +3,7 @@ resolver = "2"
 members = ["eqproxy-core", "eqproxy-config", "eqproxy-net", "eqproxy-cli"]
 
 [workspace.package]
-version = "0.9.1"
+version = "0.9.2"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["The EQProxy Authors"]
@@ -30,6 +30,9 @@ md5 = { package = "md-5", version = "0.10" }
 base64 = "0.22"
 schemars = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[workspace.metadata.dylint]
+libraries = [{ path = "lints/eqproxy-lints" }]
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

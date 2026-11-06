@@ -53,15 +53,9 @@ fuzz_target!(|data: &[u8]| {
             };
             let name = name.to_owned();
             spec.headers.push(match kind {
-                0 => HeaderSpec::Exact {
-                    name,
-                    value: value.to_owned(),
-                },
-                1 => HeaderSpec::Regex {
-                    name,
-                    pattern: value.to_owned(),
-                },
-                _ => HeaderSpec::Present { name },
+                0 => HeaderSpec::exact(name, value),
+                1 => HeaderSpec::regex(name, value),
+                _ => HeaderSpec::present(name),
             });
         }
     }

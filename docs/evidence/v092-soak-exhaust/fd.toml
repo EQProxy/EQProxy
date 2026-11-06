@@ -1,0 +1,18 @@
+schema_version = 1
+shutdown_grace = "5s"
+
+[listener.web]
+listen = "127.0.0.1:38931"
+backend = "api"
+mode = "http"
+maxconn = 64
+connect_timeout = "1s"
+idle_timeout = "5s"
+client_header_timeout = "2s"
+server_header_timeout = "3s"
+
+
+[backend.api]
+servers = [
+  { addr = "127.0.0.1:42875" },
+]

@@ -44,7 +44,7 @@ conditions, first match wins — and four rule actions: `use_backend`,
 `hash_policy` so a key keeps its target, and optionally **mirrored** to a
 shadow backend), `redirect` and `direct_response`. On top of the v0.5 dataplane (strict framing,
 per-phase timeouts, **TLS termination and backend TLS, ALPN h1, mTLS,
-multi-certificate SNI**, **active TCP/HTTP health checks, passive failure detection, safe
+multi-certificate SNI, stateless TLS 1.3 session tickets**, **active TCP/HTTP health checks, passive failure detection, safe
 idempotent retries, bounded queues, PROXY protocol v1/v2,
 hot config + certificate reload under traffic**, backend keep-alive pool):
 **set/add/del request headers and response headers with `$remote_addr`/
@@ -70,15 +70,17 @@ renewal without a restart
 ([ADR-0025](adr/0025-certificate-renewal-without-restart.md)) and an
 **opt-in server-rendered panel** with bearer sessions, a per-session CSRF
 token and a write audit line, no JavaScript
-([ADR-0029](adr/0029-panel-sessions-and-csrf.md)), with **715 tests
+([ADR-0029](adr/0029-panel-sessions-and-csrf.md)), with **738 tests
 passed, 0 failed (2 declared `#[ignore]` Docker harnesses) across 36 targets**
-(`cargo test --workspace`, 2026-11-01) plus two Docker-gated
-harnesses (evidence from the v0.6 gate, not re-run since):
-[differential corpus](differential-corpus.md) **23/23** cases against
-HAProxy 3.4.6, nginx, the ingress-nginx data plane and static Envoy
-v1.34.2, and the [migration matrix](migration/README.md) **65/65
+(`cargo test --workspace`, 2026-11-04) plus two Docker-gated
+harnesses: [differential corpus](differential-corpus.md) **31/31** cases
+against HAProxy 3.4.6, nginx, the ingress-nginx data plane and static
+Envoy v1.34.2 (full-corpus run 2026-11-04; the 2026-11-02
+[cache-family evidence](evidence/v092-differential-cache.md) records the
+earlier 28-case slice), and the
+[migration matrix](migration/README.md) **65/65
 checks** (four real source configs and their `eqproxy.toml` translation
-routing identically; evidence in
+routing identically; evidence from the v0.6 gate, not re-run since, in
 [docs/evidence/v06-migration/](evidence/v06-migration/)). HTTP/2 is
 terminated on client listeners and — when the backend TLS handshake
 negotiates `h2` (`[backend.X.tls] alpn = ["h2"]`) — spoken to the backend
@@ -179,11 +181,20 @@ the published image re-pulled and replayed
 ([published](evidence/v085-published.md)). It keeps the v0.8
 administration guarantees: the route×role authorization matrix with the
 dataplane serving when the admin task dies, a backend applied under traffic
-in under a second, and the metrics budget refusing what exceeds it. The
-latest 24-hour soak remains
-the v0.7 gRPC bidi run **PASS** (2026-10-23: 86 400 s, 4 267 messages, 0 broken
-streams, 0 failed probes), and HTTP/3 interop with two independent clients
-(`aioquic` 1.2.0 and `quic-go` 0.64.1) is unchanged. HTTP/3 stays **experimental**:
+in under a second, and the metrics budget refusing what exceeds it.
+The latest 24-hour soak is the v0.9.2 HTTP/1.1 run **PASS** (2026-11-05:
+86 400 s, 17 280 000 requests, 0 errors, steady RSS 25.96 MiB / peak 27.02
+MiB, 138 FDs, clean shutdown;
+[evidence](evidence/v092-soak-24h/README.md)). The v0.9.2 static-Envoy
+three-product benchmark (2026-11-05: S-H1-01/02/03, 48 raw files, checksums
+48/48; only S-H1-02 passes the predeclared calibration gate, where EQProxy is
+Better than HAProxy on RPS but Worse on CPU and Worse than Envoy on p95/p99) is
+in [evidence](evidence/v092-bench-envoy/README.md). The operator-task study is
+**NOT EXECUTED**: no participants or timings exist yet, and the complete
+casilla 14 is now tracked in v0.9.4. The v0.7 gRPC bidi soak also
+passed (2026-10-23: 86 400 s, 4 267 messages, 0 broken streams, 0 failed
+probes), and HTTP/3 interop with two independent clients (`aioquic` 1.2.0 and
+`quic-go` 0.64.1) is unchanged. HTTP/3 stays **experimental**:
 browsers and `curl` over h3 are unverified and the QUIC adversarial tests
 of THREAT_MODEL T19 are not executed. Outside this version by design and
 listed in the [CHANGELOG](../CHANGELOG.md): FastCGI, uwsgi and scgi

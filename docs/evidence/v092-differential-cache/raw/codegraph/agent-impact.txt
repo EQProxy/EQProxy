@@ -1,0 +1,32 @@
+## Direct answer
+
+The graph records **no dependency edges at all on either target node** — `get_reverse_dependencies` with `References`, `Uses` and `Calls` (depth 2) returned empty for both `CacheConfig` (`.eqproxy-config/src/schema.rs:1322‑1343`) and `CacheCase` (`.eqproxy-cli/tests/differential.rs:430‑439`). So neither type is wired into the graph as something others point at; what actually breaks is determined by the code that *reads their fields* and by the parallel mirror types (`CacheSettings`, `Case`) that duplicate their shape.
+
+**Assumption:** "differential cache cases" = the `CacheCase` struct in the differential harness; "the CacheConfig contract" = the `CacheConfig` struct in the config schema.
+
+## CacheConfig contract (`.eqproxy-config/src/schema.rs`)
+
+Direct dependents implied by field reads and call edges in the returned snippets:
+
+- `check_listener_cache` (`.eqproxy-config/src/validate.rs:874`, truncated past line 964) is the primary contract enforcer. It hard-codes the bounds for `cache.default_ttl` (1 s…1 day), `cache.max_memory_bytes` (`1_048_576..=1_073_741_824`) and rejects a cache on a `mode = "tcp"` listener. Any changed field name, type or bound must be mirrored here or validation silently drifts from the schema's documented defaults.
+- `impl Default for CacheConfig` (`.eqproxy-config/src/schema.rs:1345‑1354`) plus `default_cache_ttl` (`:1356`) and `default_cache_entry` (`:1364`) — in-file defaults that pin the numbers quoted in the doc comments (60 s, 64 MiB, 1 MiB).
+- `CacheSettings` (`.eqproxy-net/src/cache.rs:89‑102`) is the runtime mirror of the same four knobs (`default_ttl`, `max_memory_bytes`, `max_entry_bytes`, `disk_dir`) plus `listener` and `lock_wait`; `CacheSettings::test_defaults` (`:104‑117`) restates the same constants (60 s, 64 MiB, 1 MiB). This is the transitive hotspot: a `CacheConfig` change must be threaded into whatever builds `CacheSettings`, then into `Cache::load` (`.eqproxy-net/src/cache.rs:295` region) and its accessors `max_entry_bytes()` / `default_ttl()`.
+- Transitive, via `CacheSettings`: it is re-exported from `.eqproxy-net/src/lib.rs:50‑53` (`Bypass, Cache, CacheKey, CacheSettings, Decision, FetchOutcome, Lookup, SharedFetch, StoredParts`) and consumed by the following, so they break if the mirror struct changes shape:
+  - `.eqproxy-net/tests/e2e_cache.rs:281‑286` (`cache_settings` helper → `CacheSettings::test_defaults`), used by `miss_then_hit_serves_identical_bytes` (`:407`), `entries_expire_after_their_ttl` (`:542`, overrides `default_ttl`), `cookie_affinity_disables_the_cache_at_runtime` (`:675`), plus the ETag-revalidation, oversized-body, unstorable-status and pipelining tests that `cache_settings` calls.
+  - `.eqproxy-net/src/cache.rs:1430‑1432` (`settings()` in the unit-test module), used by `miss_then_hit` (`:1456`), `failure_drops_the_stale_entry` and `disk_round_trip_restores_unexpired_entries` (`:1548, which overrides disk_dir`).
+
+Note one suspicious edge the tools did report: `default_cache_ttl` (`.eqproxy-config/src/schema.rs:1356`) is recorded as calling `age_secs` in `.eqproxy-net/src/cache.rs`, which is almost certainly a name-collision artifact rather than a real call.
+
+## Differential cache cases (`.eqproxy-cli/tests/differential.rs`)
+
+`CacheCase` (`:430‑439`) has `id`, `why`, `request`, `body_prefix`, `expect_hit` — no incoming edges in the graph. The neighbouring `Case` struct (`:59‑76`) carries the equivalent fields for the non-cache corpus (`expect`, `endpoint`, `response_headers`, `skip`), and the harness entry point `differential_shared_semantics_corpus` (`.eqproxy-cli/tests/differential.rs:1363`) calls `check`, `backend_conf` and `maps::iter`, but the graph shows **no edge from that harness to `CacheCase`**, so the cache-case consumer (the loop asserting `expect_hit`, and the `HIT`/`MISS`/`REVALIDATED` markers it compares) could not be identified from graph data. Changing `CacheCase`'s fields therefore has no graph-visible blast radius — it is confined to `differential.rs`, but the graph cannot prove which function inside that file must change with it.
+
+The closest graph-visible analog for what the cache cases assert is `.eqproxy-net/tests/e2e_cache.rs`, which hard-codes the same semantics: `x-cache` values `MISS`/`HIT`/`REVALIDATED` (`:413‑419`, `:558`, `:571`) and metric counts `cache_hits`/`cache_misses`/`cache_stores`/`cache_bypasses` (e.g. `:429‑432`, `:525`, `:692‑693`).
+
+## Cycles
+
+`detect_circular_dependencies` could not be completed (the tool-result budget was exhausted before it returned), and the per-node reverse-dependency queries were empty, so **no cycle involving either target can be reported or ruled out** — most likely there is none, since neither node has inbound edges.
+
+## Recommendation
+
+Treat `CacheConfig` (`schema.rs:1322`) → `check_listener_cache` (`validate.rs:874`) → `CacheSettings` (`cache.rs:89`) → `test_defaults` (`cache.rs:104`) as one contract: change the bounds or field names in all four places, and expect `.eqproxy-net/tests/e2e_cache.rs:281` and the `cache.rs` test helpers to need updating if `CacheSettings`'s shape moves. For the differential cases, the safe edit surface is `.eqproxy-cli/tests/differential.rs` alone, but re-grep that file for the `CacheCase` consumer before editing, because the graph does not link it.

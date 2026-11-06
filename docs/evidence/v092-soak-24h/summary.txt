@@ -1,0 +1,12 @@
+EQProxy soak summary
+duration: 86400.0s of 86400s requested
+requests: ok=17280000 errors=0 bad_status=0
+throughput: 200.0 rps (target 200.0)
+latency ms: avg=2.245 p50=4 p95=4 p99=8
+rss: steady=25.96 MiB (budget 64) peak=27.02 MiB (budget 128) measured=True
+cpu: steady=0.017 cores (budget 0.5) measured=True
+fds: peak=138 (budget 512) growth=8 net=3 range=24 (growth budget 16) measured=True
+error rate: 0.0% (budget 0%)
+shutdown: exit=0 clean=True
+window: full=True warmup=True validation_only=False
+VERDICT: PASS

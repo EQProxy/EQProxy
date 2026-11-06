@@ -128,84 +128,135 @@ impl std::fmt::Display for RuleError {
 
 impl std::error::Error for RuleError {}
 
-/// Header condition as authored in the config: exactly one match kind, so
-/// the invalid "zero or several kinds" shape cannot be represented.
+/// Header condition as authored in the config (exactly one of `exact`,
+/// `regex` or `present`).
+///
+/// The struct shape is part of the published `0.9.1` API; `Rule::compile`
+/// enforces that exactly one match kind is set.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HeaderSpec {
+pub struct HeaderSpec {
+    /// Header name (case-insensitive).
+    pub name: String,
     /// Exact value match (byte-for-byte).
-    Exact {
-        /// Header name (case-insensitive).
-        name: String,
-        /// Value to compare byte-for-byte.
-        value: String,
-    },
+    pub exact: Option<String>,
     /// Unanchored regex over the value.
-    Regex {
-        /// Header name (case-insensitive).
-        name: String,
-        /// Regex pattern.
-        pattern: String,
-    },
-    /// Presence check (value irrelevant).
-    Present {
-        /// Header name (case-insensitive).
-        name: String,
-    },
+    pub regex: Option<String>,
+    /// `true` = presence check (value irrelevant).
+    pub present: bool,
 }
 
 impl HeaderSpec {
-    /// Header name, regardless of the match kind.
+    /// Header name.
     #[must_use]
     pub fn name(&self) -> &str {
-        match self {
-            Self::Exact { name, .. } | Self::Regex { name, .. } | Self::Present { name } => name,
+        &self.name
+    }
+
+    /// Exact-value condition.
+    #[must_use]
+    pub fn exact(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            exact: Some(value.into()),
+            regex: None,
+            present: false,
+        }
+    }
+
+    /// Unanchored-regex condition.
+    #[must_use]
+    pub fn regex(name: impl Into<String>, pattern: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            exact: None,
+            regex: Some(pattern.into()),
+            present: false,
+        }
+    }
+
+    /// Presence condition.
+    #[must_use]
+    pub fn present(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            exact: None,
+            regex: None,
+            present: true,
         }
     }
 }
 
-/// Cookie condition as authored in the config (B-I11 canary-by-cookie):
-/// exactly one match kind, like [`HeaderSpec`].
+/// Cookie condition as authored in the config (B-I11 canary-by-cookie;
+/// exactly one of `exact`, `regex` or `present`, like [`HeaderSpec`]).
+///
+/// The struct shape is part of the published `0.9.1` API; `Rule::compile`
+/// enforces that exactly one match kind is set.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CookieSpec {
+pub struct CookieSpec {
+    /// Cookie name (case-insensitive; RFC 6265 pair parsing).
+    pub name: String,
     /// Exact value match (byte-for-byte).
-    Exact {
-        /// Cookie name (case-insensitive; RFC 6265 pair parsing).
-        name: String,
-        /// Value to compare byte-for-byte.
-        value: String,
-    },
+    pub exact: Option<String>,
     /// Unanchored regex over the value.
-    Regex {
-        /// Cookie name (case-insensitive).
-        name: String,
-        /// Regex pattern.
-        pattern: String,
-    },
-    /// Presence check (any value, including empty).
-    Present {
-        /// Cookie name (case-insensitive).
-        name: String,
-    },
+    pub regex: Option<String>,
+    /// `true` = presence check (any value, including empty).
+    pub present: bool,
 }
 
 impl CookieSpec {
-    /// Cookie name, regardless of the match kind.
+    /// Cookie name.
     #[must_use]
     pub fn name(&self) -> &str {
-        match self {
-            Self::Exact { name, .. } | Self::Regex { name, .. } | Self::Present { name } => name,
+        &self.name
+    }
+
+    /// Exact-value condition.
+    #[must_use]
+    pub fn exact(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            exact: Some(value.into()),
+            regex: None,
+            present: false,
+        }
+    }
+
+    /// Unanchored-regex condition.
+    #[must_use]
+    pub fn regex(name: impl Into<String>, pattern: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            exact: None,
+            regex: Some(pattern.into()),
+            present: false,
+        }
+    }
+
+    /// Presence condition.
+    #[must_use]
+    pub fn present(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            exact: None,
+            regex: None,
+            present: true,
         }
     }
 }
 
-/// Map-backed condition as authored in the config (C10): the lookup key is
-/// one typed selector, never a pair of optional fields that can disagree.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Map-backed condition as authored in the config (C10; exactly one of
+/// `key` or `header` selects the lookup key).
+///
+/// The struct shape is part of the published `0.9.1` API; `Rule::compile`
+/// enforces that exactly one key source is set.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MapConditionSpec {
     /// Name of the `[maps.*]` table consulted.
     pub name: String,
-    /// Key source.
-    pub key: MapKey,
+    /// Key source: `"ip"`, `"host"`, `"path"` or `"method"`.
+    pub key: Option<String>,
+    /// Key source: first value of this request header.
+    pub header: Option<String>,
     /// Required mapped value (absent = presence match).
     pub equals: Option<String>,
 }
@@ -389,13 +440,26 @@ impl Rule {
                     "headers = [{ name = \"x-tenant\", exact = \"acme\" }]",
                 ));
             }
-            let value = match header {
-                HeaderSpec::Present { .. } => ValueMatch::Present,
-                HeaderSpec::Exact { value, .. } => ValueMatch::Exact(value.clone()),
-                HeaderSpec::Regex { pattern, .. } => ValueMatch::Regex(
+            let kinds = u8::from(header.exact.is_some())
+                + u8::from(header.regex.is_some())
+                + u8::from(header.present);
+            if kinds != 1 {
+                return Err(err(
+                    &field,
+                    "set exactly one of exact, regex or present = true",
+                    "headers = [{ name = \"x-tenant\", exact = \"acme\" }]",
+                ));
+            }
+            let value = if header.present {
+                ValueMatch::Present
+            } else if let Some(exact) = &header.exact {
+                ValueMatch::Exact(exact.clone())
+            } else {
+                let pattern = header.regex.as_deref().unwrap_or_default();
+                ValueMatch::Regex(
                     RegexMatcher::parse(pattern)
                         .map_err(|why| err(&format!("{field}.regex"), why, "regex = \"^acme-\""))?,
-                ),
+                )
             };
             headers.push((name.to_ascii_lowercase(), value));
         }
@@ -411,15 +475,27 @@ impl Rule {
                     "cookies = [{ name = \"canary\", exact = \"always\" }]",
                 ));
             }
-            let value = match cookie {
-                CookieSpec::Present { .. } => ValueMatch::Present,
-                CookieSpec::Exact { value, .. } => ValueMatch::Exact(value.clone()),
-                CookieSpec::Regex { pattern, .. } => {
+            let kinds = u8::from(cookie.exact.is_some())
+                + u8::from(cookie.regex.is_some())
+                + u8::from(cookie.present);
+            if kinds != 1 {
+                return Err(err(
+                    &field,
+                    "set exactly one of exact, regex or present = true",
+                    "cookies = [{ name = \"canary\", exact = \"always\" }]",
+                ));
+            }
+            let value =
+                if cookie.present {
+                    ValueMatch::Present
+                } else if let Some(exact) = &cookie.exact {
+                    ValueMatch::Exact(exact.clone())
+                } else {
+                    let pattern = cookie.regex.as_deref().unwrap_or_default();
                     ValueMatch::Regex(RegexMatcher::parse(pattern).map_err(|why| {
                         err(&format!("{field}.regex"), why, "regex = \"^v[0-9]+\"")
                     })?)
-                }
-            };
+                };
             cookies.push((name.to_ascii_lowercase(), value));
         }
 
@@ -443,18 +519,31 @@ impl Rule {
                         "map = { name = \"tenants\", key = \"host\", equals = \"vip\" }",
                     ));
                 }
-                let key = match &map.key {
-                    MapKey::Header(name) => {
+                let key = match (&map.key, &map.header) {
+                    (Some(raw), None) => MapKey::parse(raw).map_err(|why| {
+                        err(
+                            "map.key",
+                            why,
+                            "map = { name = \"tenants\", key = \"host\" }",
+                        )
+                    })?,
+                    (None, Some(name)) => {
                         if name.is_empty() || !name.bytes().all(is_tchar) {
                             return Err(err(
-                                "map.key",
+                                "map.header",
                                 format!("\"{name}\" is not a valid header name"),
                                 "map = { name = \"tenants\", header = \"x-tenant\" }",
                             ));
                         }
                         MapKey::Header(name.to_ascii_lowercase())
                     }
-                    other => other.clone(),
+                    _ => {
+                        return Err(err(
+                            "map.key",
+                            "set exactly one of key or header (the lookup key source)",
+                            "map = { name = \"tenants\", key = \"host\" } or map = { name = \"tenants\", header = \"x-tenant\" }",
+                        ));
+                    }
                 };
                 if let Some(equals) = &map.equals {
                     crate::maps::validate_value(equals).map_err(|why| {
@@ -1073,17 +1162,9 @@ mod tests {
             name: "all".to_owned(),
             methods: vec!["GET".to_owned(), "HEAD".to_owned()],
             headers: vec![
-                HeaderSpec::Exact {
-                    name: "X-Tenant".to_owned(),
-                    value: "acme".to_owned(),
-                },
-                HeaderSpec::Present {
-                    name: "x-beta".to_owned(),
-                },
-                HeaderSpec::Regex {
-                    name: "x-trace".to_owned(),
-                    pattern: "^req-".to_owned(),
-                },
+                HeaderSpec::exact("X-Tenant", "acme"),
+                HeaderSpec::present("x-beta"),
+                HeaderSpec::regex("x-trace", "^req-"),
             ],
             ip: vec!["10.0.0.0/8".to_owned()],
             ..RuleSpec::default()
@@ -1173,10 +1254,7 @@ mod tests {
 
         let err = Rule::compile(&RuleSpec {
             name: "x".to_owned(),
-            headers: vec![HeaderSpec::Regex {
-                name: "x-a".to_owned(),
-                pattern: "(".to_owned(),
-            }],
+            headers: vec![HeaderSpec::regex("x-a", "(")],
             ..RuleSpec::default()
         })
         .expect_err("invalid header regex");
@@ -1266,13 +1344,8 @@ mod tests {
         let rule = compile(RuleSpec {
             name: "canary".to_owned(),
             cookies: vec![
-                CookieSpec::Exact {
-                    name: "Canary".to_owned(),
-                    value: "always".to_owned(),
-                },
-                CookieSpec::Present {
-                    name: "beta".to_owned(),
-                },
+                CookieSpec::exact("Canary", "always"),
+                CookieSpec::present("beta"),
             ],
             ..RuleSpec::default()
         });
@@ -1299,39 +1372,16 @@ mod tests {
 
     #[test]
     fn spec_names_survive_every_match_kind() {
-        assert_eq!(
-            HeaderSpec::Exact {
-                name: "X-A".to_owned(),
-                value: "1".to_owned()
-            }
-            .name(),
-            "X-A"
-        );
-        assert_eq!(
-            HeaderSpec::Present {
-                name: "X-B".to_owned()
-            }
-            .name(),
-            "X-B"
-        );
-        assert_eq!(
-            CookieSpec::Regex {
-                name: "canary".to_owned(),
-                pattern: "^v".to_owned()
-            }
-            .name(),
-            "canary"
-        );
+        assert_eq!(HeaderSpec::exact("X-A", "1").name(), "X-A");
+        assert_eq!(HeaderSpec::present("X-B").name(), "X-B");
+        assert_eq!(CookieSpec::regex("canary", "^v").name(), "canary");
     }
 
     #[test]
     fn cookie_compile_rejects_bad_names() {
         let err = Rule::compile(&RuleSpec {
             name: "x".to_owned(),
-            cookies: vec![CookieSpec::Exact {
-                name: "bad name".to_owned(),
-                value: "1".to_owned(),
-            }],
+            cookies: vec![CookieSpec::exact("bad name", "1")],
             ..RuleSpec::default()
         })
         .expect_err("name with space");
@@ -1359,7 +1409,8 @@ mod tests {
             name: "vip".to_owned(),
             map: Some(MapConditionSpec {
                 name: "tenants".to_owned(),
-                key: MapKey::Host,
+                key: Some("host".to_owned()),
+                header: None,
                 equals: Some("vip".to_owned()),
             }),
             ..RuleSpec::default()
@@ -1395,7 +1446,8 @@ mod tests {
             name: "known".to_owned(),
             map: Some(MapConditionSpec {
                 name: "tenants".to_owned(),
-                key: MapKey::Header("X-Tenant".to_owned()),
+                key: None,
+                header: Some("X-Tenant".to_owned()),
                 equals: None,
             }),
             ..RuleSpec::default()
@@ -1420,19 +1472,21 @@ mod tests {
             name: "x".to_owned(),
             map: Some(MapConditionSpec {
                 name: "m".to_owned(),
-                key: MapKey::Header("bad name".to_owned()),
+                key: None,
+                header: Some("bad name".to_owned()),
                 equals: None,
             }),
             ..RuleSpec::default()
         })
         .expect_err("header name with space");
-        assert_eq!(err.field.as_deref(), Some("map.key"));
+        assert_eq!(err.field.as_deref(), Some("map.header"));
 
         let err = Rule::compile(&RuleSpec {
             name: "x".to_owned(),
             map: Some(MapConditionSpec {
                 name: "".to_owned(),
-                key: MapKey::Ip,
+                key: Some("ip".to_owned()),
+                header: None,
                 equals: None,
             }),
             ..RuleSpec::default()
@@ -1448,13 +1502,11 @@ mod tests {
         let registry = registry_with("t", "api.example.com on\n");
         let rule = compile(RuleSpec {
             name: "prop".to_owned(),
-            cookies: vec![CookieSpec::Regex {
-                name: "canary".to_owned(),
-                pattern: "^v[0-9]+$".to_owned(),
-            }],
+            cookies: vec![CookieSpec::regex("canary", "^v[0-9]+$")],
             map: Some(MapConditionSpec {
                 name: "t".to_owned(),
-                key: MapKey::Host,
+                key: Some("host".to_owned()),
+                header: None,
                 equals: Some("on".to_owned()),
             }),
             ..RuleSpec::default()

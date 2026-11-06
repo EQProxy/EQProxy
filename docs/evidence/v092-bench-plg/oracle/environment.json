@@ -1,0 +1,45 @@
+{
+  "scenario": "S-PLG-01",
+  "started_utc": "2026-11-03T23:26:27Z",
+  "host": {
+    "uname": "Linux-7.0.0-1013-oracle-aarch64-with-glibc2.39",
+    "machine": "aarch64",
+    "cpu_model": "aarch64",
+    "host_memory_bytes": 25137336320,
+    "docker_info": "aarch64 cpus=4 memory=25137336320",
+    "docker_version": "client 29.1.3 / server 29.1.3",
+    "load_average": "0.79 0.30 0.22 1/443 1133105"
+  },
+  "images": {
+    "eqproxy": {
+      "image": "eqproxy-bench:v092",
+      "id": "5a2e16f8b4d219ef",
+      "tags": "[eqproxy-bench:v092]",
+      "created": "2026-11-02T22:55:09.130698706Z"
+    },
+    "origin": {
+      "image": "nginx:alpine",
+      "id": "785835ea65db4bba",
+      "tags": "[nginx:alpine]",
+      "created": "2026-10-22T00:16:54.616730281Z"
+    }
+  },
+  "oha": {
+    "path": "/home/ubuntu/bin/oha",
+    "sha256": "99a790eb8c3e0feaca974bd6b32f0f8d4426a0c5b289f39e833e5b2c7529cd39",
+    "version": "oha 1.16.0"
+  },
+  "method": {
+    "conns": 64,
+    "warmup_seconds": 3,
+    "duration_seconds": 15,
+    "reps_per_arm": 5,
+    "body_bytes": 1024,
+    "keep_alive": true,
+    "proxy_memory": "2g",
+    "proxy_cpus": "2",
+    "plugin": "add_header.wasm adds x-plugin: on",
+    "plugin_timeout": "500ms",
+    "generator": "oha 1.16, 64 keep-alive HTTP/1.1 connections"
+  }
+}

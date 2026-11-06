@@ -5,14 +5,30 @@ Fixed); versions are `vMAJOR.MINOR.PATCH` git tags.
 
 ## [Unreleased]
 
+## [v0.9.2] — 2026-11-06
+
+### Added
+
+- **TLS 1.3 session resumption (A16).** Listener TLS now installs rustls'
+  stateless `aws-lc-rs` ticketer: 12 h ticket lifetime, 6 h key rotation, no
+  new dependency and no operator secret. A TLS 1.3 client that keeps the
+  ticket resumes on its next connection instead of paying for a full
+  handshake. Keys are process-local, so a restart or another replica does not
+  resume; shared-key deployment configuration and 0-RTT remain out of scope.
+  Verified over a real TCP socket: first handshake full, second resumed
+  (`tls13_session_ticket_resumes_on_a_second_connection`). Evidence:
+  [v092-tls-resumption](docs/evidence/v092-tls-resumption.md).
+
 ### Changed
 
 - **HTTP/2 stream pipe: 16 KiB default.** The per-stream pipe between an h2
   client stream and the h1 engine drops from 64 KiB to 16 KiB, matching h3
-  and reducing the memory held by the 400-stream shape. The change follows
-  the v0.9.2 H2 profile and ADR-0048; the required five-repetition S-H2-01
-  re-measurement is **NOT EXECUTED**, so this is not a measured speedup and
-  roadmap box 16 remains open.
+  and reducing the memory held by the 400-stream shape. The five-repetition
+  re-measurement (`run-20261104T182135Z` netcup, `run-20261104T182404Z`
+  Oracle) keeps it as a memory-bounded change: peak memory fell from 50.37 to
+  49.52 MiB and from 52.46 to 48.98 MiB respectively, while S-H2-01 remains
+  Worse on RPS (0.594x and 0.744x vs HAProxy). No speedup is claimed; ADR-0048
+  and roadmap box 16 remain open for the other profiles.
 
 - **Product banner: the dataplane sends `Server: EQProxy`.** v0.9.1 shipped
   `Server: eqproxy`; the policy is unchanged (the origin's value is replaced,
@@ -38,6 +54,11 @@ Fixed); versions are `vMAJOR.MINOR.PATCH` git tags.
   allows CDDL-1.0 for `inferno` only, under ADR-0049; the release image does
   not enable the feature. The SVG format and the `PPROF_SVG_*` markers are
   unchanged.
+
+- **Profiler empty-report diagnostic.** A pprof report with no samples no
+  longer creates a zero-byte SVG or emits the `PPROF_SVG_*` markers;
+  `write_flamegraph` returns `Ok(false)` and `finish` logs a warning. The new
+  unit test is `empty_report_is_not_rendered`.
 
 ### Security
 

@@ -1,0 +1,27 @@
+# Envoy cache filter + local direct_response — probe (2026-11-02T04:07:49Z)
+# image: sha256:daca6a3f353ba289cc786d2162d13d4ec2b16d921c6c3f2fc57ce6f7900ab3d9
+# direct_response status 200, body 'local', cache filter SimpleHttpCacheConfig
+
+=== request 1 ===
+HTTP/1.1 404 Not Found
+date: Mon, 02 Nov 2026 04:07:49 GMT
+server: envoy
+content-length: 0
+
+
+=== request 2 ===
+HTTP/1.1 404 Not Found
+date: Mon, 02 Nov 2026 04:07:49 GMT
+server: envoy
+content-length: 0
+
+
+=== envoy stderr (tail) ===
+[2026-11-02 04:07:49.662][16][error][envoy_bug] [./source/common/common/assert.h:45] #7 UNKNOWN [0xaaaaec961118]
+[2026-11-02 04:07:49.662][16][error][envoy_bug] [./source/common/common/assert.h:45] #8 UNKNOWN [0xaaaaeaca9fdc]
+[2026-11-02 04:07:49.662][16][error][envoy_bug] [./source/common/common/assert.h:45] #9 UNKNOWN [0xaaaaecad96d4]
+[2026-11-02 04:07:49.662][16][error][envoy_bug] [./source/common/common/assert.h:45] #10 UNKNOWN [0xaaaaecda8a20]
+[2026-11-02 04:07:49.662][16][error][envoy_bug] [./source/common/common/assert.h:45] #11 UNKNOWN [0xaaaaecda7624]
+[2026-11-02 04:07:49.662][16][error][envoy_bug] [./source/common/common/assert.h:45] #12 UNKNOWN [0xaaaaec342604]
+[2026-11-02 04:07:49.662][16][error][envoy_bug] [./source/common/common/assert.h:45] #13 UNKNOWN [0xaaaaecdb73b8]
+[2026-11-02 04:07:49.662][16][error][envoy_bug] [./source/common/common/assert.h:45] #14 UNKNOWN [0xffff9803d5b8]

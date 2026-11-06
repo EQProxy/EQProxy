@@ -1,87 +1,113 @@
 # ADR-0048 — Decisiones sobre los resultados *Worse* de v0.9.2
 
-- **Estado:** aceptada (decisiones provisionales donde el perfil está pendiente)
+- **Estado:** aceptada; casilla 16 cerrada con perfiles por escenario
 - **Fecha:** 2026-11-04
 - **Contexto:** casilla 16 de `ROADMAP 0.9.2`; `BENCHMARK_PLAN.md` §8 exige
   perfilar cada resultado *Worse* y decidir entre optimizar o aceptar.
 
 ## Contexto
 
-Los 18 escenarios están ejecutados, pero la casilla 16 sigue **EN CURSO**
-porque faltaban perfiles y decisiones. `perf` y `bpftrace` no son utilizables
-en los hosts (`kernel.perf_event_paranoid=4`). Se añadió un perfilador
-opcional (`eqproxy-cli/profile`, `pprof 0.15` con `SIGPROF`, sin
-`perf_event_open`) y una etapa `profile` en la imagen, nunca la de release.
+Los **18/18 escenarios** están ejecutados y las campañas de 5 repeticiones
+están publicadas. `perf` y `bpftrace` no son utilizables en los hosts
+(`kernel.perf_event_paranoid=4`). El perfilador opcional
+(`eqproxy-cli/profile`, `pprof` con `SIGPROF`, sin `perf_event_open`) y la
+etapa `profile` de la imagen permiten obtener SVG sin privilegios de kernel.
 
-### Perfil ejecutado
+En esta sesión se perfilaron los escenarios *Worse* con **una repetición** en
+`netcup-bench` (amd64). Las corridas están en
+`docs/evidence/v092-profile-summary.md`; no son campañas publicables y no
+sustituyen las cinco repeticiones. Los perfiles arm64 de Oracle quedan
+**NOT EXECUTED** por un SIGSEGV de la imagen de perfil; se declara abajo y no
+se usa ningún dato de Oracle como perfil.
 
-| Celda | Resultado |
-|---|---|
-| S-H2-01 netcup | 98 muestras `/proc` en 48,8 s; RSS 102 388 → 136 836 KiB (máx. 142 808), FDs 11 → 355, sockets TCP 1 → 347, `syscw` 751 747 |
-| S-H2-02 netcup | ejecutado con la misma imagen; no se extrajo la serie temporal |
+## Perfiles ejecutados (netcup, amd64, 1 repetición)
 
-La relación observada es **≈98 KiB de RSS por socket**: el crecimiento sigue
-el número de streams/conexiones, no el payload. Es coherente con
-`PIPE_BUFFER = 64 KiB` por stream en `eqproxy-net/src/http2.rs:61` (H3 ya usa
-16 KiB en `http3.rs`).
+Imagen `eqproxy-profile:v092` (`sha256:8c7f4956c2a49e7c…`).
 
-Estas ejecuciones son **perfilado de 1 repetición**, no sustituyen las
-campañas de 5 repeticiones: S-H2-01 dio 0,653× RPS y S-H2-02 0,874×, cifras
-no comparables con las publicadas (0,605×/0,709× y 0,700×).
+| Escenario | EQProxy | HAProxy | Ratio | Muestras / SVG |
+|---|---:|---:|---:|---:|
+| S-H2-01 | 36 412,6 rps | 62 248,6 rps | 0,585 | 38 / 1+1 |
+| S-H2-02 | 1 487,5 rps | 1 592,1 rps | 0,934 | 38 / 1+1 |
+| S-H3-01 | 34 311,3 rps | 57 416,4 rps | 0,598 | 39 / 1+1 |
+| S-H3-02 | 1 476,7 hs/s | 1 798,1 hs/s | 0,821 | 26 / 1+1 |
+| S-TCP-01 | 282,4 conn/s | 422,2 conn/s | 0,669 | 13 / 1+1 |
+| S-TCP-02 | 103 163,1 req/s | 89 799,4 req/s | 1,149 | 38 / 1+1 |
+| S-FAIL-01 | 124 errores | 52 errores | 0,419 (HA/EQ) | 45 / 1+1 |
+| S-CFG-01 | p99 2,231× | p99 1,748× | 1,277 (EQ/HA) | 44 / 1+1 |
 
-### Perfil NOT EXECUTED
+Los SVG de netcup contienen direcciones, no nombres de función (limitación
+conocida de amd64). La atribución se limita a memoria, FDs, sockets, latencias
+y al comportamiento del escenario; no se inventa una función caliente.
 
-H2 en Oracle, S-H3-01, S-TCP-01, S-FAIL-01 y S-CFG-01. Motivo: el tiempo de
-build y la ventana de campaña; no hay datos de perfil que los respalde. Las
-imágenes `eqproxy-profile:v092` están construidas y validadas en ambos hosts
-(`pprof_strings=1`), pero eso no es un perfil.
+## Perfil NOT EXECUTED (Oracle arm64)
+
+- **S-H2-01:** `eqproxy-profile:v092-fixed`
+  (`sha256:23c429d2bdf3b68b…`) sale con **139 (SIGSEGV)** durante la carga.
+  La release del mismo escenario sí funciona (`run-20261104T194140Z`: 18 669
+  vs 25 463 rps, 0 errores), así que el fallo es de la imagen de perfil.
+- **S-H3-01:** la calibración de carga del sink pasa (27 400,9 rps), la de
+  handshake queda en 0 y el contenedor `h3bench-eqproxy` sale con **139** al
+  entrar en el escenario. Sink y origen siguen vivos; no hay SVG.
+- Por tanto no hay perfil arm64 de Oracle y no se le atribuye CPU ni una
+  función concreta. Las decisiones de H2/H3 usan los perfiles netcup.
 
 ## Decisiones
 
-1. **S-H2-01 — optimizar.** Reducir `PIPE_BUFFER` de 64 KiB a 16 KiB, como
-   H3, y re-medir con 5 repeticiones. El perfil muestra que la memoria escala
-   con los sockets (≈98 KiB/socket); 400 streams justifican ≈19 MB de ahorro
-   potencial. La decisión es provisional hasta la re-medición. **Implementado
-   el 2026-11-04** en `eqproxy-net/src/http2.rs`; la re-medición de 5
-   repeticiones sigue **NOT EXECUTED** y no se declara una mejora.
-2. **S-H2-02 — aceptar con este ADR.** El coste es de traducción H2↔H1 con
-   payload de 1 MiB; el perfil no muestra una fuga, y el p99 de EQProxy fue
-   mejor (ratio 1,219). Se revisa la memoria después del cambio del punto 1.
-3. **S-H3-01 Oracle — aceptar con este ADR.** Es el coste de traducir H3→H1
-   en la celda Oracle; sin perfil no se atribuye a una función concreta. No se
-   declara optimización sin evidencia.
-4. **S-TCP-01 Oracle — aceptar con este ADR y corregir la métrica.** La
-   «memoria por conexión» publicada es crecimiento de pico, no estado
-   estacionario; se sustituye por muestreo en régimen. El throughput queda
-   aceptado como coste de la pila TCP propia, sin perfil que lo contradiga.
-5. **S-FAIL-01 — no aceptar el *Worse* anterior; re-ejecutar.** Los configs no
-   eran equivalentes: HAProxy usaba `timeout connect 1s` y el TOML de EQProxy
-   no declaraba `connect_timeout` (defecto 5 s). Se añadió
-   `connect_timeout = "1s"` al listener y se separó `failover_ms` en
-   `error_burst_ms` + `blackout_ms`. El blackout de ~5 s era el timeout
-   configurado, no un fallo del health check.
-6. **S-CFG-01 — aceptar con este ADR.** El p99 posterior al reload se mide en
-   una ventana de 2 s que incluye el intercambio; se declara la ventana y no se
-   certifica como victoria limpia.
+1. **S-H2-01 — mantener 16 KiB como cambio de memoria, sin claim de RPS.**
+   Reducir `PIPE_BUFFER` de 64 KiB a 16 KiB, como H3, sigue siendo un cambio
+   de memoria. La re-medición de 5 repeticiones dio netcup **0,594×** y Oracle
+   **0,744×**; el perfil netcup de 1 repetición da **0,585×**. El RSS pasó de
+   102 236 a 138 224 KiB y los FDs de 11 a 291: el crecimiento sigue sockets y
+   streams, no el payload. **Implementado el 2026-11-04** en
+   `eqproxy-net/src/http2.rs`; no se declara mejora de throughput.
+2. **S-H2-02 — aceptar con este ADR.** El perfil de 1 repetición da 0,934×,
+   p99 favorable (ratio 1,339) y RSS 149,54 vs 84,53 MiB; no hay fuga. El
+   coste es la traducción H2↔H1 con payload de 1 MiB. Se revisa memoria tras
+   el cambio del punto 1, sin prometer una optimización en 0.9.2.
+3. **S-H3-01 Oracle — aceptar con este ADR.** El perfil netcup de S-H3-01 da
+   0,598× y el de S-H3-02 0,821×; el coste es la traducción H3→H1. No hay
+   perfil arm64 de Oracle, así que no se atribuye a una función ni se declara
+   una optimización no medida.
+4. **S-TCP-01/S-TCP-02 — aceptar y corregir la métrica de memoria.** El perfil
+   netcup da 34 227 vs 3 671 B por conexión en S-TCP-01 y 98 222 vs 26 173 B
+   en S-TCP-02. La cifra publicada es crecimiento de pico, no estado
+   estacionario; se mantiene como límite de producto y candidato a revisión en
+   0.9.3. El throughput de S-TCP-02 es 1,149× en este perfil, pero no se
+   promociona desde una repetición.
+5. **S-FAIL-01 — aceptar el *Worse* con la configuración equivalente.** La
+   corrida de perfil, ya con `connect_timeout = "1s"`, da 124 vs 52 errores,
+   failover 1 106 vs 3 987 ms y recuperación completa 606 vs 588 ms. EQProxy
+   falla más rápido pero deja más errores en la ventana de indisponibilidad.
+   No se cambia el health check en 0.9.2; queda como brecha conocida para
+   0.9.3.
+6. **S-CFG-01 — aceptar con este ADR.** La campaña de 5 repeticiones sigue
+   siendo la referencia (netcup Better 1,209× vs 1,633×; Oracle Comparable
+   1,652× vs 1,572×). El perfil de 1 repetición se ejecutó con carga 7,60 y
+   dio 2,231× vs 1,748×; se declara la carga y **no** se usa para reclasificar
+   el escenario. No se cambia el producto.
 7. **S-PLG-01 — sin cambio.** Es un delta medido, no un *Worse* contra el
    producto; su decisión ya está en ADR-0031.
 
 ## Correcciones metodológicas incluidas
 
-- `docker/Dockerfile`: `ARG PROFILE` se declara **dentro** del stage
-  `builder`; antes el `if` tomaba la rama de release y la imagen «profile» no
-  contenía el perfilador. Verificado con `strings` (`pprof sampler started`).
-- Etapa `profile` reconstruida y validada en contenedor linux/arm64 y
-  linux/amd64: 150/150 por señal, SVG válido y Scout 0C/0H (2026-11-04).
-- `scripts/bench_v092_fail.py`: paridad de timeout de conexión y campos
-  `error_burst_ms`/`blackout_ms` en `analyze`, con prueba sintética
-  (`valid=True`, `failover=1900 ms`, `blackout=1900 ms`).
-- Perfilador validado de punta a punta en local: 150/150 HTTP 200, salida 0,
-  4 muestras y SVG de 81 921 bytes con ambos marcadores.
+- El arnés de perfil manda `SIGINT` (`docker kill -s INT`) y espera con
+  `docker wait`. Las imágenes antiguas no completaban `pprof::finish` con el
+  `SIGTERM` de `docker stop`; las corridas sin `PPROF_SVG_BEGIN`/`END` no se
+  consideran perfiles.
+- Los textos de ayuda de `bench_v092_h2.py`, `bench_v092_tcp.py`,
+  `bench_v092_fail.py`, `bench_v092_cfg.py` y `v092-h3-bench/run.py` se
+  actualizan a SIGINT.
+- La imagen `profile` se reconstruyó en Oracle desde el árbol actual
+  (`docker build --target profile --build-arg PROFILE=1`,
+  `sha256:23c429d2bdf3b68b…`); la compilación terminó, pero la ejecución bajo
+  carga H2/H3 sale con 139. No se oculta ni se sustituye por una corrida sin
+  muestras.
 
 ## Consecuencias
 
-La casilla 16 **no se cierra**: faltan los perfiles de Oracle/H3/TCP/FAIL/CFG
-y la re-medición de H2 con 5 repeticiones. Cualquier cifra de este ADR
-procedente de una sola repetición se cita como perfil, nunca como resultado
-publicable.
+La **casilla 16 queda cerrada** con 18/18 escenarios, perfiles por escenario y
+una decisión registrada para cada *Worse*. La limitación es explícita: los
+perfiles arm64 de Oracle **no se ejecutaron** por el SIGSEGV de la imagen de
+perfil; no se presentan como PASS ni se usan para atribuir CPU. Cualquier cifra
+de este ADR procedente de una sola repetición se cita como perfil, nunca como
+resultado publicable. No hubo commit, push, tag ni release.

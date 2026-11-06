@@ -1,0 +1,57 @@
+   Compiling eqproxy-cli v0.9.1 (/Volumes/Lexar/Cursor/EQProxy/eqproxy-cli)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.76s
+     Running tests/differential.rs (target/debug/deps/differential-b5e73a86929418c5)
+
+running 1 test
+# Differential report — shared-semantics corpus
+
+- date (UTC epoch): 1793580449
+- eqproxy binary: /Volumes/Lexar/Cursor/EQProxy/target/debug/eqproxy (sha256 266296b2efaae23b9d79475d92eaa56b9a833619425beabc2c2f1b07450ba625)
+- haproxy: haproxy:3.4.6 (sha256:e273915691a8eab3f105bf3e39fd4c29a4ecf334e33421903b5589d25e14db26)
+- ingress-nginx data plane: registry.k8s.io/ingress-nginx/controller:v1.13.0 (sha256:dc75a7baec7a3b827a5d7ab0acd10ab507904c7dad692365b3e3b596eca1afd2)
+- envoy: envoyproxy/envoy:v1.34.2 (sha256:daca6a3f353ba289cc786d2162d13d4ec2b16d921c6c3f2fc57ce6f7900ab3d9)
+- backends: nginx:alpine (sha256:a3554c0d0b48177b1413c26e01f695334428020d9df01243fbae3e11cfd17417)
+- normalization: status code only (reason phrase ignored); `Location` reduced to
+  path + query when absolute; body compared only when the case declares one;
+  `chunked` bodies decoded and `content-encoding: gzip` bodies gunzipped before
+  the comparison; an empty declared header value means the header must be
+  absent; comma-joined header values normalized to the `", "` separator; the
+  client address of each implementation is calibrated at run time and
+  substituted as `CLIENT`.
+
+| case | shared semantics | eqproxy | haproxy | ingress-nginx | envoy |
+|---|---|---|---|---|---|
+| c1-prefix | path_prefix routes the request to its backend | OK 200 "api /c1/users" | OK 200 "api /c1/users" | OK 200 "api /c1/users" | OK 200 "api /c1/users" |
+| c1-boundary | a literal prefix boundary: /c1/ must not swallow /c10 | OK 200 "fallback /c10/users" | OK 200 "fallback /c10/users" | OK 200 "fallback /c10/users" | OK 200 "fallback /c10/users" |
+| c2-host | host match is case-insensitive | OK 200 "mgmt /c2/x" | OK 200 "mgmt /c2/x" | OK 200 "mgmt /c2/x" | OK 200 "mgmt /c2/x" |
+| c2-port | host match compares without the :port suffix | OK 200 "mgmt /c2/x" | OK 200 "mgmt /c2/x" | OK 200 "mgmt /c2/x" | OK 200 "mgmt /c2/x" |
+| c2-near | a host near miss must not route | OK 200 "fallback /c2/x" | OK 200 "fallback /c2/x" | OK 200 "fallback /c2/x" | OK 200 "fallback /c2/x" |
+| c3-method | method condition matches | OK 200 "mgmt /c3/x" | OK 200 "mgmt /c3/x" | OK 200 "mgmt /c3/x" | OK 200 "mgmt /c3/x" |
+| c3-near | method near miss must not route | OK 200 "fallback /c3/x" | OK 200 "fallback /c3/x" | OK 200 "fallback /c3/x" | OK 200 "fallback /c3/x" |
+| c4-header | header exact match routes | OK 200 "mgmt /c4/x" | OK 200 "mgmt /c4/x" | OK 200 "mgmt /c4/x" | OK 200 "mgmt /c4/x" |
+| c4-near | missing header must not route | OK 200 "fallback /c4/x" | OK 200 "fallback /c4/x" | OK 200 "fallback /c4/x" | OK 200 "fallback /c4/x" |
+| c5-first | ordered rules: the first matching rule wins over a later one | OK 200 "mgmt /c5/x" | OK 200 "mgmt /c5/x" | OK 200 "mgmt /c5/x" | OK 200 "mgmt /c5/x" |
+| c5-second | ordered rules: the later rule catches what the first misses | OK 200 "api /c5/x" | OK 200 "api /c5/x" | OK 200 "api /c5/x" | OK 200 "api /c5/x" |
+| c6-redirect | local 3xx with Location (body not compared: per-implementation) | OK 301 -> /c6/new "" | OK 301 -> /c6/new "" | OK 301 -> /c6/new "<html>\r\n<head><title>301 Moved Permanently</title></head>\r\n<body>\r\n<center><h1>301 Moved Permanently</h1></center>\r\n<hr><center>nginx/1.27.1</center>\r\n</body>\r\n</html>" | OK 301 -> /c6/new "" |
+| c7-direct | local direct response (no backend contacted) | OK 200 "pong" | OK 200 "pong" | OK 200 "pong" | OK 200 "pong" |
+| c8-rewrite | prefix rewrite: the backend sees the rewritten target | OK 200 "api /c8/api/users" | OK 200 "api /c8/api/users" | OK 200 "api /c8/api/users" | OK 200 "api /c8/api/users" |
+| c11-regex | path regex routes .json paths (spelling per implementation, see corpus doc) | OK 200 "mgmt /c11/data.json" | OK 200 "mgmt /c11/data.json" | OK 200 "mgmt /c11/data.json" | OK 200 "mgmt /c11/data.json" |
+| c11-boundary | regex near miss (.jsonx) must not route | OK 200 "fallback /c11/data.jsonx" | OK 200 "fallback /c11/data.jsonx" | OK 200 "fallback /c11/data.jsonx" | OK 200 "fallback /c11/data.jsonx" |
+| h1-xff-append | XFF grows: client-sent hops are kept, the client is appended | OK 200 "api /h1/x xff=[10.9.9.9, CLIENT] real=[] beta=[] gone=[] added=[]" | OK 200 "api /h1/x xff=[10.9.9.9, CLIENT] real=[] beta=[] gone=[] added=[]" | OK 200 "api /h1/x xff=[10.9.9.9, CLIENT] real=[] beta=[] gone=[] added=[]" | OK 200 "api /h1/x xff=[10.9.9.9, CLIENT] real=[] beta=[] gone=[] added=[]" |
+| h2-xff-xri-replace | anti-spoofing: XFF and X-Real-IP carry the real client only | OK 200 "api /h2/x xff=[CLIENT] real=[CLIENT] beta=[] gone=[] added=[]" | OK 200 "api /h2/x xff=[CLIENT] real=[CLIENT] beta=[] gone=[] added=[]" | OK 200 "api /h2/x xff=[CLIENT] real=[CLIENT] beta=[] gone=[] added=[]" | OK 200 "api /h2/x xff=[CLIENT] real=[CLIENT] beta=[] gone=[] added=[]" |
+| h4-xfp | X-Forwarded-Proto carries the client scheme | OK 200 "api /h4/x xff=[CLIENT] real=[] proto=[http] beta=[] gone=[] added=[]" | OK 200 "api /h4/x xff=[CLIENT] real=[] proto=[http] beta=[] gone=[] added=[]" | OK 200 "api /h4/x xff=[CLIENT] real=[] proto=[http] beta=[] gone=[] added=[]" | OK 200 "api /h4/x xff=[CLIENT] real=[] proto=[http] beta=[] gone=[] added=[]" |
+| h5-set-header | set-header replaces the client's value on the forwarded request | OK 200 "api /h5/x xff=[CLIENT] real=[] beta=[on] gone=[] added=[]" | OK 200 "api /h5/x xff=[CLIENT] real=[] beta=[on] gone=[] added=[]" | OK 200 "api /h5/x xff=[CLIENT] real=[] beta=[on] gone=[] added=[]" | OK 200 "api /h5/x xff=[CLIENT] real=[] beta=[on] gone=[] added=[]" |
+| h6-del-header | del-header removes the client's header before forwarding | OK 200 "api /h6/x xff=[CLIENT] real=[] beta=[] gone=[] added=[]" | OK 200 "api /h6/x xff=[CLIENT] real=[] beta=[] gone=[] added=[]" | OK 200 "api /h6/x xff=[CLIENT] real=[] beta=[] gone=[] added=[]" | OK 200 "api /h6/x xff=[CLIENT] real=[] beta=[] gone=[] added=[]" |
+| h7-add-header | add-header combines the added value with the client's | OK 200 "api /h7/x xff=[CLIENT] real=[] beta=[] gone=[] added=[base, extra]" | OK 200 "api /h7/x xff=[CLIENT] real=[] beta=[] gone=[] added=[base, extra]" | OK 200 "api /h7/x xff=[CLIENT] real=[] beta=[] gone=[] added=[base, extra]" | OK 200 "api /h7/x xff=[CLIENT] real=[] beta=[] gone=[] added=[base, extra]" |
+| h8-response-marker | response headers can be set on the way back | OK 200 "api /h8/x xff=[CLIENT] real=[] beta=[] gone=[] added=[]" x-marker=v06 | OK 200 "api /h8/x xff=[CLIENT] real=[] beta=[] gone=[] added=[]" x-marker=v06 | OK 200 "api /h8/x xff=[CLIENT] real=[] beta=[] gone=[] added=[]" x-marker=v06 | OK 200 "api /h8/x xff=[CLIENT] real=[] beta=[] gone=[] added=[]" x-marker=v06 |
+| z1-gzip | a gzip-capable client gets gzip and the same decoded body | OK 200 "compression differential probe payload: the quick brown fox jumps over the lazy dog while the proxy negotiates a coding and the origin declares a plain text body long enough for every implementation to compress it" content-encoding=gzip | OK 200 "compression differential probe payload: the quick brown fox jumps over the lazy dog while the proxy negotiates a coding and the origin declares a plain text body long enough for every implementation to compress it" content-encoding=gzip | OK 200 "compression differential probe payload: the quick brown fox jumps over the lazy dog while the proxy negotiates a coding and the origin declares a plain text body long enough for every implementation to compress it" content-encoding=gzip | OK 200 "compression differential probe payload: the quick brown fox jumps over the lazy dog while the proxy negotiates a coding and the origin declares a plain text body long enough for every implementation to compress it" content-encoding=gzip |
+| z2-no-accept-encoding | no Accept-Encoding means identity and no content-encoding | OK 200 "compression differential probe payload: the quick brown fox jumps over the lazy dog while the proxy negotiates a coding and the origin declares a plain text body long enough for every implementation to compress it" content-encoding=<absent> | OK 200 "compression differential probe payload: the quick brown fox jumps over the lazy dog while the proxy negotiates a coding and the origin declares a plain text body long enough for every implementation to compress it" content-encoding=<absent> | OK 200 "compression differential probe payload: the quick brown fox jumps over the lazy dog while the proxy negotiates a coding and the origin declares a plain text body long enough for every implementation to compress it" content-encoding=<absent> | OK 200 "compression differential probe payload: the quick brown fox jumps over the lazy dog while the proxy negotiates a coding and the origin declares a plain text body long enough for every implementation to compress it" content-encoding=<absent> |
+| z3-identity | Accept-Encoding: identity is not compressed | OK 200 "compression differential probe payload: the quick brown fox jumps over the lazy dog while the proxy negotiates a coding and the origin declares a plain text body long enough for every implementation to compress it" content-encoding=<absent> | OK 200 "compression differential probe payload: the quick brown fox jumps over the lazy dog while the proxy negotiates a coding and the origin declares a plain text body long enough for every implementation to compress it" content-encoding=<absent> | OK 200 "compression differential probe payload: the quick brown fox jumps over the lazy dog while the proxy negotiates a coding and the origin declares a plain text body long enough for every implementation to compress it" content-encoding=<absent> | OK 200 "compression differential probe payload: the quick brown fox jumps over the lazy dog while the proxy negotiates a coding and the origin declares a plain text body long enough for every implementation to compress it" content-encoding=<absent> |
+
+verdict: 26/26 cases agree across their applicable implementations (0 documented exclusion(s)).
+
+report written to /Volumes/Lexar/Cursor/EQProxy/target/tmp/differential-10902/differential-report.md
+test differential_shared_semantics_corpus ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 16.88s
+

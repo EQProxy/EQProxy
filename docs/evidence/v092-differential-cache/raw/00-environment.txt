@@ -1,0 +1,17 @@
+captured: 2026-11-02T03:42:44Z
+host: Darwin 25.5.0 arm64
+macos: 26.5.1
+rustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)
+cargo: cargo 1.99.1 (5f94df478 2026-08-27)
+docker: 29.9.2/29.9.2
+revision: 6ba2667 (main)
+worktree:
+   M docs/differential-corpus.md
+   M eqproxy-cli/tests/differential.rs
+  ?? docs/evidence/v092-differential-cache.md
+  ?? docs/evidence/v092-differential-cache/
+  ?? docs/evidence/v092-differential-compression.md
+  ?? docs/evidence/v092-differential-compression/
+eqproxy binary: target/debug/eqproxy
+eqproxy sha256: 281459e5cbd07841e573ee775c53cf9ac8abf1c84eb72348e24fdeeb85cdb790
+report sha256: c6ce86cf846452a6ba8db0c0d92bd4618f12638b09b63d4993bf4a0c880cc11c

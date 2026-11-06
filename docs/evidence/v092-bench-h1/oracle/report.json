@@ -1,0 +1,1957 @@
+{
+  "disclosure": {
+    "date_utc": "2026-11-02T23:05:48Z",
+    "plan": "BENCHMARK_PLAN.md \u00a72 disclosure, \u00a73 scenarios, \u00a74 metrics, \u00a75 bias controls",
+    "eqproxy_commit": "64a1d77+uncommitted-tree-20261102T2348Z",
+    "eqproxy_image": "eqproxy-bench:v092",
+    "eqproxy_image_id": "5a2e16f8b4d2",
+    "eqproxy_help": [
+      "ExyonQ Proxy (EQProxy): reverse proxy and load balancer",
+      "",
+      "Usage: eqproxy <COMMAND>",
+      "",
+      "Commands:"
+    ],
+    "haproxy_image": "haproxy:3.4.6",
+    "haproxy_image_id": "e273915691a8",
+    "haproxy_vv": [
+      "HAProxy version 3.4.6-56332c5 2026/09/28 - https://haproxy.org/",
+      "Status: long-term supported branch - will stop receiving fixes around Q2 2031.",
+      "Known bugs: http://www.haproxy.org/bugs/bugs-3.4.6.html",
+      "Running on: Linux 7.0.0-1013-oracle #13~24.04.1-Ubuntu SMP PREEMPT Fri Sep 25 09:43:58 UTC 2026 aarch64",
+      "Build options : ",
+      "  TARGET  = linux-glibc",
+      "  CC      = cc",
+      "  CFLAGS  = -O2 -g -fwrapv -fvect-cost-model=very-cheap",
+      "  OPTIONS = USE_PTHREAD_EMULATION=1 USE_GETADDRINFO=1 USE_OPENSSL=1 USE_LUA=1 USE_QUIC=1 USE_PROMEX=1 USE_PCRE2=1 USE_PCRE2_JIT=1",
+      "  DEBUG   = ",
+      "",
+      "Feature list : -51DEGREES +ACCEPT4 +ACME +BACKTRACE -CLOSEFROM +CPU_AFFINITY +CRYPT_H -DEVICEATLAS +DL -ECH -ENGINE +EPOLL -EVPORTS +GETADDRINFO +HAVE_TCP_MD5SIG -KQUEUE +KTLS -LIBATOMIC +LIBCRYPT +LINUX_CAP +LINUX_SPLICE +LINUX_TPROXY +LUA +MATH -MEMORY_PROFILING +NETFILTER +NS -OBSOLETE_LINKER +OPENSSL -OPENSSL_AWSLC -OPENSSL_WOLFSSL -OT -PCRE +PCRE2 +PCRE2_JIT -PCRE_JIT +POLL +PRCTL -PROCCTL +PROMEX +PTHREAD_EMULATION +QUIC -QUIC_OPENSSL_COMPAT +RT +SHM_OPEN +SLZ +SSL -STATIC_PCRE -STATIC_PCRE2 +TFO +THREAD +THREAD_DUMP +TPROXY +TRACE -WURFL -ZLIB"
+    ],
+    "hardware": {
+      "cpu": "aarch64",
+      "cores_logical": 4,
+      "ram_bytes": 25137336320,
+      "os": "Linux-7.0.0-1013-oracle-aarch64-with-glibc2.39",
+      "kernel": "7.0.0-1013-oracle",
+      "docker": "Docker version 29.1.3, build 29.1.3-0ubuntu3~24.04.2",
+      "oha": "oha 1.16.0"
+    },
+    "host_loadavg_start": "0.25 1.21 1.17 1/437 855372",
+    "host_loadavg_end": "8.92 6.38 3.45 1/440 860818",
+    "resource_limits": {
+      "scope": "each proxy container (EQProxy and HAProxy); origin and generator are outside",
+      "memory": "2g",
+      "cpus": "2",
+      "applied_hostconfig": {
+        "benchv092-eq": "2147483648 2000000000",
+        "benchv092-ha": "2147483648 2000000000"
+      }
+    },
+    "topology": "one macOS host; origin + both proxies in Linux containers on one Docker bridge; oha on the host against published loopback ports; no CPU affinity.",
+    "origin": "scripts/bench_v092_h1_backends.py (one asyncio process, /1k and /1m, TCP_NODELAY, honors Connection: close and HTTP/1.0)",
+    "generator": {
+      "command": "/home/ubuntu/bin/oha -z <scenario secs>s -c <scenario conns> --no-tui --output-format json -t 30s --wait-ongoing-requests-after-deadline [--disable-keepalive] <url>",
+      "warmup": "one discarded run per product and scenario: 5s for S-H1-01/02, 2s for S-H1-03",
+      "durations": {
+        "S-H1-01": 10,
+        "S-H1-02": 10,
+        "S-H1-03": 5
+      },
+      "repetitions": 5,
+      "correction": "not applied: oha 1.14.0 ignores --latency-correction without -q, and the closed-loop scenario has no honest offered rate for -q. Full raw histograms are published; percentiles are not CO-corrected."
+    },
+    "scenario_interpretation": {
+      "S-H1-01": "HTTP/1.1 keep-alive, 1 KiB payload",
+      "S-H1-02": "HTTP/1.1 keep-alive, 1 MiB payload",
+      "S-H1-03": "HTTP/1.1 new connection per request, 1 KiB payload"
+    },
+    "connections": {
+      "S-H1-01": 50,
+      "S-H1-02": 50,
+      "S-H1-03": 10
+    },
+    "order_per_rep": [
+      {
+        "rep": 1,
+        "order": [
+          "eqproxy",
+          "haproxy"
+        ]
+      },
+      {
+        "rep": 2,
+        "order": [
+          "haproxy",
+          "eqproxy"
+        ]
+      },
+      {
+        "rep": 3,
+        "order": [
+          "eqproxy",
+          "haproxy"
+        ]
+      },
+      {
+        "rep": 4,
+        "order": [
+          "haproxy",
+          "eqproxy"
+        ]
+      },
+      {
+        "rep": 5,
+        "order": [
+          "eqproxy",
+          "haproxy"
+        ]
+      }
+    ],
+    "configs": {
+      "s-h1-eqproxy.toml": "schema_version = 1\nshutdown_grace = \"5s\"\n\n[listener.web]\nlisten = \"0.0.0.0:19601\"\nmode = \"http\"\nbackend = \"api\"\nmaxconn = 4096\n\n[backend.api]\nserver = \"172.21.0.2:19002\"\n",
+      "s-h1-haproxy.cfg": "global\n  log stdout format raw local0\n  maxconn 4096\ndefaults\n  log global\n  mode http\n  option httplog\n  option http-keep-alive\n  timeout connect 5s\n  timeout client 60s\n  timeout server 60s\n  timeout http-request 5s\nfrontend web\n  bind *:19611\n  default_backend api\nbackend api\n  server s1 172.21.0.2:19002 maxconn 4096\n"
+    },
+    "raw_files": {
+      "S-H1-01-eqproxy-rep1.json": {
+        "sha256": "c69ad3d41049e6a0f4e5777edaaebf81f95cc0a4a67b74b8b7e60de7471f959b",
+        "bytes": 2647
+      },
+      "S-H1-01-eqproxy-rep2.json": {
+        "sha256": "5ab66a62c41706e539002c5c4e9093c70e16085b594a2a00969e756639e7e3a2",
+        "bytes": 2641
+      },
+      "S-H1-01-eqproxy-rep3.json": {
+        "sha256": "f0b9e6d464f98b930442c17c879cbaab7a29220aa7d4236be330f06577f7405d",
+        "bytes": 2608
+      },
+      "S-H1-01-eqproxy-rep4.json": {
+        "sha256": "c7db930fd085749afa5c9f2163e8b307d6cca2dbeb7a6b05057020716824f24e",
+        "bytes": 2598
+      },
+      "S-H1-01-eqproxy-rep5.json": {
+        "sha256": "af8243fab66942556bbf2a1682ce0978646bcd91684c3de4ace265838b1c2a14",
+        "bytes": 2624
+      },
+      "S-H1-01-haproxy-rep1.json": {
+        "sha256": "2b81c28e1b474f718bc88ded4bd68f128d1fb4c1f1f8f78430afce6427eb7354",
+        "bytes": 2579
+      },
+      "S-H1-01-haproxy-rep2.json": {
+        "sha256": "8d1e66a6142dc42bc1cf62b735b893a9ca715837da7d84d49b4639920a2f75ae",
+        "bytes": 2657
+      },
+      "S-H1-01-haproxy-rep3.json": {
+        "sha256": "39cfd14a06c6792c9d509333e5a8025d86bf7394363a2fd56c2651f6f2fa529a",
+        "bytes": 2594
+      },
+      "S-H1-01-haproxy-rep4.json": {
+        "sha256": "b8dfbc9a6374f0739bacd53b4b6a2ffe890a9372297e533394405ad88c543e39",
+        "bytes": 2608
+      },
+      "S-H1-01-haproxy-rep5.json": {
+        "sha256": "2ee4f32e55259a1a9874af44f465562b353d7fc597582b181b0b5ada248ba8ae",
+        "bytes": 2669
+      },
+      "S-H1-02-eqproxy-rep1.json": {
+        "sha256": "ea932264f7a1c455f433a06075ceaabd905612bf58acbf29b125cbb12f3be017",
+        "bytes": 2588
+      },
+      "S-H1-02-eqproxy-rep2.json": {
+        "sha256": "7f68514733be6ed816b4a4f1bab6c05ab1cb75b18d1b096a67437e449c9327ad",
+        "bytes": 2669
+      },
+      "S-H1-02-eqproxy-rep3.json": {
+        "sha256": "8db4eca959b03f1892868b26cf124d19172d4eb0776c7be534dddabcaa6b8642",
+        "bytes": 2579
+      },
+      "S-H1-02-eqproxy-rep4.json": {
+        "sha256": "6d242cdcfb7ed612ca48ee5cb4d513e8b4db65daecc2ea4a69719aac50087d3d",
+        "bytes": 2594
+      },
+      "S-H1-02-eqproxy-rep5.json": {
+        "sha256": "1797bfc92d2c18ec85a8b85f7eb6ce32715ec7f37c573c85a7157f939a17a1df",
+        "bytes": 2637
+      },
+      "S-H1-02-haproxy-rep1.json": {
+        "sha256": "ed3463348d3a6e5d8abafe5e75acfa6fa0c0f69922a754c8f7f8d263421fcde2",
+        "bytes": 2604
+      },
+      "S-H1-02-haproxy-rep2.json": {
+        "sha256": "17c1eda0d312f0e3939e04124ac73b3c7165707e9950359a082816f9eebd1f78",
+        "bytes": 2631
+      },
+      "S-H1-02-haproxy-rep3.json": {
+        "sha256": "32f5c9356d5f883480a8abf400e453e08c0b81105427373634ed0aae7857c693",
+        "bytes": 2647
+      },
+      "S-H1-02-haproxy-rep4.json": {
+        "sha256": "a096eb941f9814f0d7673676df0097365cc277d55fb24b11853a557f4072c651",
+        "bytes": 2586
+      },
+      "S-H1-02-haproxy-rep5.json": {
+        "sha256": "22cef892435c41470e802b7c5e48efc9faad4c102bf5fd5af7de7b66850a67f1",
+        "bytes": 2584
+      },
+      "S-H1-03-eqproxy-rep1.json": {
+        "sha256": "77bb580154756e8be0be5509d3201d5f69c1d4e0f16247dc0805c5bdd61fe6ac",
+        "bytes": 2588
+      },
+      "S-H1-03-eqproxy-rep2.json": {
+        "sha256": "c324c2f21661fce7d21ff9b9f4a61c04bb2868736e704c6982400959c06be9ac",
+        "bytes": 2630
+      },
+      "S-H1-03-eqproxy-rep3.json": {
+        "sha256": "4f7a453a304ed9f6b9945805794f4c5a89cfc65105886914d7633d98e558ac14",
+        "bytes": 2616
+      },
+      "S-H1-03-eqproxy-rep4.json": {
+        "sha256": "c2b1bca481b8114f91d56add52731b80fe6c550bee5446b27a2df00ef99745b0",
+        "bytes": 2597
+      },
+      "S-H1-03-eqproxy-rep5.json": {
+        "sha256": "ecba0728c8a0bae70424f6feceafff81197b69bfa347e2b397e9e033d33660bb",
+        "bytes": 2624
+      },
+      "S-H1-03-haproxy-rep1.json": {
+        "sha256": "ced79d9e1799284d781aa237340a318cfe2b4e969c77fe3abfa27633242c8937",
+        "bytes": 2576
+      },
+      "S-H1-03-haproxy-rep2.json": {
+        "sha256": "3ccecd8f834a3d2ef03d9816e2199417abb17655999fcf51314dfe665a728645",
+        "bytes": 2607
+      },
+      "S-H1-03-haproxy-rep3.json": {
+        "sha256": "299d735c0eaa89c30add1d1b72a604053ac639120ef7ef32af4cad773c73612e",
+        "bytes": 2637
+      },
+      "S-H1-03-haproxy-rep4.json": {
+        "sha256": "4a57ede93b68c1ac19ac47bbcab0f2782f6d2e4bda431d91a7bb1d3943c3b5d6",
+        "bytes": 2615
+      },
+      "S-H1-03-haproxy-rep5.json": {
+        "sha256": "d3610ea85e5cb3b4f9ec361f1ecaecb42a8c1153082aea6e89319b831112f4c6",
+        "bytes": 2635
+      },
+      "calibration-S-H1-01.json": {
+        "sha256": "fd7629005c992c2952578b1cdb42913764b157872722ecf0711d2e3e902c5e8b",
+        "bytes": 2636
+      },
+      "calibration-S-H1-02.json": {
+        "sha256": "aa5a98a99aeffb818caa556bb31088076a2b313e020c60f2dfc11094551a369e",
+        "bytes": 2610
+      },
+      "calibration-S-H1-03.json": {
+        "sha256": "b3e1dfd3da5b332ad3894d3f6d507bbab5aa34688d81aa10f16035f3dff18135",
+        "bytes": 2609
+      }
+    }
+  },
+  "calibration": {
+    "S-H1-01": {
+      "requests_per_sec": 20164.3,
+      "bytes_per_sec": 20648277.8,
+      "p50_ms": 2.447,
+      "p95_ms": 2.83,
+      "p99_ms": 3.457,
+      "p99_9_ms": 4.955,
+      "total_requests": 201740,
+      "success_rate": 1.0,
+      "status_code_distribution": {
+        "200": 201740
+      },
+      "error_distribution": {},
+      "duration_seconds": 10.0047937,
+      "wall_seconds": 10.079,
+      "generator_cpu_seconds": 7.049,
+      "generator_cpu_pct_one_core": 69.9,
+      "proxy_cpu_seconds": null,
+      "cpu_pct_one_core": null,
+      "rss_bytes": null,
+      "hwm_bytes": null,
+      "payload_bytes": 1024,
+      "connections": 50,
+      "disable_keepalive": false,
+      "raw_file": "calibration-S-H1-01.json",
+      "headroom_ratio_vs_faster_proxy": 1.286,
+      "series_valid": true
+    },
+    "S-H1-02": {
+      "requests_per_sec": 2311.2,
+      "bytes_per_sec": 2423516363.1,
+      "p50_ms": 21.718,
+      "p95_ms": 22.752,
+      "p99_ms": 23.201,
+      "p99_9_ms": 45.344,
+      "total_requests": 23167,
+      "success_rate": 1.0,
+      "status_code_distribution": {
+        "200": 23167
+      },
+      "error_distribution": {},
+      "duration_seconds": 10.02360065,
+      "wall_seconds": 10.04,
+      "generator_cpu_seconds": 7.048,
+      "generator_cpu_pct_one_core": 70.2,
+      "proxy_cpu_seconds": null,
+      "cpu_pct_one_core": null,
+      "rss_bytes": null,
+      "hwm_bytes": null,
+      "payload_bytes": 1048576,
+      "connections": 50,
+      "disable_keepalive": false,
+      "raw_file": "calibration-S-H1-02.json",
+      "headroom_ratio_vs_faster_proxy": 1.761,
+      "series_valid": true
+    },
+    "S-H1-03": {
+      "requests_per_sec": 3315.4,
+      "bytes_per_sec": 3394959.6,
+      "p50_ms": 1.868,
+      "p95_ms": 9.567,
+      "p99_ms": 14.025,
+      "p99_9_ms": 20.143,
+      "total_requests": 16598,
+      "success_rate": 1.0,
+      "status_code_distribution": {
+        "200": 16598
+      },
+      "error_distribution": {},
+      "duration_seconds": 5.006348777,
+      "wall_seconds": 5.02,
+      "generator_cpu_seconds": 2.138,
+      "generator_cpu_pct_one_core": 42.6,
+      "proxy_cpu_seconds": null,
+      "cpu_pct_one_core": null,
+      "rss_bytes": null,
+      "hwm_bytes": null,
+      "payload_bytes": 1024,
+      "connections": 10,
+      "disable_keepalive": true,
+      "raw_file": "calibration-S-H1-03.json",
+      "headroom_ratio_vs_faster_proxy": 0.843,
+      "series_valid": false,
+      "reason": "direct sink did not exceed 1.20x the faster proxy; generator or origin is the limiting component"
+    }
+  },
+  "results": {
+    "S-H1-01": {
+      "eqproxy": {
+        "runs": [
+          {
+            "requests_per_sec": 15806.1,
+            "bytes_per_sec": 16185451.3,
+            "p50_ms": 3.058,
+            "p95_ms": 4.837,
+            "p99_ms": 5.849,
+            "p99_9_ms": 7.176,
+            "total_requests": 158164,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 158164
+            },
+            "error_distribution": {},
+            "duration_seconds": 10.006513455,
+            "wall_seconds": 10.068,
+            "generator_cpu_seconds": 6.185,
+            "generator_cpu_pct_one_core": 61.4,
+            "proxy_cpu_seconds": 10.76,
+            "cpu_pct_one_core": 106.9,
+            "rss_bytes": 17625088,
+            "hwm_bytes": 18747392,
+            "payload_bytes": 1024,
+            "connections": 50,
+            "disable_keepalive": false,
+            "raw_file": "S-H1-01-eqproxy-rep1.json"
+          },
+          {
+            "requests_per_sec": 15910.8,
+            "bytes_per_sec": 16292640.6,
+            "p50_ms": 3.017,
+            "p95_ms": 4.823,
+            "p99_ms": 5.856,
+            "p99_9_ms": 8.028,
+            "total_requests": 159208,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 159208
+            },
+            "error_distribution": {},
+            "duration_seconds": 10.006296477,
+            "wall_seconds": 10.069,
+            "generator_cpu_seconds": 6.185,
+            "generator_cpu_pct_one_core": 61.4,
+            "proxy_cpu_seconds": 10.79,
+            "cpu_pct_one_core": 107.2,
+            "rss_bytes": 16130048,
+            "hwm_bytes": 18751488,
+            "payload_bytes": 1024,
+            "connections": 50,
+            "disable_keepalive": false,
+            "raw_file": "S-H1-01-eqproxy-rep2.json"
+          },
+          {
+            "requests_per_sec": 15676.2,
+            "bytes_per_sec": 16052457.3,
+            "p50_ms": 3.034,
+            "p95_ms": 4.835,
+            "p99_ms": 5.839,
+            "p99_9_ms": 7.428,
+            "total_requests": 156894,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 156894
+            },
+            "error_distribution": {},
+            "duration_seconds": 10.008402624,
+            "wall_seconds": 10.07,
+            "generator_cpu_seconds": 6.043,
+            "generator_cpu_pct_one_core": 60.0,
+            "proxy_cpu_seconds": 10.92,
+            "cpu_pct_one_core": 108.4,
+            "rss_bytes": 16125952,
+            "hwm_bytes": 18751488,
+            "payload_bytes": 1024,
+            "connections": 50,
+            "disable_keepalive": false,
+            "raw_file": "S-H1-01-eqproxy-rep3.json"
+          },
+          {
+            "requests_per_sec": 15317.8,
+            "bytes_per_sec": 15685468.7,
+            "p50_ms": 3.142,
+            "p95_ms": 5.028,
+            "p99_ms": 6.228,
+            "p99_9_ms": 11.358,
+            "total_requests": 153275,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 153275
+            },
+            "error_distribution": {},
+            "duration_seconds": 10.006306032,
+            "wall_seconds": 10.066,
+            "generator_cpu_seconds": 6.015,
+            "generator_cpu_pct_one_core": 59.8,
+            "proxy_cpu_seconds": 10.34,
+            "cpu_pct_one_core": 102.7,
+            "rss_bytes": 17760256,
+            "hwm_bytes": 19595264,
+            "payload_bytes": 1024,
+            "connections": 50,
+            "disable_keepalive": false,
+            "raw_file": "S-H1-01-eqproxy-rep4.json"
+          },
+          {
+            "requests_per_sec": 15300.3,
+            "bytes_per_sec": 15667553.1,
+            "p50_ms": 3.096,
+            "p95_ms": 5.055,
+            "p99_ms": 6.261,
+            "p99_9_ms": 9.186,
+            "total_requests": 153085,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 153085
+            },
+            "error_distribution": {},
+            "duration_seconds": 10.005330039,
+            "wall_seconds": 10.064,
+            "generator_cpu_seconds": 5.978,
+            "generator_cpu_pct_one_core": 59.4,
+            "proxy_cpu_seconds": 10.65,
+            "cpu_pct_one_core": 105.8,
+            "rss_bytes": 17809408,
+            "hwm_bytes": 19591168,
+            "payload_bytes": 1024,
+            "connections": 50,
+            "disable_keepalive": false,
+            "raw_file": "S-H1-01-eqproxy-rep5.json"
+          }
+        ],
+        "summary": {
+          "requests_per_sec": {
+            "median": 15676.2,
+            "min": 15300.3,
+            "max": 15910.8
+          },
+          "bytes_per_sec": {
+            "median": 16052457.3,
+            "min": 15667553.1,
+            "max": 16292640.6
+          },
+          "p50_ms": {
+            "median": 3.058,
+            "min": 3.017,
+            "max": 3.142
+          },
+          "p95_ms": {
+            "median": 4.837,
+            "min": 4.823,
+            "max": 5.055
+          },
+          "p99_ms": {
+            "median": 5.856,
+            "min": 5.839,
+            "max": 6.261
+          },
+          "p99_9_ms": {
+            "median": 8.028,
+            "min": 7.176,
+            "max": 11.358
+          },
+          "cpu_pct_one_core": {
+            "median": 106.9,
+            "min": 102.7,
+            "max": 108.4
+          },
+          "rss_bytes": {
+            "median": 17625088,
+            "min": 16125952,
+            "max": 17809408
+          },
+          "hwm_bytes": {
+            "median": 18751488,
+            "min": 18747392,
+            "max": 19595264
+          }
+        }
+      },
+      "haproxy": {
+        "runs": [
+          {
+            "requests_per_sec": 12866.6,
+            "bytes_per_sec": 13175429.9,
+            "p50_ms": 3.65,
+            "p95_ms": 6.834,
+            "p99_ms": 9.437,
+            "p99_9_ms": 15.028,
+            "total_requests": 128744,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 128744
+            },
+            "error_distribution": {},
+            "duration_seconds": 10.006038297,
+            "wall_seconds": 10.056,
+            "generator_cpu_seconds": 5.201,
+            "generator_cpu_pct_one_core": 51.7,
+            "proxy_cpu_seconds": 10.77,
+            "cpu_pct_one_core": 107.1,
+            "rss_bytes": 50688000,
+            "hwm_bytes": 50688000,
+            "payload_bytes": 1024,
+            "connections": 50,
+            "disable_keepalive": false,
+            "raw_file": "S-H1-01-haproxy-rep1.json"
+          },
+          {
+            "requests_per_sec": 12759.7,
+            "bytes_per_sec": 13065887.8,
+            "p50_ms": 3.768,
+            "p95_ms": 6.634,
+            "p99_ms": 8.566,
+            "p99_9_ms": 12.403,
+            "total_requests": 127708,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 127708
+            },
+            "error_distribution": {},
+            "duration_seconds": 10.008733727,
+            "wall_seconds": 10.058,
+            "generator_cpu_seconds": 5.193,
+            "generator_cpu_pct_one_core": 51.6,
+            "proxy_cpu_seconds": 10.94,
+            "cpu_pct_one_core": 108.8,
+            "rss_bytes": 51003392,
+            "hwm_bytes": 51003392,
+            "payload_bytes": 1024,
+            "connections": 50,
+            "disable_keepalive": false,
+            "raw_file": "S-H1-01-haproxy-rep2.json"
+          },
+          {
+            "requests_per_sec": 12704.6,
+            "bytes_per_sec": 13009460.2,
+            "p50_ms": 3.761,
+            "p95_ms": 6.722,
+            "p99_ms": 8.867,
+            "p99_9_ms": 12.558,
+            "total_requests": 127124,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 127124
+            },
+            "error_distribution": {},
+            "duration_seconds": 10.006178095,
+            "wall_seconds": 10.056,
+            "generator_cpu_seconds": 5.156,
+            "generator_cpu_pct_one_core": 51.3,
+            "proxy_cpu_seconds": 10.81,
+            "cpu_pct_one_core": 107.5,
+            "rss_bytes": 51027968,
+            "hwm_bytes": 51027968,
+            "payload_bytes": 1024,
+            "connections": 50,
+            "disable_keepalive": false,
+            "raw_file": "S-H1-01-haproxy-rep3.json"
+          },
+          {
+            "requests_per_sec": 12775.3,
+            "bytes_per_sec": 13081927.7,
+            "p50_ms": 3.683,
+            "p95_ms": 6.932,
+            "p99_ms": 9.408,
+            "p99_9_ms": 13.948,
+            "total_requests": 127860,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 127860
+            },
+            "error_distribution": {},
+            "duration_seconds": 10.008359841,
+            "wall_seconds": 10.06,
+            "generator_cpu_seconds": 5.129,
+            "generator_cpu_pct_one_core": 51.0,
+            "proxy_cpu_seconds": 10.81,
+            "cpu_pct_one_core": 107.5,
+            "rss_bytes": 51138560,
+            "hwm_bytes": 51138560,
+            "payload_bytes": 1024,
+            "connections": 50,
+            "disable_keepalive": false,
+            "raw_file": "S-H1-01-haproxy-rep4.json"
+          },
+          {
+            "requests_per_sec": 12807.3,
+            "bytes_per_sec": 13114672.0,
+            "p50_ms": 3.663,
+            "p95_ms": 6.991,
+            "p99_ms": 9.389,
+            "p99_9_ms": 13.282,
+            "total_requests": 128158,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 128158
+            },
+            "error_distribution": {},
+            "duration_seconds": 10.006639289,
+            "wall_seconds": 10.056,
+            "generator_cpu_seconds": 5.163,
+            "generator_cpu_pct_one_core": 51.3,
+            "proxy_cpu_seconds": 10.78,
+            "cpu_pct_one_core": 107.2,
+            "rss_bytes": 51118080,
+            "hwm_bytes": 51118080,
+            "payload_bytes": 1024,
+            "connections": 50,
+            "disable_keepalive": false,
+            "raw_file": "S-H1-01-haproxy-rep5.json"
+          }
+        ],
+        "summary": {
+          "requests_per_sec": {
+            "median": 12775.3,
+            "min": 12704.6,
+            "max": 12866.6
+          },
+          "bytes_per_sec": {
+            "median": 13081927.7,
+            "min": 13009460.2,
+            "max": 13175429.9
+          },
+          "p50_ms": {
+            "median": 3.683,
+            "min": 3.65,
+            "max": 3.768
+          },
+          "p95_ms": {
+            "median": 6.834,
+            "min": 6.634,
+            "max": 6.991
+          },
+          "p99_ms": {
+            "median": 9.389,
+            "min": 8.566,
+            "max": 9.437
+          },
+          "p99_9_ms": {
+            "median": 13.282,
+            "min": 12.403,
+            "max": 15.028
+          },
+          "cpu_pct_one_core": {
+            "median": 107.5,
+            "min": 107.1,
+            "max": 108.8
+          },
+          "rss_bytes": {
+            "median": 51027968,
+            "min": 50688000,
+            "max": 51138560
+          },
+          "hwm_bytes": {
+            "median": 51027968,
+            "min": 50688000,
+            "max": 51138560
+          }
+        }
+      }
+    },
+    "S-H1-02": {
+      "eqproxy": {
+        "runs": [
+          {
+            "requests_per_sec": 1320.8,
+            "bytes_per_sec": 1385008879.8,
+            "p50_ms": 37.093,
+            "p95_ms": 60.019,
+            "p99_ms": 75.383,
+            "p99_9_ms": 103.036,
+            "total_requests": 13262,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 13262
+            },
+            "error_distribution": {},
+            "duration_seconds": 10.04052401,
+            "wall_seconds": 10.053,
+            "generator_cpu_seconds": 6.51,
+            "generator_cpu_pct_one_core": 64.8,
+            "proxy_cpu_seconds": 13.29,
+            "cpu_pct_one_core": 132.2,
+            "rss_bytes": 17338368,
+            "hwm_bytes": 18747392,
+            "payload_bytes": 1048576,
+            "connections": 50,
+            "disable_keepalive": false,
+            "raw_file": "S-H1-02-eqproxy-rep1.json"
+          },
+          {
+            "requests_per_sec": 1306.6,
+            "bytes_per_sec": 1370064924.4,
+            "p50_ms": 37.766,
+            "p95_ms": 60.049,
+            "p99_ms": 72.947,
+            "p99_9_ms": 82.411,
+            "total_requests": 13104,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 13104
+            },
+            "error_distribution": {},
+            "duration_seconds": 10.02911589,
+            "wall_seconds": 10.042,
+            "generator_cpu_seconds": 6.542,
+            "generator_cpu_pct_one_core": 65.1,
+            "proxy_cpu_seconds": 13.17,
+            "cpu_pct_one_core": 131.2,
+            "rss_bytes": 17391616,
+            "hwm_bytes": 18747392,
+            "payload_bytes": 1048576,
+            "connections": 50,
+            "disable_keepalive": false,
+            "raw_file": "S-H1-02-eqproxy-rep2.json"
+          },
+          {
+            "requests_per_sec": 1296.1,
+            "bytes_per_sec": 1359023072.7,
+            "p50_ms": 37.819,
+            "p95_ms": 61.363,
+            "p99_ms": 74.538,
+            "p99_9_ms": 92.938,
+            "total_requests": 12997,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 12997
+            },
+            "error_distribution": {},
+            "duration_seconds": 10.028043339,
+            "wall_seconds": 10.041,
+            "generator_cpu_seconds": 6.543,
+            "generator_cpu_pct_one_core": 65.2,
+            "proxy_cpu_seconds": 13.04,
+            "cpu_pct_one_core": 129.9,
+            "rss_bytes": 18997248,
+            "hwm_bytes": 19591168,
+            "payload_bytes": 1048576,
+            "connections": 50,
+            "disable_keepalive": false,
+            "raw_file": "S-H1-02-eqproxy-rep3.json"
+          },
+          {
+            "requests_per_sec": 1319.8,
+            "bytes_per_sec": 1383876940.6,
+            "p50_ms": 37.437,
+            "p95_ms": 60.072,
+            "p99_ms": 73.487,
+            "p99_9_ms": 92.968,
+            "total_requests": 13228,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 13228
+            },
+            "error_distribution": {},
+            "duration_seconds": 10.02297453,
+            "wall_seconds": 10.035,
+            "generator_cpu_seconds": 6.52,
+            "generator_cpu_pct_one_core": 65.0,
+            "proxy_cpu_seconds": 13.24,
+            "cpu_pct_one_core": 131.9,
+            "rss_bytes": 19361792,
+            "hwm_bytes": 19591168,
+            "payload_bytes": 1048576,
+            "connections": 50,
+            "disable_keepalive": false,
+            "raw_file": "S-H1-02-eqproxy-rep4.json"
+          },
+          {
+            "requests_per_sec": 1312.6,
+            "bytes_per_sec": 1376376251.2,
+            "p50_ms": 37.551,
+            "p95_ms": 59.482,
+            "p99_ms": 73.594,
+            "p99_9_ms": 86.09,
+            "total_requests": 13150,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 13150
+            },
+            "error_distribution": {},
+            "duration_seconds": 10.018172275,
+            "wall_seconds": 10.03,
+            "generator_cpu_seconds": 6.535,
+            "generator_cpu_pct_one_core": 65.1,
+            "proxy_cpu_seconds": 13.2,
+            "cpu_pct_one_core": 131.6,
+            "rss_bytes": 19120128,
+            "hwm_bytes": 19591168,
+            "payload_bytes": 1048576,
+            "connections": 50,
+            "disable_keepalive": false,
+            "raw_file": "S-H1-02-eqproxy-rep5.json"
+          }
+        ],
+        "summary": {
+          "requests_per_sec": {
+            "median": 1312.6,
+            "min": 1296.1,
+            "max": 1320.8
+          },
+          "bytes_per_sec": {
+            "median": 1376376251.2,
+            "min": 1359023072.7,
+            "max": 1385008879.8
+          },
+          "p50_ms": {
+            "median": 37.551,
+            "min": 37.093,
+            "max": 37.819
+          },
+          "p95_ms": {
+            "median": 60.049,
+            "min": 59.482,
+            "max": 61.363
+          },
+          "p99_ms": {
+            "median": 73.594,
+            "min": 72.947,
+            "max": 75.383
+          },
+          "p99_9_ms": {
+            "median": 92.938,
+            "min": 82.411,
+            "max": 103.036
+          },
+          "cpu_pct_one_core": {
+            "median": 131.6,
+            "min": 129.9,
+            "max": 132.2
+          },
+          "rss_bytes": {
+            "median": 18997248,
+            "min": 17338368,
+            "max": 19361792
+          },
+          "hwm_bytes": {
+            "median": 19591168,
+            "min": 18747392,
+            "max": 19591168
+          }
+        }
+      },
+      "haproxy": {
+        "runs": [
+          {
+            "requests_per_sec": 966.5,
+            "bytes_per_sec": 1013491638.1,
+            "p50_ms": 44.916,
+            "p95_ms": 92.617,
+            "p99_ms": 191.003,
+            "p99_9_ms": 883.572,
+            "total_requests": 9711,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 9711
+            },
+            "error_distribution": {},
+            "duration_seconds": 10.047168771,
+            "wall_seconds": 10.058,
+            "generator_cpu_seconds": 9.687,
+            "generator_cpu_pct_one_core": 96.3,
+            "proxy_cpu_seconds": 13.82,
+            "cpu_pct_one_core": 137.4,
+            "rss_bytes": 50978816,
+            "hwm_bytes": 50978816,
+            "payload_bytes": 1048576,
+            "connections": 50,
+            "disable_keepalive": false,
+            "raw_file": "S-H1-02-haproxy-rep1.json"
+          },
+          {
+            "requests_per_sec": 983.1,
+            "bytes_per_sec": 1030852675.6,
+            "p50_ms": 45.701,
+            "p95_ms": 85.999,
+            "p99_ms": 164.191,
+            "p99_9_ms": 518.542,
+            "total_requests": 9867,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 9867
+            },
+            "error_distribution": {},
+            "duration_seconds": 10.036642128,
+            "wall_seconds": 10.048,
+            "generator_cpu_seconds": 9.7,
+            "generator_cpu_pct_one_core": 96.5,
+            "proxy_cpu_seconds": 14.07,
+            "cpu_pct_one_core": 140.0,
+            "rss_bytes": 51027968,
+            "hwm_bytes": 51027968,
+            "payload_bytes": 1048576,
+            "connections": 50,
+            "disable_keepalive": false,
+            "raw_file": "S-H1-02-haproxy-rep2.json"
+          },
+          {
+            "requests_per_sec": 965.1,
+            "bytes_per_sec": 1011960121.4,
+            "p50_ms": 47.129,
+            "p95_ms": 93.014,
+            "p99_ms": 180.067,
+            "p99_9_ms": 223.6,
+            "total_requests": 9698,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 9698
+            },
+            "error_distribution": {},
+            "duration_seconds": 10.048903937,
+            "wall_seconds": 10.06,
+            "generator_cpu_seconds": 9.383,
+            "generator_cpu_pct_one_core": 93.3,
+            "proxy_cpu_seconds": 13.84,
+            "cpu_pct_one_core": 137.6,
+            "rss_bytes": 51101696,
+            "hwm_bytes": 51101696,
+            "payload_bytes": 1048576,
+            "connections": 50,
+            "disable_keepalive": false,
+            "raw_file": "S-H1-02-haproxy-rep3.json"
+          },
+          {
+            "requests_per_sec": 949.8,
+            "bytes_per_sec": 995930544.7,
+            "p50_ms": 46.121,
+            "p95_ms": 97.561,
+            "p99_ms": 205.434,
+            "p99_9_ms": 442.735,
+            "total_requests": 9533,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 9533
+            },
+            "error_distribution": {},
+            "duration_seconds": 10.036919804,
+            "wall_seconds": 10.049,
+            "generator_cpu_seconds": 9.654,
+            "generator_cpu_pct_one_core": 96.1,
+            "proxy_cpu_seconds": 13.84,
+            "cpu_pct_one_core": 137.7,
+            "rss_bytes": 51134464,
+            "hwm_bytes": 51134464,
+            "payload_bytes": 1048576,
+            "connections": 50,
+            "disable_keepalive": false,
+            "raw_file": "S-H1-02-haproxy-rep4.json"
+          },
+          {
+            "requests_per_sec": 942.8,
+            "bytes_per_sec": 988577665.4,
+            "p50_ms": 49.272,
+            "p95_ms": 91.624,
+            "p99_ms": 172.187,
+            "p99_9_ms": 278.953,
+            "total_requests": 9473,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 9473
+            },
+            "error_distribution": {},
+            "duration_seconds": 10.047931281,
+            "wall_seconds": 10.059,
+            "generator_cpu_seconds": 9.747,
+            "generator_cpu_pct_one_core": 96.9,
+            "proxy_cpu_seconds": 13.81,
+            "cpu_pct_one_core": 137.3,
+            "rss_bytes": 51126272,
+            "hwm_bytes": 51126272,
+            "payload_bytes": 1048576,
+            "connections": 50,
+            "disable_keepalive": false,
+            "raw_file": "S-H1-02-haproxy-rep5.json"
+          }
+        ],
+        "summary": {
+          "requests_per_sec": {
+            "median": 965.1,
+            "min": 942.8,
+            "max": 983.1
+          },
+          "bytes_per_sec": {
+            "median": 1011960121.4,
+            "min": 988577665.4,
+            "max": 1030852675.6
+          },
+          "p50_ms": {
+            "median": 46.121,
+            "min": 44.916,
+            "max": 49.272
+          },
+          "p95_ms": {
+            "median": 92.617,
+            "min": 85.999,
+            "max": 97.561
+          },
+          "p99_ms": {
+            "median": 180.067,
+            "min": 164.191,
+            "max": 205.434
+          },
+          "p99_9_ms": {
+            "median": 442.735,
+            "min": 223.6,
+            "max": 883.572
+          },
+          "cpu_pct_one_core": {
+            "median": 137.6,
+            "min": 137.3,
+            "max": 140.0
+          },
+          "rss_bytes": {
+            "median": 51101696,
+            "min": 50978816,
+            "max": 51134464
+          },
+          "hwm_bytes": {
+            "median": 51101696,
+            "min": 50978816,
+            "max": 51134464
+          }
+        }
+      }
+    },
+    "S-H1-03": {
+      "eqproxy": {
+        "runs": [
+          {
+            "requests_per_sec": 4130.3,
+            "bytes_per_sec": 4229460.7,
+            "p50_ms": 2.338,
+            "p95_ms": 3.543,
+            "p99_ms": 4.181,
+            "p99_9_ms": 5.107,
+            "total_requests": 20667,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 20667
+            },
+            "error_distribution": {},
+            "duration_seconds": 5.003713138,
+            "wall_seconds": 5.017,
+            "generator_cpu_seconds": 2.847,
+            "generator_cpu_pct_one_core": 56.7,
+            "proxy_cpu_seconds": 4.68,
+            "cpu_pct_one_core": 93.3,
+            "rss_bytes": 15298560,
+            "hwm_bytes": 18726912,
+            "payload_bytes": 1024,
+            "connections": 10,
+            "disable_keepalive": true,
+            "raw_file": "S-H1-03-eqproxy-rep1.json"
+          },
+          {
+            "requests_per_sec": 2447.5,
+            "bytes_per_sec": 2506275.2,
+            "p50_ms": 2.529,
+            "p95_ms": 17.557,
+            "p99_ms": 24.141,
+            "p99_9_ms": 30.367,
+            "total_requests": 12269,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 12269
+            },
+            "error_distribution": {},
+            "duration_seconds": 5.0127999580000004,
+            "wall_seconds": 5.025,
+            "generator_cpu_seconds": 1.768,
+            "generator_cpu_pct_one_core": 35.2,
+            "proxy_cpu_seconds": 7.07,
+            "cpu_pct_one_core": 140.7,
+            "rss_bytes": 15450112,
+            "hwm_bytes": 18747392,
+            "payload_bytes": 1024,
+            "connections": 10,
+            "disable_keepalive": true,
+            "raw_file": "S-H1-03-eqproxy-rep2.json"
+          },
+          {
+            "requests_per_sec": 3996.5,
+            "bytes_per_sec": 4092366.1,
+            "p50_ms": 2.408,
+            "p95_ms": 3.692,
+            "p99_ms": 4.447,
+            "p99_9_ms": 5.55,
+            "total_requests": 20001,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 20001
+            },
+            "error_distribution": {},
+            "duration_seconds": 5.004690121,
+            "wall_seconds": 5.019,
+            "generator_cpu_seconds": 2.788,
+            "generator_cpu_pct_one_core": 55.6,
+            "proxy_cpu_seconds": 4.56,
+            "cpu_pct_one_core": 90.9,
+            "rss_bytes": 17309696,
+            "hwm_bytes": 19595264,
+            "payload_bytes": 1024,
+            "connections": 10,
+            "disable_keepalive": true,
+            "raw_file": "S-H1-03-eqproxy-rep3.json"
+          },
+          {
+            "requests_per_sec": 2443.7,
+            "bytes_per_sec": 2502299.4,
+            "p50_ms": 2.487,
+            "p95_ms": 21.033,
+            "p99_ms": 28.838,
+            "p99_9_ms": 36.892,
+            "total_requests": 12264,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 12264
+            },
+            "error_distribution": {},
+            "duration_seconds": 5.0187182870000004,
+            "wall_seconds": 5.031,
+            "generator_cpu_seconds": 1.747,
+            "generator_cpu_pct_one_core": 34.7,
+            "proxy_cpu_seconds": 6.93,
+            "cpu_pct_one_core": 137.7,
+            "rss_bytes": 17649664,
+            "hwm_bytes": 19591168,
+            "payload_bytes": 1024,
+            "connections": 10,
+            "disable_keepalive": true,
+            "raw_file": "S-H1-03-eqproxy-rep4.json"
+          },
+          {
+            "requests_per_sec": 3934.5,
+            "bytes_per_sec": 4028937.8,
+            "p50_ms": 2.372,
+            "p95_ms": 3.731,
+            "p99_ms": 5.238,
+            "p99_9_ms": 15.851,
+            "total_requests": 19706,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 19706
+            },
+            "error_distribution": {},
+            "duration_seconds": 5.008502196,
+            "wall_seconds": 5.023,
+            "generator_cpu_seconds": 2.75,
+            "generator_cpu_pct_one_core": 54.7,
+            "proxy_cpu_seconds": 4.88,
+            "cpu_pct_one_core": 97.1,
+            "rss_bytes": 17866752,
+            "hwm_bytes": 19591168,
+            "payload_bytes": 1024,
+            "connections": 10,
+            "disable_keepalive": true,
+            "raw_file": "S-H1-03-eqproxy-rep5.json"
+          }
+        ],
+        "summary": {
+          "requests_per_sec": {
+            "median": 3934.5,
+            "min": 2443.7,
+            "max": 4130.3
+          },
+          "bytes_per_sec": {
+            "median": 4028937.8,
+            "min": 2502299.4,
+            "max": 4229460.7
+          },
+          "p50_ms": {
+            "median": 2.408,
+            "min": 2.338,
+            "max": 2.529
+          },
+          "p95_ms": {
+            "median": 3.731,
+            "min": 3.543,
+            "max": 21.033
+          },
+          "p99_ms": {
+            "median": 5.238,
+            "min": 4.181,
+            "max": 28.838
+          },
+          "p99_9_ms": {
+            "median": 15.851,
+            "min": 5.107,
+            "max": 36.892
+          },
+          "cpu_pct_one_core": {
+            "median": 97.1,
+            "min": 90.9,
+            "max": 140.7
+          },
+          "rss_bytes": {
+            "median": 17309696,
+            "min": 15298560,
+            "max": 17866752
+          },
+          "hwm_bytes": {
+            "median": 19591168,
+            "min": 18726912,
+            "max": 19595264
+          }
+        }
+      },
+      "haproxy": {
+        "runs": [
+          {
+            "requests_per_sec": 3506.5,
+            "bytes_per_sec": 3590640.0,
+            "p50_ms": 2.708,
+            "p95_ms": 4.58,
+            "p99_ms": 5.753,
+            "p99_9_ms": 10.121,
+            "total_requests": 17544,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 17544
+            },
+            "error_distribution": {},
+            "duration_seconds": 5.003301856,
+            "wall_seconds": 5.017,
+            "generator_cpu_seconds": 2.521,
+            "generator_cpu_pct_one_core": 50.2,
+            "proxy_cpu_seconds": 4.86,
+            "cpu_pct_one_core": 96.9,
+            "rss_bytes": 50995200,
+            "hwm_bytes": 50995200,
+            "payload_bytes": 1024,
+            "connections": 10,
+            "disable_keepalive": true,
+            "raw_file": "S-H1-03-haproxy-rep1.json"
+          },
+          {
+            "requests_per_sec": 3506.8,
+            "bytes_per_sec": 3590922.9,
+            "p50_ms": 2.721,
+            "p95_ms": 4.566,
+            "p99_ms": 5.745,
+            "p99_9_ms": 8.607,
+            "total_requests": 17549,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 17549
+            },
+            "error_distribution": {},
+            "duration_seconds": 5.004333511,
+            "wall_seconds": 5.019,
+            "generator_cpu_seconds": 2.53,
+            "generator_cpu_pct_one_core": 50.4,
+            "proxy_cpu_seconds": 4.86,
+            "cpu_pct_one_core": 96.8,
+            "rss_bytes": 51027968,
+            "hwm_bytes": 51027968,
+            "payload_bytes": 1024,
+            "connections": 10,
+            "disable_keepalive": true,
+            "raw_file": "S-H1-03-haproxy-rep2.json"
+          },
+          {
+            "requests_per_sec": 3443.8,
+            "bytes_per_sec": 3526420.4,
+            "p50_ms": 2.741,
+            "p95_ms": 4.755,
+            "p99_ms": 6.17,
+            "p99_9_ms": 10.035,
+            "total_requests": 17233,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 17233
+            },
+            "error_distribution": {},
+            "duration_seconds": 5.004109038,
+            "wall_seconds": 5.018,
+            "generator_cpu_seconds": 2.488,
+            "generator_cpu_pct_one_core": 49.6,
+            "proxy_cpu_seconds": 4.76,
+            "cpu_pct_one_core": 94.9,
+            "rss_bytes": 51138560,
+            "hwm_bytes": 51138560,
+            "payload_bytes": 1024,
+            "connections": 10,
+            "disable_keepalive": true,
+            "raw_file": "S-H1-03-haproxy-rep3.json"
+          },
+          {
+            "requests_per_sec": 3390.0,
+            "bytes_per_sec": 3471351.8,
+            "p50_ms": 2.779,
+            "p95_ms": 4.841,
+            "p99_ms": 6.179,
+            "p99_9_ms": 8.951,
+            "total_requests": 16964,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 16964
+            },
+            "error_distribution": {},
+            "duration_seconds": 5.004141606,
+            "wall_seconds": 5.018,
+            "generator_cpu_seconds": 2.456,
+            "generator_cpu_pct_one_core": 48.9,
+            "proxy_cpu_seconds": 4.71,
+            "cpu_pct_one_core": 93.9,
+            "rss_bytes": 51138560,
+            "hwm_bytes": 51138560,
+            "payload_bytes": 1024,
+            "connections": 10,
+            "disable_keepalive": true,
+            "raw_file": "S-H1-03-haproxy-rep4.json"
+          },
+          {
+            "requests_per_sec": 3345.2,
+            "bytes_per_sec": 3425445.4,
+            "p50_ms": 2.793,
+            "p95_ms": 4.939,
+            "p99_ms": 6.776,
+            "p99_9_ms": 12.063,
+            "total_requests": 16738,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 16738
+            },
+            "error_distribution": {},
+            "duration_seconds": 5.003644811,
+            "wall_seconds": 5.02,
+            "generator_cpu_seconds": 2.497,
+            "generator_cpu_pct_one_core": 49.7,
+            "proxy_cpu_seconds": 4.68,
+            "cpu_pct_one_core": 93.2,
+            "rss_bytes": 51130368,
+            "hwm_bytes": 51130368,
+            "payload_bytes": 1024,
+            "connections": 10,
+            "disable_keepalive": true,
+            "raw_file": "S-H1-03-haproxy-rep5.json"
+          }
+        ],
+        "summary": {
+          "requests_per_sec": {
+            "median": 3443.8,
+            "min": 3345.2,
+            "max": 3506.8
+          },
+          "bytes_per_sec": {
+            "median": 3526420.4,
+            "min": 3425445.4,
+            "max": 3590922.9
+          },
+          "p50_ms": {
+            "median": 2.741,
+            "min": 2.708,
+            "max": 2.793
+          },
+          "p95_ms": {
+            "median": 4.755,
+            "min": 4.566,
+            "max": 4.939
+          },
+          "p99_ms": {
+            "median": 6.17,
+            "min": 5.745,
+            "max": 6.776
+          },
+          "p99_9_ms": {
+            "median": 10.035,
+            "min": 8.607,
+            "max": 12.063
+          },
+          "cpu_pct_one_core": {
+            "median": 94.9,
+            "min": 93.2,
+            "max": 96.9
+          },
+          "rss_bytes": {
+            "median": 51130368,
+            "min": 50995200,
+            "max": 51138560
+          },
+          "hwm_bytes": {
+            "median": 51130368,
+            "min": 50995200,
+            "max": 51138560
+          }
+        }
+      }
+    }
+  },
+  "classification": {
+    "S-H1-01": {
+      "requests_per_sec": {
+        "eq": {
+          "median": 15676.2,
+          "min": 15300.3,
+          "max": 15910.8
+        },
+        "ha": {
+          "median": 12775.3,
+          "min": 12704.6,
+          "max": 12866.6
+        },
+        "verdict": "Better"
+      },
+      "bytes_per_sec": {
+        "eq": {
+          "median": 16052457.3,
+          "min": 15667553.1,
+          "max": 16292640.6
+        },
+        "ha": {
+          "median": 13081927.7,
+          "min": 13009460.2,
+          "max": 13175429.9
+        },
+        "verdict": "Better"
+      },
+      "p50_ms": {
+        "eq": {
+          "median": 3.058,
+          "min": 3.017,
+          "max": 3.142
+        },
+        "ha": {
+          "median": 3.683,
+          "min": 3.65,
+          "max": 3.768
+        },
+        "verdict": "Better"
+      },
+      "p95_ms": {
+        "eq": {
+          "median": 4.837,
+          "min": 4.823,
+          "max": 5.055
+        },
+        "ha": {
+          "median": 6.834,
+          "min": 6.634,
+          "max": 6.991
+        },
+        "verdict": "Better"
+      },
+      "p99_ms": {
+        "eq": {
+          "median": 5.856,
+          "min": 5.839,
+          "max": 6.261
+        },
+        "ha": {
+          "median": 9.389,
+          "min": 8.566,
+          "max": 9.437
+        },
+        "verdict": "Better"
+      },
+      "p99_9_ms": {
+        "eq": {
+          "median": 8.028,
+          "min": 7.176,
+          "max": 11.358
+        },
+        "ha": {
+          "median": 13.282,
+          "min": 12.403,
+          "max": 15.028
+        },
+        "verdict": "Better"
+      },
+      "cpu_pct_one_core": {
+        "eq": {
+          "median": 106.9,
+          "min": 102.7,
+          "max": 108.4
+        },
+        "ha": {
+          "median": 107.5,
+          "min": 107.1,
+          "max": 108.8
+        },
+        "verdict": "Comparable"
+      },
+      "rss_bytes": {
+        "eq": {
+          "median": 17625088,
+          "min": 16125952,
+          "max": 17809408
+        },
+        "ha": {
+          "median": 51027968,
+          "min": 50688000,
+          "max": 51138560
+        },
+        "verdict": "Better"
+      },
+      "hwm_bytes": {
+        "eq": {
+          "median": 18751488,
+          "min": 18747392,
+          "max": 19595264
+        },
+        "ha": {
+          "median": 51027968,
+          "min": 50688000,
+          "max": 51138560
+        },
+        "verdict": "Better"
+      }
+    },
+    "S-H1-02": {
+      "requests_per_sec": {
+        "eq": {
+          "median": 1312.6,
+          "min": 1296.1,
+          "max": 1320.8
+        },
+        "ha": {
+          "median": 965.1,
+          "min": 942.8,
+          "max": 983.1
+        },
+        "verdict": "Better"
+      },
+      "bytes_per_sec": {
+        "eq": {
+          "median": 1376376251.2,
+          "min": 1359023072.7,
+          "max": 1385008879.8
+        },
+        "ha": {
+          "median": 1011960121.4,
+          "min": 988577665.4,
+          "max": 1030852675.6
+        },
+        "verdict": "Better"
+      },
+      "p50_ms": {
+        "eq": {
+          "median": 37.551,
+          "min": 37.093,
+          "max": 37.819
+        },
+        "ha": {
+          "median": 46.121,
+          "min": 44.916,
+          "max": 49.272
+        },
+        "verdict": "Better"
+      },
+      "p95_ms": {
+        "eq": {
+          "median": 60.049,
+          "min": 59.482,
+          "max": 61.363
+        },
+        "ha": {
+          "median": 92.617,
+          "min": 85.999,
+          "max": 97.561
+        },
+        "verdict": "Better"
+      },
+      "p99_ms": {
+        "eq": {
+          "median": 73.594,
+          "min": 72.947,
+          "max": 75.383
+        },
+        "ha": {
+          "median": 180.067,
+          "min": 164.191,
+          "max": 205.434
+        },
+        "verdict": "Better"
+      },
+      "p99_9_ms": {
+        "eq": {
+          "median": 92.938,
+          "min": 82.411,
+          "max": 103.036
+        },
+        "ha": {
+          "median": 442.735,
+          "min": 223.6,
+          "max": 883.572
+        },
+        "verdict": "Better"
+      },
+      "cpu_pct_one_core": {
+        "eq": {
+          "median": 131.6,
+          "min": 129.9,
+          "max": 132.2
+        },
+        "ha": {
+          "median": 137.6,
+          "min": 137.3,
+          "max": 140.0
+        },
+        "verdict": "Better"
+      },
+      "rss_bytes": {
+        "eq": {
+          "median": 18997248,
+          "min": 17338368,
+          "max": 19361792
+        },
+        "ha": {
+          "median": 51101696,
+          "min": 50978816,
+          "max": 51134464
+        },
+        "verdict": "Better"
+      },
+      "hwm_bytes": {
+        "eq": {
+          "median": 19591168,
+          "min": 18747392,
+          "max": 19591168
+        },
+        "ha": {
+          "median": 51101696,
+          "min": 50978816,
+          "max": 51134464
+        },
+        "verdict": "Better"
+      }
+    },
+    "S-H1-03": {
+      "requests_per_sec": {
+        "eq": {
+          "median": 3934.5,
+          "min": 2443.7,
+          "max": 4130.3
+        },
+        "ha": {
+          "median": 3443.8,
+          "min": 3345.2,
+          "max": 3506.8
+        },
+        "verdict": "Not comparable",
+        "reason": "direct sink did not exceed 1.20x the faster proxy; generator or origin is the limiting component"
+      },
+      "bytes_per_sec": {
+        "eq": {
+          "median": 4028937.8,
+          "min": 2502299.4,
+          "max": 4229460.7
+        },
+        "ha": {
+          "median": 3526420.4,
+          "min": 3425445.4,
+          "max": 3590922.9
+        },
+        "verdict": "Not comparable",
+        "reason": "direct sink did not exceed 1.20x the faster proxy; generator or origin is the limiting component"
+      },
+      "p50_ms": {
+        "eq": {
+          "median": 2.408,
+          "min": 2.338,
+          "max": 2.529
+        },
+        "ha": {
+          "median": 2.741,
+          "min": 2.708,
+          "max": 2.793
+        },
+        "verdict": "Not comparable",
+        "reason": "direct sink did not exceed 1.20x the faster proxy; generator or origin is the limiting component"
+      },
+      "p95_ms": {
+        "eq": {
+          "median": 3.731,
+          "min": 3.543,
+          "max": 21.033
+        },
+        "ha": {
+          "median": 4.755,
+          "min": 4.566,
+          "max": 4.939
+        },
+        "verdict": "Not comparable",
+        "reason": "direct sink did not exceed 1.20x the faster proxy; generator or origin is the limiting component"
+      },
+      "p99_ms": {
+        "eq": {
+          "median": 5.238,
+          "min": 4.181,
+          "max": 28.838
+        },
+        "ha": {
+          "median": 6.17,
+          "min": 5.745,
+          "max": 6.776
+        },
+        "verdict": "Not comparable",
+        "reason": "direct sink did not exceed 1.20x the faster proxy; generator or origin is the limiting component"
+      },
+      "p99_9_ms": {
+        "eq": {
+          "median": 15.851,
+          "min": 5.107,
+          "max": 36.892
+        },
+        "ha": {
+          "median": 10.035,
+          "min": 8.607,
+          "max": 12.063
+        },
+        "verdict": "Not comparable",
+        "reason": "direct sink did not exceed 1.20x the faster proxy; generator or origin is the limiting component"
+      },
+      "cpu_pct_one_core": {
+        "eq": {
+          "median": 97.1,
+          "min": 90.9,
+          "max": 140.7
+        },
+        "ha": {
+          "median": 94.9,
+          "min": 93.2,
+          "max": 96.9
+        },
+        "verdict": "Not comparable",
+        "reason": "direct sink did not exceed 1.20x the faster proxy; generator or origin is the limiting component"
+      },
+      "rss_bytes": {
+        "eq": {
+          "median": 17309696,
+          "min": 15298560,
+          "max": 17866752
+        },
+        "ha": {
+          "median": 51130368,
+          "min": 50995200,
+          "max": 51138560
+        },
+        "verdict": "Not comparable",
+        "reason": "direct sink did not exceed 1.20x the faster proxy; generator or origin is the limiting component"
+      },
+      "hwm_bytes": {
+        "eq": {
+          "median": 19591168,
+          "min": 18726912,
+          "max": 19595264
+        },
+        "ha": {
+          "median": 51130368,
+          "min": 50995200,
+          "max": 51138560
+        },
+        "verdict": "Not comparable",
+        "reason": "direct sink did not exceed 1.20x the faster proxy; generator or origin is the limiting component"
+      }
+    }
+  },
+  "gaps": {
+    "S-H1-01": {
+      "rps_eq_over_ha": 1.227,
+      "bytes_eq_over_ha": 1.227,
+      "p50_ha_over_eq": 1.204,
+      "p95_ha_over_eq": 1.413,
+      "p99_ha_over_eq": 1.603
+    },
+    "S-H1-02": {
+      "rps_eq_over_ha": 1.36,
+      "bytes_eq_over_ha": 1.36,
+      "p50_ha_over_eq": 1.228,
+      "p95_ha_over_eq": 1.542,
+      "p99_ha_over_eq": 2.447
+    }
+  },
+  "limitations": [
+    "Only 3 of the 18 BENCHMARK_PLAN scenarios were executed in this slice; the roadmap item remains open.",
+    "One macOS host with Docker Desktop; generator and containers share the host, and CPU affinity/isolated generator, proxy and backend machines from the plan were not available.",
+    "Latency percentiles are not coordinated-omission corrected (see disclosure.generator.correction).",
+    "S-H1-03 uses a reduced connection count and a 5s window on hosts whose ephemeral-port range cannot sustain the 50 x 10s setting; both products use identical client settings. The applied values are recorded in disclosure.connections and disclosure.generator.durations.",
+    "The EQProxy image is built from the working tree, not a published release artifact.",
+    "A series whose direct sink did not exceed 1.20x the faster proxy is marked invalid/Not comparable."
+  ],
+  "raw_checksums": {
+    "S-H1-01-eqproxy-rep1.json": {
+      "sha256": "c69ad3d41049e6a0f4e5777edaaebf81f95cc0a4a67b74b8b7e60de7471f959b",
+      "bytes": 2647
+    },
+    "S-H1-01-eqproxy-rep2.json": {
+      "sha256": "5ab66a62c41706e539002c5c4e9093c70e16085b594a2a00969e756639e7e3a2",
+      "bytes": 2641
+    },
+    "S-H1-01-eqproxy-rep3.json": {
+      "sha256": "f0b9e6d464f98b930442c17c879cbaab7a29220aa7d4236be330f06577f7405d",
+      "bytes": 2608
+    },
+    "S-H1-01-eqproxy-rep4.json": {
+      "sha256": "c7db930fd085749afa5c9f2163e8b307d6cca2dbeb7a6b05057020716824f24e",
+      "bytes": 2598
+    },
+    "S-H1-01-eqproxy-rep5.json": {
+      "sha256": "af8243fab66942556bbf2a1682ce0978646bcd91684c3de4ace265838b1c2a14",
+      "bytes": 2624
+    },
+    "S-H1-01-haproxy-rep1.json": {
+      "sha256": "2b81c28e1b474f718bc88ded4bd68f128d1fb4c1f1f8f78430afce6427eb7354",
+      "bytes": 2579
+    },
+    "S-H1-01-haproxy-rep2.json": {
+      "sha256": "8d1e66a6142dc42bc1cf62b735b893a9ca715837da7d84d49b4639920a2f75ae",
+      "bytes": 2657
+    },
+    "S-H1-01-haproxy-rep3.json": {
+      "sha256": "39cfd14a06c6792c9d509333e5a8025d86bf7394363a2fd56c2651f6f2fa529a",
+      "bytes": 2594
+    },
+    "S-H1-01-haproxy-rep4.json": {
+      "sha256": "b8dfbc9a6374f0739bacd53b4b6a2ffe890a9372297e533394405ad88c543e39",
+      "bytes": 2608
+    },
+    "S-H1-01-haproxy-rep5.json": {
+      "sha256": "2ee4f32e55259a1a9874af44f465562b353d7fc597582b181b0b5ada248ba8ae",
+      "bytes": 2669
+    },
+    "S-H1-02-eqproxy-rep1.json": {
+      "sha256": "ea932264f7a1c455f433a06075ceaabd905612bf58acbf29b125cbb12f3be017",
+      "bytes": 2588
+    },
+    "S-H1-02-eqproxy-rep2.json": {
+      "sha256": "7f68514733be6ed816b4a4f1bab6c05ab1cb75b18d1b096a67437e449c9327ad",
+      "bytes": 2669
+    },
+    "S-H1-02-eqproxy-rep3.json": {
+      "sha256": "8db4eca959b03f1892868b26cf124d19172d4eb0776c7be534dddabcaa6b8642",
+      "bytes": 2579
+    },
+    "S-H1-02-eqproxy-rep4.json": {
+      "sha256": "6d242cdcfb7ed612ca48ee5cb4d513e8b4db65daecc2ea4a69719aac50087d3d",
+      "bytes": 2594
+    },
+    "S-H1-02-eqproxy-rep5.json": {
+      "sha256": "1797bfc92d2c18ec85a8b85f7eb6ce32715ec7f37c573c85a7157f939a17a1df",
+      "bytes": 2637
+    },
+    "S-H1-02-haproxy-rep1.json": {
+      "sha256": "ed3463348d3a6e5d8abafe5e75acfa6fa0c0f69922a754c8f7f8d263421fcde2",
+      "bytes": 2604
+    },
+    "S-H1-02-haproxy-rep2.json": {
+      "sha256": "17c1eda0d312f0e3939e04124ac73b3c7165707e9950359a082816f9eebd1f78",
+      "bytes": 2631
+    },
+    "S-H1-02-haproxy-rep3.json": {
+      "sha256": "32f5c9356d5f883480a8abf400e453e08c0b81105427373634ed0aae7857c693",
+      "bytes": 2647
+    },
+    "S-H1-02-haproxy-rep4.json": {
+      "sha256": "a096eb941f9814f0d7673676df0097365cc277d55fb24b11853a557f4072c651",
+      "bytes": 2586
+    },
+    "S-H1-02-haproxy-rep5.json": {
+      "sha256": "22cef892435c41470e802b7c5e48efc9faad4c102bf5fd5af7de7b66850a67f1",
+      "bytes": 2584
+    },
+    "S-H1-03-eqproxy-rep1.json": {
+      "sha256": "77bb580154756e8be0be5509d3201d5f69c1d4e0f16247dc0805c5bdd61fe6ac",
+      "bytes": 2588
+    },
+    "S-H1-03-eqproxy-rep2.json": {
+      "sha256": "c324c2f21661fce7d21ff9b9f4a61c04bb2868736e704c6982400959c06be9ac",
+      "bytes": 2630
+    },
+    "S-H1-03-eqproxy-rep3.json": {
+      "sha256": "4f7a453a304ed9f6b9945805794f4c5a89cfc65105886914d7633d98e558ac14",
+      "bytes": 2616
+    },
+    "S-H1-03-eqproxy-rep4.json": {
+      "sha256": "c2b1bca481b8114f91d56add52731b80fe6c550bee5446b27a2df00ef99745b0",
+      "bytes": 2597
+    },
+    "S-H1-03-eqproxy-rep5.json": {
+      "sha256": "ecba0728c8a0bae70424f6feceafff81197b69bfa347e2b397e9e033d33660bb",
+      "bytes": 2624
+    },
+    "S-H1-03-haproxy-rep1.json": {
+      "sha256": "ced79d9e1799284d781aa237340a318cfe2b4e969c77fe3abfa27633242c8937",
+      "bytes": 2576
+    },
+    "S-H1-03-haproxy-rep2.json": {
+      "sha256": "3ccecd8f834a3d2ef03d9816e2199417abb17655999fcf51314dfe665a728645",
+      "bytes": 2607
+    },
+    "S-H1-03-haproxy-rep3.json": {
+      "sha256": "299d735c0eaa89c30add1d1b72a604053ac639120ef7ef32af4cad773c73612e",
+      "bytes": 2637
+    },
+    "S-H1-03-haproxy-rep4.json": {
+      "sha256": "4a57ede93b68c1ac19ac47bbcab0f2782f6d2e4bda431d91a7bb1d3943c3b5d6",
+      "bytes": 2615
+    },
+    "S-H1-03-haproxy-rep5.json": {
+      "sha256": "d3610ea85e5cb3b4f9ec361f1ecaecb42a8c1153082aea6e89319b831112f4c6",
+      "bytes": 2635
+    },
+    "calibration-S-H1-01.json": {
+      "sha256": "fd7629005c992c2952578b1cdb42913764b157872722ecf0711d2e3e902c5e8b",
+      "bytes": 2636
+    },
+    "calibration-S-H1-02.json": {
+      "sha256": "aa5a98a99aeffb818caa556bb31088076a2b313e020c60f2dfc11094551a369e",
+      "bytes": 2610
+    },
+    "calibration-S-H1-03.json": {
+      "sha256": "b3e1dfd3da5b332ad3894d3f6d507bbab5aa34688d81aa10f16035f3dff18135",
+      "bytes": 2609
+    }
+  }
+}

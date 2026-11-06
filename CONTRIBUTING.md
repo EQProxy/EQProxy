@@ -1,7 +1,7 @@
 # Contributing to EQProxy
 
-EQProxy is a reverse proxy and load balancer in Rust. It is pre-1.0: v0.9.1 is
-the latest release and v0.9.2 is in progress. Issues and pull requests are
+EQProxy is a reverse proxy and load balancer in Rust. It is pre-1.0: v0.9.2 is
+the latest release. Issues and pull requests are
 welcome; for a change that touches behaviour, configuration or the wire
 protocol, open an issue first so the scope can be agreed before code is
 written.
@@ -161,6 +161,13 @@ the tree:
 | `GHCR_TOKEN` | Classic PAT of the `exyonq` GitHub account with `write:packages`. |
 | `DOCKERHUB_USERNAME` | Docker Hub account that owns `exyonq/eqproxy`. |
 | `DOCKERHUB_TOKEN` | Docker Hub token with read/write on that repository. |
+
+The image job is a hard gate: it builds one candidate index, scans both
+`linux/amd64` and `linux/arm64` with Docker Scout
+(`--only-severity critical,high --exit-code`) and only promotes that exact
+digest. The release job requires both Scout reports, so a critical/high
+finding or a missing report fails the tag. Never bypass, waive or replace it
+with a smoke check.
 
 `GHCR_TOKEN` exists because packages do not follow a repository transfer: the
 image stays in the `exyonq` user namespace after the move to

@@ -1,0 +1,21 @@
+schema_version = 1
+shutdown_grace = "5s"
+
+[listener.web]
+listen = "127.0.0.1:59341"
+backend = "api"
+mode = "http"
+maxconn = 8
+connect_timeout = "1s"
+idle_timeout = "5s"
+client_header_timeout = "2s"
+server_header_timeout = "3s"
+
+
+[listener.web.limits]
+max_body_bytes = 65536
+
+[backend.api]
+servers = [
+  { addr = "127.0.0.1:34697" },
+]

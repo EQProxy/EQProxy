@@ -1,0 +1,15 @@
+global
+  maxconn 4096
+  stats socket /usr/local/etc/haproxy/admin.sock mode 666 level admin
+defaults
+  mode http
+  option http-keep-alive
+  timeout connect 1s
+  timeout client 10s
+  timeout server 10s
+  timeout http-request 5s
+frontend web
+  bind *:19711
+  default_backend api
+backend api
+  server s1 172.30.93.11:19040 maxconn 4096

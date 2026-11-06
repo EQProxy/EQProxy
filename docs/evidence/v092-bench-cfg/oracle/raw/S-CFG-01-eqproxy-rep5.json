@@ -1,0 +1,1998 @@
+{
+  "scenario": "S-CFG-01",
+  "product": "eqproxy",
+  "repetition": 5,
+  "target": "eqproxy:19701",
+  "generator": {
+    "mode": "load",
+    "target": "eqproxy:19701",
+    "conns": 32,
+    "warmup_s": 3,
+    "duration_s": 20,
+    "started_at": "2026-11-03T21:34:09.523202504Z",
+    "measure_started_at": "2026-11-03T21:34:12.523202504Z",
+    "ended_at": "2026-11-03T21:34:32.540662797Z",
+    "total": 87594,
+    "ok": 87594,
+    "success_a": 41266,
+    "success_b": 46328,
+    "unknown_backend": 0,
+    "errors": 0,
+    "requests_per_sec": 4379.7,
+    "error_rate": 0,
+    "buckets": [
+      {
+        "at_ms": 0,
+        "total": 504,
+        "a": 504,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 100,
+        "total": 505,
+        "a": 505,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 200,
+        "total": 528,
+        "a": 528,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 300,
+        "total": 501,
+        "a": 501,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 400,
+        "total": 519,
+        "a": 519,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 500,
+        "total": 522,
+        "a": 522,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 600,
+        "total": 524,
+        "a": 524,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 700,
+        "total": 529,
+        "a": 529,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 800,
+        "total": 473,
+        "a": 473,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 900,
+        "total": 562,
+        "a": 562,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 1000,
+        "total": 508,
+        "a": 508,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 1100,
+        "total": 452,
+        "a": 452,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 1200,
+        "total": 524,
+        "a": 524,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 1300,
+        "total": 487,
+        "a": 487,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 1400,
+        "total": 523,
+        "a": 523,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 1500,
+        "total": 465,
+        "a": 465,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 1600,
+        "total": 477,
+        "a": 477,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 1700,
+        "total": 506,
+        "a": 506,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 1800,
+        "total": 513,
+        "a": 513,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 1900,
+        "total": 492,
+        "a": 492,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 2000,
+        "total": 545,
+        "a": 545,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 2100,
+        "total": 491,
+        "a": 491,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 2200,
+        "total": 523,
+        "a": 523,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 2300,
+        "total": 492,
+        "a": 492,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 2400,
+        "total": 531,
+        "a": 531,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 2500,
+        "total": 515,
+        "a": 515,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 2600,
+        "total": 518,
+        "a": 518,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 2700,
+        "total": 546,
+        "a": 546,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 2800,
+        "total": 501,
+        "a": 501,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 2900,
+        "total": 495,
+        "a": 495,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 3000,
+        "total": 524,
+        "a": 524,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 3100,
+        "total": 504,
+        "a": 504,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 3200,
+        "total": 529,
+        "a": 529,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 3300,
+        "total": 572,
+        "a": 572,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 3400,
+        "total": 536,
+        "a": 536,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 3500,
+        "total": 449,
+        "a": 449,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 3600,
+        "total": 468,
+        "a": 468,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 3700,
+        "total": 526,
+        "a": 526,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 3800,
+        "total": 570,
+        "a": 570,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 3900,
+        "total": 523,
+        "a": 523,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 4000,
+        "total": 500,
+        "a": 500,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 4100,
+        "total": 460,
+        "a": 460,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 4200,
+        "total": 453,
+        "a": 453,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 4300,
+        "total": 480,
+        "a": 480,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 4400,
+        "total": 559,
+        "a": 559,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 4500,
+        "total": 483,
+        "a": 483,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 4600,
+        "total": 485,
+        "a": 485,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 4700,
+        "total": 455,
+        "a": 455,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 4800,
+        "total": 541,
+        "a": 541,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 4900,
+        "total": 482,
+        "a": 482,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 5000,
+        "total": 500,
+        "a": 500,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 5100,
+        "total": 506,
+        "a": 506,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 5200,
+        "total": 534,
+        "a": 534,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 5300,
+        "total": 518,
+        "a": 518,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 5400,
+        "total": 535,
+        "a": 535,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 5500,
+        "total": 466,
+        "a": 466,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 5600,
+        "total": 555,
+        "a": 555,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 5700,
+        "total": 524,
+        "a": 524,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 5800,
+        "total": 526,
+        "a": 526,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 5900,
+        "total": 465,
+        "a": 465,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 6000,
+        "total": 457,
+        "a": 457,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 6100,
+        "total": 558,
+        "a": 558,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 6200,
+        "total": 541,
+        "a": 541,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 6300,
+        "total": 475,
+        "a": 475,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 6400,
+        "total": 486,
+        "a": 486,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 6500,
+        "total": 509,
+        "a": 509,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 6600,
+        "total": 550,
+        "a": 550,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 6700,
+        "total": 482,
+        "a": 482,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 6800,
+        "total": 519,
+        "a": 519,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 6900,
+        "total": 529,
+        "a": 529,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 7000,
+        "total": 478,
+        "a": 478,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 7100,
+        "total": 563,
+        "a": 563,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 7200,
+        "total": 534,
+        "a": 534,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 7300,
+        "total": 539,
+        "a": 539,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 7400,
+        "total": 517,
+        "a": 517,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 7500,
+        "total": 489,
+        "a": 489,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 7600,
+        "total": 512,
+        "a": 512,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 7700,
+        "total": 555,
+        "a": 555,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 7800,
+        "total": 520,
+        "a": 520,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 7900,
+        "total": 492,
+        "a": 492,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 8000,
+        "total": 449,
+        "a": 449,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 8100,
+        "total": 291,
+        "a": 13,
+        "b": 278,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 8200,
+        "total": 378,
+        "a": 0,
+        "b": 378,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 8300,
+        "total": 324,
+        "a": 0,
+        "b": 324,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 8400,
+        "total": 351,
+        "a": 0,
+        "b": 351,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 8500,
+        "total": 309,
+        "a": 0,
+        "b": 309,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 8600,
+        "total": 287,
+        "a": 0,
+        "b": 287,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 8700,
+        "total": 565,
+        "a": 0,
+        "b": 565,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 8800,
+        "total": 555,
+        "a": 0,
+        "b": 555,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 8900,
+        "total": 535,
+        "a": 0,
+        "b": 535,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 9000,
+        "total": 492,
+        "a": 0,
+        "b": 492,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 9100,
+        "total": 556,
+        "a": 0,
+        "b": 556,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 9200,
+        "total": 541,
+        "a": 0,
+        "b": 541,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 9300,
+        "total": 527,
+        "a": 0,
+        "b": 527,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 9400,
+        "total": 542,
+        "a": 0,
+        "b": 542,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 9500,
+        "total": 496,
+        "a": 0,
+        "b": 496,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 9600,
+        "total": 557,
+        "a": 0,
+        "b": 557,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 9700,
+        "total": 524,
+        "a": 0,
+        "b": 524,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 9800,
+        "total": 543,
+        "a": 0,
+        "b": 543,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 9900,
+        "total": 546,
+        "a": 0,
+        "b": 546,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 10000,
+        "total": 515,
+        "a": 0,
+        "b": 515,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 10100,
+        "total": 518,
+        "a": 0,
+        "b": 518,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 10200,
+        "total": 520,
+        "a": 0,
+        "b": 520,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 10300,
+        "total": 516,
+        "a": 0,
+        "b": 516,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 10400,
+        "total": 455,
+        "a": 0,
+        "b": 455,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 10500,
+        "total": 495,
+        "a": 0,
+        "b": 495,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 10600,
+        "total": 547,
+        "a": 0,
+        "b": 547,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 10700,
+        "total": 477,
+        "a": 0,
+        "b": 477,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 10800,
+        "total": 497,
+        "a": 0,
+        "b": 497,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 10900,
+        "total": 526,
+        "a": 0,
+        "b": 526,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 11000,
+        "total": 498,
+        "a": 0,
+        "b": 498,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 11100,
+        "total": 501,
+        "a": 0,
+        "b": 501,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 11200,
+        "total": 492,
+        "a": 0,
+        "b": 492,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 11300,
+        "total": 515,
+        "a": 0,
+        "b": 515,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 11400,
+        "total": 469,
+        "a": 0,
+        "b": 469,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 11500,
+        "total": 531,
+        "a": 0,
+        "b": 531,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 11600,
+        "total": 519,
+        "a": 0,
+        "b": 519,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 11700,
+        "total": 506,
+        "a": 0,
+        "b": 506,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 11800,
+        "total": 534,
+        "a": 0,
+        "b": 534,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 11900,
+        "total": 521,
+        "a": 0,
+        "b": 521,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 12000,
+        "total": 480,
+        "a": 0,
+        "b": 480,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 12100,
+        "total": 472,
+        "a": 0,
+        "b": 472,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 12200,
+        "total": 525,
+        "a": 0,
+        "b": 525,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 12300,
+        "total": 480,
+        "a": 0,
+        "b": 480,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 12400,
+        "total": 489,
+        "a": 0,
+        "b": 489,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 12500,
+        "total": 485,
+        "a": 0,
+        "b": 485,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 12600,
+        "total": 495,
+        "a": 0,
+        "b": 495,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 12700,
+        "total": 550,
+        "a": 0,
+        "b": 550,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 12800,
+        "total": 513,
+        "a": 0,
+        "b": 513,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 12900,
+        "total": 497,
+        "a": 0,
+        "b": 497,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 13000,
+        "total": 506,
+        "a": 0,
+        "b": 506,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 13100,
+        "total": 525,
+        "a": 0,
+        "b": 525,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 13200,
+        "total": 511,
+        "a": 0,
+        "b": 511,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 13300,
+        "total": 477,
+        "a": 0,
+        "b": 477,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 13400,
+        "total": 540,
+        "a": 0,
+        "b": 540,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 13500,
+        "total": 500,
+        "a": 0,
+        "b": 500,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 13600,
+        "total": 540,
+        "a": 0,
+        "b": 540,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 13700,
+        "total": 488,
+        "a": 0,
+        "b": 488,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 13800,
+        "total": 473,
+        "a": 0,
+        "b": 473,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 13900,
+        "total": 533,
+        "a": 0,
+        "b": 533,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 14000,
+        "total": 525,
+        "a": 0,
+        "b": 525,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 14100,
+        "total": 512,
+        "a": 0,
+        "b": 512,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 14200,
+        "total": 508,
+        "a": 0,
+        "b": 508,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 14300,
+        "total": 471,
+        "a": 0,
+        "b": 471,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 14400,
+        "total": 553,
+        "a": 0,
+        "b": 553,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 14500,
+        "total": 511,
+        "a": 0,
+        "b": 511,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 14600,
+        "total": 525,
+        "a": 0,
+        "b": 525,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 14700,
+        "total": 484,
+        "a": 0,
+        "b": 484,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 14800,
+        "total": 509,
+        "a": 0,
+        "b": 509,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 14900,
+        "total": 472,
+        "a": 0,
+        "b": 472,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 15000,
+        "total": 485,
+        "a": 0,
+        "b": 485,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 15100,
+        "total": 526,
+        "a": 0,
+        "b": 526,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 15200,
+        "total": 522,
+        "a": 0,
+        "b": 522,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 15300,
+        "total": 480,
+        "a": 0,
+        "b": 480,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 15400,
+        "total": 490,
+        "a": 0,
+        "b": 490,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 15500,
+        "total": 467,
+        "a": 0,
+        "b": 467,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 15600,
+        "total": 505,
+        "a": 0,
+        "b": 505,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 15700,
+        "total": 456,
+        "a": 0,
+        "b": 456,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 15800,
+        "total": 497,
+        "a": 0,
+        "b": 497,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 15900,
+        "total": 459,
+        "a": 0,
+        "b": 459,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 16000,
+        "total": 503,
+        "a": 0,
+        "b": 503,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 16100,
+        "total": 550,
+        "a": 0,
+        "b": 550,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 16200,
+        "total": 433,
+        "a": 0,
+        "b": 433,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 16300,
+        "total": 508,
+        "a": 0,
+        "b": 508,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 16400,
+        "total": 426,
+        "a": 0,
+        "b": 426,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 16500,
+        "total": 375,
+        "a": 0,
+        "b": 375,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 16600,
+        "total": 272,
+        "a": 0,
+        "b": 272,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 16700,
+        "total": 187,
+        "a": 0,
+        "b": 187,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 16800,
+        "total": 191,
+        "a": 0,
+        "b": 191,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 16900,
+        "total": 141,
+        "a": 0,
+        "b": 141,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 17000,
+        "total": 131,
+        "a": 0,
+        "b": 131,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 17100,
+        "total": 136,
+        "a": 0,
+        "b": 136,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 17200,
+        "total": 119,
+        "a": 0,
+        "b": 119,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 17300,
+        "total": 131,
+        "a": 0,
+        "b": 131,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 17400,
+        "total": 117,
+        "a": 0,
+        "b": 117,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 17500,
+        "total": 126,
+        "a": 0,
+        "b": 126,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 17600,
+        "total": 117,
+        "a": 0,
+        "b": 117,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 17700,
+        "total": 131,
+        "a": 0,
+        "b": 131,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 17800,
+        "total": 122,
+        "a": 0,
+        "b": 122,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 17900,
+        "total": 124,
+        "a": 0,
+        "b": 124,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 18000,
+        "total": 124,
+        "a": 0,
+        "b": 124,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 18100,
+        "total": 120,
+        "a": 0,
+        "b": 120,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 18200,
+        "total": 110,
+        "a": 0,
+        "b": 110,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 18300,
+        "total": 127,
+        "a": 0,
+        "b": 127,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 18400,
+        "total": 131,
+        "a": 0,
+        "b": 131,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 18500,
+        "total": 122,
+        "a": 0,
+        "b": 122,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 18600,
+        "total": 115,
+        "a": 0,
+        "b": 115,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 18700,
+        "total": 119,
+        "a": 0,
+        "b": 119,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 18800,
+        "total": 101,
+        "a": 0,
+        "b": 101,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 18900,
+        "total": 110,
+        "a": 0,
+        "b": 110,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 19000,
+        "total": 129,
+        "a": 0,
+        "b": 129,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 19100,
+        "total": 127,
+        "a": 0,
+        "b": 127,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 19200,
+        "total": 126,
+        "a": 0,
+        "b": 126,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 19300,
+        "total": 113,
+        "a": 0,
+        "b": 113,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 19400,
+        "total": 109,
+        "a": 0,
+        "b": 109,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 19500,
+        "total": 129,
+        "a": 0,
+        "b": 129,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 19600,
+        "total": 131,
+        "a": 0,
+        "b": 131,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 19700,
+        "total": 120,
+        "a": 0,
+        "b": 120,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 19800,
+        "total": 117,
+        "a": 0,
+        "b": 117,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 19900,
+        "total": 114,
+        "a": 0,
+        "b": 114,
+        "other": 0,
+        "errors": 0
+      },
+      {
+        "at_ms": 20000,
+        "total": 0,
+        "a": 0,
+        "b": 0,
+        "other": 0,
+        "errors": 0
+      }
+    ],
+    "latency_ms": {
+      "count": 87594,
+      "min": 0.593883,
+      "p50": 6.339075,
+      "p95": 13.368833,
+      "p99": 33.415382,
+      "max": 84.146699,
+      "mean": 7.306451478206284,
+      "histogram": [
+        {
+          "upper_ms": 0.1,
+          "count": 0
+        },
+        {
+          "upper_ms": 0.25,
+          "count": 0
+        },
+        {
+          "upper_ms": 0.5,
+          "count": 0
+        },
+        {
+          "upper_ms": 1,
+          "count": 6
+        },
+        {
+          "upper_ms": 2,
+          "count": 349
+        },
+        {
+          "upper_ms": 5,
+          "count": 20636
+        },
+        {
+          "upper_ms": 10,
+          "count": 58881
+        },
+        {
+          "upper_ms": 20,
+          "count": 4853
+        },
+        {
+          "upper_ms": 50,
+          "count": 2784
+        },
+        {
+          "upper_ms": 100,
+          "count": 85
+        },
+        {
+          "upper_ms": 200,
+          "count": 0
+        },
+        {
+          "upper_ms": 500,
+          "count": 0
+        },
+        {
+          "upper_ms": 1000,
+          "count": 0
+        },
+        {
+          "upper_ms": 0,
+          "count": 0
+        }
+      ]
+    },
+    "phases": {
+      "baseline": {
+        "count": 40892,
+        "errors": 0,
+        "success_a": 40892,
+        "success_b": 0,
+        "other": 0,
+        "latency_ms": {
+          "count": 40892,
+          "min": 0.944525,
+          "p50": 6.146954,
+          "p95": 9.456291,
+          "p99": 11.212381,
+          "max": 18.503301,
+          "mean": 6.271490776068639,
+          "histogram": [
+            {
+              "upper_ms": 0.1,
+              "count": 0
+            },
+            {
+              "upper_ms": 0.25,
+              "count": 0
+            },
+            {
+              "upper_ms": 0.5,
+              "count": 0
+            },
+            {
+              "upper_ms": 1,
+              "count": 1
+            },
+            {
+              "upper_ms": 2,
+              "count": 164
+            },
+            {
+              "upper_ms": 5,
+              "count": 10291
+            },
+            {
+              "upper_ms": 10,
+              "count": 29189
+            },
+            {
+              "upper_ms": 20,
+              "count": 1247
+            },
+            {
+              "upper_ms": 50,
+              "count": 0
+            },
+            {
+              "upper_ms": 100,
+              "count": 0
+            },
+            {
+              "upper_ms": 200,
+              "count": 0
+            },
+            {
+              "upper_ms": 500,
+              "count": 0
+            },
+            {
+              "upper_ms": 1000,
+              "count": 0
+            },
+            {
+              "upper_ms": 0,
+              "count": 0
+            }
+          ]
+        }
+      },
+      "post": {
+        "count": 37314,
+        "errors": 0,
+        "success_a": 0,
+        "success_b": 37314,
+        "other": 0,
+        "latency_ms": {
+          "count": 37314,
+          "min": 0.593883,
+          "p50": 6.585676,
+          "p95": 25.446739,
+          "p99": 39.798697,
+          "max": 84.146699,
+          "mean": 8.563572987886603,
+          "histogram": [
+            {
+              "upper_ms": 0.1,
+              "count": 0
+            },
+            {
+              "upper_ms": 0.25,
+              "count": 0
+            },
+            {
+              "upper_ms": 0.5,
+              "count": 0
+            },
+            {
+              "upper_ms": 1,
+              "count": 4
+            },
+            {
+              "upper_ms": 2,
+              "count": 133
+            },
+            {
+              "upper_ms": 5,
+              "count": 7771
+            },
+            {
+              "upper_ms": 10,
+              "count": 23924
+            },
+            {
+              "upper_ms": 20,
+              "count": 2689
+            },
+            {
+              "upper_ms": 50,
+              "count": 2708
+            },
+            {
+              "upper_ms": 100,
+              "count": 85
+            },
+            {
+              "upper_ms": 200,
+              "count": 0
+            },
+            {
+              "upper_ms": 500,
+              "count": 0
+            },
+            {
+              "upper_ms": 1000,
+              "count": 0
+            },
+            {
+              "upper_ms": 0,
+              "count": 0
+            }
+          ]
+        }
+      },
+      "reload": {
+        "count": 9388,
+        "errors": 0,
+        "success_a": 374,
+        "success_b": 9014,
+        "other": 0,
+        "latency_ms": {
+          "count": 9388,
+          "min": 0.889804,
+          "p50": 6.218434,
+          "p95": 12.712909,
+          "p99": 18.738542,
+          "max": 35.412953,
+          "mean": 6.817889592778019,
+          "histogram": [
+            {
+              "upper_ms": 0.1,
+              "count": 0
+            },
+            {
+              "upper_ms": 0.25,
+              "count": 0
+            },
+            {
+              "upper_ms": 0.5,
+              "count": 0
+            },
+            {
+              "upper_ms": 1,
+              "count": 1
+            },
+            {
+              "upper_ms": 2,
+              "count": 52
+            },
+            {
+              "upper_ms": 5,
+              "count": 2574
+            },
+            {
+              "upper_ms": 10,
+              "count": 5768
+            },
+            {
+              "upper_ms": 20,
+              "count": 917
+            },
+            {
+              "upper_ms": 50,
+              "count": 76
+            },
+            {
+              "upper_ms": 100,
+              "count": 0
+            },
+            {
+              "upper_ms": 200,
+              "count": 0
+            },
+            {
+              "upper_ms": 500,
+              "count": 0
+            },
+            {
+              "upper_ms": 1000,
+              "count": 0
+            },
+            {
+              "upper_ms": 0,
+              "count": 0
+            }
+          ]
+        }
+      }
+    },
+    "errors_by_status": {},
+    "generator_cpu_seconds": 38.132577000000005,
+    "generator_cpu_pct_one_core": 190.66288500000002,
+    "phase_file": "/phase/phase",
+    "ready_file": "/phase/ready",
+    "sanity": "completed"
+  },
+  "control": {
+    "reload_started_epoch": 1793741660.5370986,
+    "hup_sent_epoch": 1793741660.5887892,
+    "post_started_epoch": 1793741662.5372305,
+    "reload_started_at": "2026-11-03T21:34:20Z",
+    "hup_sent_at": "2026-11-03T21:34:20Z",
+    "post_started_at": "2026-11-03T21:34:22Z",
+    "reload_ready_ms": 613.8,
+    "reload_window_s": 2,
+    "reload_applied": true,
+    "probe_error": null
+  },
+  "metrics": {
+    "eqproxy": {
+      "lines": 96,
+      "first": {
+        "accepted": 0,
+        "active": 0,
+        "completed": 0,
+        "proxied": 0,
+        "reloads": 0,
+        "reload_failures": 0,
+        "last_swap_us": 0
+      },
+      "last": {
+        "accepted": 102840,
+        "active": 0,
+        "completed": 102840,
+        "proxied": 102840,
+        "reloads": 1,
+        "reload_failures": 0,
+        "last_swap_us": 8
+      },
+      "monotonic": true,
+      "reset": false,
+      "max_reloads": 1
+    },
+    "haproxy": {},
+    "reset": false
+  },
+  "analysis": {
+    "valid": true,
+    "problems": [],
+    "baseline_p99_ms": 11.212381,
+    "reload_p99_ms": 18.738542,
+    "post_p99_ms": 39.798697,
+    "p99_ratio_reload_over_baseline": 1.6712366445628273,
+    "p99_delta_pct": 67.12366445628273,
+    "baseline_count": 40892,
+    "reload_count": 9388,
+    "post_count": 37314,
+    "baseline_errors": 0,
+    "reload_errors": 0,
+    "post_errors": 0,
+    "baseline_success_a": 40892,
+    "reload_success_b": 9014,
+    "post_success_b": 37314,
+    "config_sha256": "55d8ea5b344ff576df5587e77c2e0fb52743398b74ac0cfd67cb8be39f613ced"
+  },
+  "resources": {
+    "proxy_limits": {
+      "nano_cpus": 2000000000,
+      "memory_bytes": 2147483648,
+      "memory_swap_bytes": 2147483648
+    }
+  },
+  "raw_file": "raw/S-CFG-01-eqproxy-rep5.json"
+}

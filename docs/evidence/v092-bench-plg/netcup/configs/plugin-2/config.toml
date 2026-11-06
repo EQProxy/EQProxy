@@ -1,0 +1,20 @@
+schema_version = 1
+shutdown_grace = "5s"
+
+[listener.web]
+listen = "0.0.0.0:19801"
+mode = "http"
+backend = "api"
+maxconn = 4096
+idle_timeout = "60s"
+
+[backend.api]
+server = "plgoha-origin:19060"
+
+[listener.web.plugin]
+path = "/etc/eqproxy/plugin.wasm"
+fuel = 10000000
+timeout = "500ms"
+memory_bytes = 16777216
+max_header_ops = 16
+on_error = "closed"

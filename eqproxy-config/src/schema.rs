@@ -1030,96 +1030,41 @@ impl RuleConfig {
     /// Compile input for [`eqproxy_core::rules::Rule::compile`]; `index`
     /// positions the rule in its listener (default name `"rule-N"`).
     ///
-    /// Fails when a condition has zero or several match kinds: those shapes
-    /// are rejected at the config gate with the same field-qualified error
-    /// the core compiler uses.
+    /// Invalid shapes are rejected by [`eqproxy_core::rules::Rule::compile`]
+    /// with the field-qualified error the config gate reports.
     pub fn to_spec(
         &self,
         index: usize,
     ) -> Result<eqproxy_core::rules::RuleSpec, eqproxy_core::rules::RuleError> {
-        use eqproxy_core::rules::RuleError;
-        let invalid = |field: String, cause: String, example: String| RuleError {
-            field: Some(field),
-            cause,
-            example,
-        };
-        let mut headers = Vec::with_capacity(self.headers.len());
-        for (i, header) in self.headers.iter().enumerate() {
-            let field = format!("headers[{i}]");
-            let spec = match (&header.exact, &header.regex, header.present) {
-                (Some(value), None, false) => eqproxy_core::rules::HeaderSpec::Exact {
-                    name: header.name.clone(),
-                    value: value.clone(),
-                },
-                (None, Some(pattern), false) => eqproxy_core::rules::HeaderSpec::Regex {
-                    name: header.name.clone(),
-                    pattern: pattern.clone(),
-                },
-                (None, None, true) => eqproxy_core::rules::HeaderSpec::Present {
-                    name: header.name.clone(),
-                },
-                _ => {
-                    return Err(invalid(
-                        field,
-                        "set exactly one of exact, regex or present = true".to_owned(),
-                        "headers = [{ name = \"x-tenant\", exact = \"acme\" }]".to_owned(),
-                    ));
-                }
-            };
-            headers.push(spec);
-        }
-        let mut cookies = Vec::with_capacity(self.cookies.len());
-        for (i, cookie) in self.cookies.iter().enumerate() {
-            let field = format!("cookies[{i}]");
-            let spec = match (&cookie.exact, &cookie.regex, cookie.present) {
-                (Some(value), None, false) => eqproxy_core::rules::CookieSpec::Exact {
-                    name: cookie.name.clone(),
-                    value: value.clone(),
-                },
-                (None, Some(pattern), false) => eqproxy_core::rules::CookieSpec::Regex {
-                    name: cookie.name.clone(),
-                    pattern: pattern.clone(),
-                },
-                (None, None, true) => eqproxy_core::rules::CookieSpec::Present {
-                    name: cookie.name.clone(),
-                },
-                _ => {
-                    return Err(invalid(
-                        field,
-                        "set exactly one of exact, regex or present = true".to_owned(),
-                        "cookies = [{ name = \"canary\", exact = \"always\" }]".to_owned(),
-                    ));
-                }
-            };
-            cookies.push(spec);
-        }
-        let map = match &self.map {
-            None => None,
-            Some(map) => {
-                let key = match (&map.key, &map.header) {
-                    (Some(raw), None) => eqproxy_core::maps::MapKey::parse(raw).map_err(|why| {
-                        invalid(
-                            "map.key".to_owned(),
-                            why,
-                            "map = { name = \"tenants\", key = \"host\" }".to_owned(),
-                        )
-                    })?,
-                    (None, Some(header)) => eqproxy_core::maps::MapKey::Header(header.clone()),
-                    _ => {
-                        return Err(invalid(
-                            "map.key".to_owned(),
-                            "set exactly one of key or header (the lookup key source)".to_owned(),
-                            "map = { name = \"tenants\", key = \"host\" } or map = { name = \"tenants\", header = \"x-tenant\" }".to_owned(),
-                        ));
-                    }
-                };
-                Some(eqproxy_core::rules::MapConditionSpec {
-                    name: map.name.clone(),
-                    key,
-                    equals: map.equals.clone(),
-                })
-            }
-        };
+        let headers = self
+            .headers
+            .iter()
+            .map(|header| eqproxy_core::rules::HeaderSpec {
+                name: header.name.clone(),
+                exact: header.exact.clone(),
+                regex: header.regex.clone(),
+                present: header.present,
+            })
+            .collect();
+        let cookies = self
+            .cookies
+            .iter()
+            .map(|cookie| eqproxy_core::rules::CookieSpec {
+                name: cookie.name.clone(),
+                exact: cookie.exact.clone(),
+                regex: cookie.regex.clone(),
+                present: cookie.present,
+            })
+            .collect();
+        let map = self
+            .map
+            .as_ref()
+            .map(|map| eqproxy_core::rules::MapConditionSpec {
+                name: map.name.clone(),
+                key: map.key.clone(),
+                header: map.header.clone(),
+                equals: map.equals.clone(),
+            });
         Ok(eqproxy_core::rules::RuleSpec {
             name: self
                 .name

@@ -1,0 +1,12 @@
+date (UTC): 2026-11-02T00:47:48Z
+host: Darwin lex 25.5.0 Darwin Kernel Version 25.5.0: Mon Apr 27 20:39:09 PDT 2026; root:xnu-12377.121.6~2/RELEASE_ARM64_T6020 arm64
+os: macOS 26.5.1 (25F80)
+rustc: rustc 1.99.1 (58cf8f9c3 2026-10-13) binary: rustc commit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67 commit-date: 2026-10-13 host: aarch64-apple-darwin release: 1.99.1 LLVM version: 23.1.1 
+cargo: cargo 1.99.1 (5f94df478 2026-08-27)
+docker: client 29.9.2 server 29.9.2
+git HEAD: 6ba2667ef29b36817c9ae2476d600d8b66d8511c (main)
+worktree: 2 modified/untracked paths
+binary: target/debug/eqproxy
+binary sha256: 266296b2efaae23b9d79475d92eaa56b9a833619425beabc2c2f1b07450ba625
+command: cargo test -p eqproxy-cli --test differential -- --ignored --nocapture
+report: target/tmp/differential-10902/differential-report.md

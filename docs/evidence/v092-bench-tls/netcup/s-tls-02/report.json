@@ -1,0 +1,764 @@
+{
+  "disclosure": {
+    "date_utc": "2026-11-03T00:15:41Z",
+    "plan": "BENCHMARK_PLAN.md \u00a72 disclosure, \u00a73 scenarios, \u00a74 metrics, \u00a75 bias controls",
+    "eqproxy_commit": "64a1d77+uncommitted-tree-20261103T0110Z",
+    "eqproxy_image": "eqproxy-bench:v092",
+    "eqproxy_image_id": "a461b0f67812",
+    "eqproxy_help": [
+      "ExyonQ Proxy (EQProxy): reverse proxy and load balancer",
+      "",
+      "Usage: eqproxy <COMMAND>",
+      "",
+      "Commands:"
+    ],
+    "haproxy_image": "haproxy:3.4.6",
+    "haproxy_image_id": "e273915691a8",
+    "haproxy_vv": [
+      "HAProxy version 3.4.6-56332c5 2026/09/28 - https://haproxy.org/",
+      "Status: long-term supported branch - will stop receiving fixes around Q2 2031.",
+      "Known bugs: http://www.haproxy.org/bugs/bugs-3.4.6.html",
+      "Running on: Linux 6.8.0-147-generic #147-Ubuntu SMP PREEMPT_DYNAMIC Thu Sep 24 11:33:16 UTC 2026 x86_64",
+      "Build options : ",
+      "  TARGET  = linux-glibc",
+      "  CC      = cc",
+      "  CFLAGS  = -O2 -g -fwrapv -fvect-cost-model=very-cheap",
+      "  OPTIONS = USE_PTHREAD_EMULATION=1 USE_GETADDRINFO=1 USE_OPENSSL=1 USE_LUA=1 USE_QUIC=1 USE_PROMEX=1 USE_PCRE2=1 USE_PCRE2_JIT=1",
+      "  DEBUG   = ",
+      "",
+      "Feature list : -51DEGREES +ACCEPT4 +ACME +BACKTRACE -CLOSEFROM +CPU_AFFINITY +CRYPT_H -DEVICEATLAS +DL -ECH -ENGINE +EPOLL -EVPORTS +GETADDRINFO +HAVE_TCP_MD5SIG -KQUEUE +KTLS -LIBATOMIC +LIBCRYPT +LINUX_CAP +LINUX_SPLICE +LINUX_TPROXY +LUA +MATH -MEMORY_PROFILING +NETFILTER +NS -OBSOLETE_LINKER +OPENSSL -OPENSSL_AWSLC -OPENSSL_WOLFSSL -OT -PCRE +PCRE2 +PCRE2_JIT -PCRE_JIT +POLL +PRCTL -PROCCTL +PROMEX +PTHREAD_EMULATION +QUIC -QUIC_OPENSSL_COMPAT +RT +SHM_OPEN +SLZ +SSL -STATIC_PCRE -STATIC_PCRE2 +TFO +THREAD +THREAD_DUMP +TPROXY +TRACE -WURFL -ZLIB"
+    ],
+    "hardware": {
+      "cpu": "AMD EPYC 9645 96-Core Processor",
+      "cores_logical": 8,
+      "ram_bytes": 16767594496,
+      "os": "Linux-6.8.0-147-generic-x86_64-with-glibc2.39",
+      "kernel": "6.8.0-147-generic",
+      "docker": "Docker version 29.6.1, build 8900f1d",
+      "oha": "oha 1.16.0"
+    },
+    "host_loadavg_start": "0.76 2.40 1.59 1/377 1487960",
+    "host_loadavg_end": "6.72 3.84 2.15 1/391 1490645",
+    "resource_limits": {
+      "scope": "each proxy container (EQProxy and HAProxy); origin and generator are outside",
+      "memory": "2g",
+      "cpus": "2",
+      "applied_hostconfig": {
+        "benchv092-tls-eq": "2147483648 2000000000",
+        "benchv092-tls-ha": "2147483648 2000000000"
+      }
+    },
+    "topology": "one Linux host; origin, optional TLS calibration sink, both proxies and the generator share it; proxies are Linux containers, oha runs on the host against published loopback ports; no CPU affinity.",
+    "origin": "scripts/bench_v092_h1_backends.py (plain HTTP/1.1, /1k and /1m, TCP_NODELAY, honors Connection: close and HTTP/1.0); TLS calibration uses the prebuilt Go net/http TLS 1.3 / HTTP/1.1 sink (scripts/bench_v092_tls_sink) with the same fixture certificate and /1k only.",
+    "generator": {
+      "command": "/root/bin/oha-1.16.0 -z <scenario secs>s -c <scenario conns> --no-tui --output-format json -t 30s --wait-ongoing-requests-after-deadline [--http-version 1.1 --cacert <fixture-cert> for TLS] [--disable-keepalive] <url>",
+      "warmup": "one discarded run per product and scenario: 5s for S-H1-01/02, 2s for S-H1-03 and S-TLS-02",
+      "durations": {
+        "S-TLS-02": 5
+      },
+      "repetitions": 5,
+      "correction": "not applied: closed-loop runs have no honest offered rate for -q, so full raw histograms are published and percentiles are not CO-corrected."
+    },
+    "tls": {
+      "enabled": true,
+      "version": "TLS 1.3 only",
+      "ciphersuite": "TLS_AES_256_GCM_SHA384",
+      "alpn": "http/1.1",
+      "certificate": "eqproxy-net/tests/fixtures/cert.pem (CN=localhost, SAN DNS:localhost + IP:127.0.0.1)",
+      "certificate_sha256": "0c6cab2ee350fe29fa65783b19baa55c19444de71e9926e35ef093be4d018017",
+      "client_verification": "oha --http-version 1.1 --cacert <fixture-cert>; no --insecure",
+      "handshakes": {
+        "eqproxy": {
+          "port": 19621,
+          "protocol": "TLSv1.3",
+          "cipher": "TLS_AES_256_GCM_SHA384",
+          "alpn": "http/1.1",
+          "verify_ok": true,
+          "exit_code": 0
+        },
+        "haproxy": {
+          "port": 19631,
+          "protocol": "TLSv1.3",
+          "cipher": "TLS_AES_256_GCM_SHA384",
+          "alpn": "http/1.1",
+          "verify_ok": true,
+          "exit_code": 0
+        }
+      }
+    },
+    "scenario_interpretation": {
+      "S-TLS-02": "TLS 1.3 new connection per request (full handshake), 1 KiB payload"
+    },
+    "connections": {
+      "S-TLS-02": 20
+    },
+    "order_per_rep": [
+      {
+        "rep": 1,
+        "order": [
+          "eqproxy",
+          "haproxy"
+        ]
+      },
+      {
+        "rep": 2,
+        "order": [
+          "haproxy",
+          "eqproxy"
+        ]
+      },
+      {
+        "rep": 3,
+        "order": [
+          "eqproxy",
+          "haproxy"
+        ]
+      },
+      {
+        "rep": 4,
+        "order": [
+          "haproxy",
+          "eqproxy"
+        ]
+      },
+      {
+        "rep": 5,
+        "order": [
+          "eqproxy",
+          "haproxy"
+        ]
+      }
+    ],
+    "configs": {
+      "s-tls-eqproxy.toml": "schema_version = 1\nshutdown_grace = \"5s\"\n\n[listener.web]\nlisten = \"0.0.0.0:19621\"\nmode = \"http\"\nbackend = \"api\"\nmaxconn = 4096\n\n[listener.web.tls]\ncert = \"/certs/cert.pem\"\nkey = \"/certs/key.pem\"\nalpn = [\"http/1.1\"]\nmin_version = \"1.3\"\nmax_version = \"1.3\"\n\n[backend.api]\nserver = \"172.22.0.2:19002\"\n",
+      "s-tls-haproxy.cfg": "global\n  log stdout format raw local0\n  maxconn 4096\n  ssl-default-bind-ciphersuites TLS_AES_256_GCM_SHA384\n  ssl-default-bind-options ssl-min-ver TLSv1.3 ssl-max-ver TLSv1.3\ndefaults\n  log global\n  mode http\n  option httplog\n  option http-keep-alive\n  timeout connect 5s\n  timeout client 60s\n  timeout server 60s\n  timeout http-request 5s\nfrontend web\n  bind *:19631 ssl crt /certs/haproxy.pem alpn http/1.1\n  default_backend api\nbackend api\n  server s1 172.22.0.2:19002 maxconn 4096\n"
+    },
+    "raw_files": {
+      "S-TLS-02-eqproxy-rep1.json": {
+        "sha256": "03710ab552393812843b9b5723bf57545e98986dbdfdaf2f742cf21bbd0228b7",
+        "bytes": 2628
+      },
+      "S-TLS-02-eqproxy-rep2.json": {
+        "sha256": "f5dbf2ad9cb63521cd309cb61b611924fd55466810a0866e855e64c28e492799",
+        "bytes": 2613
+      },
+      "S-TLS-02-eqproxy-rep3.json": {
+        "sha256": "73c66698ee40b34b8b12d371fed3f667d092b8942725b2c2c3f6cf2ac794ce20",
+        "bytes": 2560
+      },
+      "S-TLS-02-eqproxy-rep4.json": {
+        "sha256": "04114ef458b4a9014156a30132e9634e9d7e2501c44f9e2a5639840314c83378",
+        "bytes": 2592
+      },
+      "S-TLS-02-eqproxy-rep5.json": {
+        "sha256": "293100203501deeeb9e152cc578c5dfa4c0b18bbd1331b6ef670d146eb385a3b",
+        "bytes": 2604
+      },
+      "S-TLS-02-haproxy-rep1.json": {
+        "sha256": "f3224ecb533db2224c8ae3f8abdc2b9c7d2f098a94e134a3d0f77507f98f930f",
+        "bytes": 2613
+      },
+      "S-TLS-02-haproxy-rep2.json": {
+        "sha256": "e17db73dd68b596e89eb1a712764652f0b44299e95b6d7cb5dc88e5495251d13",
+        "bytes": 2594
+      },
+      "S-TLS-02-haproxy-rep3.json": {
+        "sha256": "f41ed3caa2deaf74f86f7c3fa3eaf32aedafadc7e90752450545dcd9e8fc6a64",
+        "bytes": 2649
+      },
+      "S-TLS-02-haproxy-rep4.json": {
+        "sha256": "75e30d973e323af499447321a77ab76c489fb20a4f49f488944334ef3e8fa46f",
+        "bytes": 2600
+      },
+      "S-TLS-02-haproxy-rep5.json": {
+        "sha256": "b58482f45779d48c3bdb868bcc0607cdf80ef3020e7c9ad006d4d496d9825d0c",
+        "bytes": 2658
+      },
+      "calibration-S-TLS-02.json": {
+        "sha256": "8e7d4482806ab66ff45d065c676e4310bd2ac5d0097ff379563d6a0c95eb3ffa",
+        "bytes": 2560
+      }
+    }
+  },
+  "calibration": {
+    "S-TLS-02": {
+      "requests_per_sec": 5470.8,
+      "bytes_per_sec": 5602058.3,
+      "p50_ms": 3.21,
+      "p95_ms": 7.167,
+      "p99_ms": 9.814,
+      "p99_9_ms": 15.734,
+      "total_requests": 27373,
+      "success_rate": 1.0,
+      "status_code_distribution": {
+        "200": 27373
+      },
+      "error_distribution": {},
+      "duration_seconds": 5.003509543,
+      "wall_seconds": 5.021,
+      "generator_cpu_seconds": 7.872,
+      "generator_cpu_pct_one_core": 156.8,
+      "proxy_cpu_seconds": null,
+      "cpu_pct_one_core": null,
+      "rss_bytes": null,
+      "hwm_bytes": null,
+      "payload_bytes": 1024,
+      "connections": 20,
+      "disable_keepalive": true,
+      "raw_file": "calibration-S-TLS-02.json",
+      "headroom_ratio_vs_faster_proxy": 1.203,
+      "series_valid": true
+    }
+  },
+  "results": {
+    "S-TLS-02": {
+      "eqproxy": {
+        "runs": [
+          {
+            "requests_per_sec": 5295.9,
+            "bytes_per_sec": 5422981.2,
+            "p50_ms": 3.673,
+            "p95_ms": 5.225,
+            "p99_ms": 6.145,
+            "p99_9_ms": 8.308,
+            "total_requests": 26512,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 26512
+            },
+            "error_distribution": {},
+            "duration_seconds": 5.006155687,
+            "wall_seconds": 5.025,
+            "generator_cpu_seconds": 10.648,
+            "generator_cpu_pct_one_core": 211.9,
+            "proxy_cpu_seconds": 9.62,
+            "cpu_pct_one_core": 191.4,
+            "rss_bytes": 25493504,
+            "hwm_bytes": 26337280,
+            "payload_bytes": 1024,
+            "connections": 20,
+            "disable_keepalive": true,
+            "raw_file": "S-TLS-02-eqproxy-rep1.json"
+          },
+          {
+            "requests_per_sec": 4408.2,
+            "bytes_per_sec": 4514031.1,
+            "p50_ms": 4.199,
+            "p95_ms": 7.318,
+            "p99_ms": 10.289,
+            "p99_9_ms": 16.784,
+            "total_requests": 22061,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 22061
+            },
+            "error_distribution": {},
+            "duration_seconds": 5.004498982,
+            "wall_seconds": 5.023,
+            "generator_cpu_seconds": 10.158,
+            "generator_cpu_pct_one_core": 202.2,
+            "proxy_cpu_seconds": 9.37,
+            "cpu_pct_one_core": 186.5,
+            "rss_bytes": 25464832,
+            "hwm_bytes": 26320896,
+            "payload_bytes": 1024,
+            "connections": 20,
+            "disable_keepalive": true,
+            "raw_file": "S-TLS-02-eqproxy-rep2.json"
+          },
+          {
+            "requests_per_sec": 5453.1,
+            "bytes_per_sec": 5583979.8,
+            "p50_ms": 3.554,
+            "p95_ms": 5.151,
+            "p99_ms": 6.089,
+            "p99_9_ms": 7.872,
+            "total_requests": 27288,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 27288
+            },
+            "error_distribution": {},
+            "duration_seconds": 5.004121254,
+            "wall_seconds": 5.024,
+            "generator_cpu_seconds": 10.567,
+            "generator_cpu_pct_one_core": 210.3,
+            "proxy_cpu_seconds": 9.51,
+            "cpu_pct_one_core": 189.3,
+            "rss_bytes": 25468928,
+            "hwm_bytes": 26312704,
+            "payload_bytes": 1024,
+            "connections": 20,
+            "disable_keepalive": true,
+            "raw_file": "S-TLS-02-eqproxy-rep3.json"
+          },
+          {
+            "requests_per_sec": 4547.1,
+            "bytes_per_sec": 4656216.1,
+            "p50_ms": 3.92,
+            "p95_ms": 6.894,
+            "p99_ms": 16.072,
+            "p99_9_ms": 36.656,
+            "total_requests": 22810,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 22810
+            },
+            "error_distribution": {},
+            "duration_seconds": 5.016399473,
+            "wall_seconds": 5.035,
+            "generator_cpu_seconds": 9.061,
+            "generator_cpu_pct_one_core": 180.0,
+            "proxy_cpu_seconds": 9.69,
+            "cpu_pct_one_core": 192.5,
+            "rss_bytes": 25477120,
+            "hwm_bytes": 26312704,
+            "payload_bytes": 1024,
+            "connections": 20,
+            "disable_keepalive": true,
+            "raw_file": "S-TLS-02-eqproxy-rep4.json"
+          },
+          {
+            "requests_per_sec": 306.3,
+            "bytes_per_sec": 313674.4,
+            "p50_ms": 63.767,
+            "p95_ms": 115.599,
+            "p99_ms": 131.419,
+            "p99_9_ms": 149.538,
+            "total_requests": 1542,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 1542
+            },
+            "error_distribution": {},
+            "duration_seconds": 5.033907088,
+            "wall_seconds": 5.042,
+            "generator_cpu_seconds": 1.039,
+            "generator_cpu_pct_one_core": 20.6,
+            "proxy_cpu_seconds": 9.96,
+            "cpu_pct_one_core": 197.5,
+            "rss_bytes": 25464832,
+            "hwm_bytes": 26312704,
+            "payload_bytes": 1024,
+            "connections": 20,
+            "disable_keepalive": true,
+            "raw_file": "S-TLS-02-eqproxy-rep5.json"
+          }
+        ],
+        "summary": {
+          "requests_per_sec": {
+            "median": 4547.1,
+            "min": 306.3,
+            "max": 5453.1
+          },
+          "bytes_per_sec": {
+            "median": 4656216.1,
+            "min": 313674.4,
+            "max": 5583979.8
+          },
+          "p50_ms": {
+            "median": 3.92,
+            "min": 3.554,
+            "max": 63.767
+          },
+          "p95_ms": {
+            "median": 6.894,
+            "min": 5.151,
+            "max": 115.599
+          },
+          "p99_ms": {
+            "median": 10.289,
+            "min": 6.089,
+            "max": 131.419
+          },
+          "p99_9_ms": {
+            "median": 16.784,
+            "min": 7.872,
+            "max": 149.538
+          },
+          "cpu_pct_one_core": {
+            "median": 191.4,
+            "min": 186.5,
+            "max": 197.5
+          },
+          "rss_bytes": {
+            "median": 25468928,
+            "min": 25464832,
+            "max": 25493504
+          },
+          "hwm_bytes": {
+            "median": 26312704,
+            "min": 26312704,
+            "max": 26337280
+          }
+        }
+      },
+      "haproxy": {
+        "runs": [
+          {
+            "requests_per_sec": 2537.3,
+            "bytes_per_sec": 2598233.1,
+            "p50_ms": 5.037,
+            "p95_ms": 36.528,
+            "p99_ms": 42.403,
+            "p99_9_ms": 49.078,
+            "total_requests": 12699,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 12699
+            },
+            "error_distribution": {},
+            "duration_seconds": 5.004853432,
+            "wall_seconds": 5.016,
+            "generator_cpu_seconds": 5.386,
+            "generator_cpu_pct_one_core": 107.4,
+            "proxy_cpu_seconds": 10.01,
+            "cpu_pct_one_core": 199.6,
+            "rss_bytes": 64753664,
+            "hwm_bytes": 64753664,
+            "payload_bytes": 1024,
+            "connections": 20,
+            "disable_keepalive": true,
+            "raw_file": "S-TLS-02-haproxy-rep1.json"
+          },
+          {
+            "requests_per_sec": 2361.3,
+            "bytes_per_sec": 2417945.1,
+            "p50_ms": 5.424,
+            "p95_ms": 37.076,
+            "p99_ms": 45.03,
+            "p99_9_ms": 50.735,
+            "total_requests": 11826,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 11826
+            },
+            "error_distribution": {},
+            "duration_seconds": 5.008312177,
+            "wall_seconds": 5.023,
+            "generator_cpu_seconds": 5.453,
+            "generator_cpu_pct_one_core": 108.6,
+            "proxy_cpu_seconds": 10.0,
+            "cpu_pct_one_core": 199.1,
+            "rss_bytes": 65064960,
+            "hwm_bytes": 65064960,
+            "payload_bytes": 1024,
+            "connections": 20,
+            "disable_keepalive": true,
+            "raw_file": "S-TLS-02-haproxy-rep2.json"
+          },
+          {
+            "requests_per_sec": 2292.0,
+            "bytes_per_sec": 2347047.2,
+            "p50_ms": 5.716,
+            "p95_ms": 36.062,
+            "p99_ms": 42.713,
+            "p99_9_ms": 46.72,
+            "total_requests": 11475,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 11475
+            },
+            "error_distribution": {},
+            "duration_seconds": 5.006460898,
+            "wall_seconds": 5.019,
+            "generator_cpu_seconds": 5.479,
+            "generator_cpu_pct_one_core": 109.2,
+            "proxy_cpu_seconds": 10.01,
+            "cpu_pct_one_core": 199.4,
+            "rss_bytes": 65216512,
+            "hwm_bytes": 65216512,
+            "payload_bytes": 1024,
+            "connections": 20,
+            "disable_keepalive": true,
+            "raw_file": "S-TLS-02-haproxy-rep3.json"
+          },
+          {
+            "requests_per_sec": 2323.8,
+            "bytes_per_sec": 2379523.5,
+            "p50_ms": 5.568,
+            "p95_ms": 35.795,
+            "p99_ms": 42.357,
+            "p99_9_ms": 53.169,
+            "total_requests": 11631,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 11631
+            },
+            "error_distribution": {},
+            "duration_seconds": 5.005264298,
+            "wall_seconds": 5.017,
+            "generator_cpu_seconds": 5.436,
+            "generator_cpu_pct_one_core": 108.3,
+            "proxy_cpu_seconds": 10.01,
+            "cpu_pct_one_core": 199.5,
+            "rss_bytes": 65368064,
+            "hwm_bytes": 65368064,
+            "payload_bytes": 1024,
+            "connections": 20,
+            "disable_keepalive": true,
+            "raw_file": "S-TLS-02-haproxy-rep4.json"
+          },
+          {
+            "requests_per_sec": 2300.2,
+            "bytes_per_sec": 2355358.9,
+            "p50_ms": 5.731,
+            "p95_ms": 35.481,
+            "p99_ms": 42.855,
+            "p99_9_ms": 48.753,
+            "total_requests": 11512,
+            "success_rate": 1.0,
+            "status_code_distribution": {
+              "200": 11512
+            },
+            "error_distribution": {},
+            "duration_seconds": 5.004879631,
+            "wall_seconds": 5.021,
+            "generator_cpu_seconds": 5.431,
+            "generator_cpu_pct_one_core": 108.2,
+            "proxy_cpu_seconds": 10.0,
+            "cpu_pct_one_core": 199.2,
+            "rss_bytes": 65409024,
+            "hwm_bytes": 65409024,
+            "payload_bytes": 1024,
+            "connections": 20,
+            "disable_keepalive": true,
+            "raw_file": "S-TLS-02-haproxy-rep5.json"
+          }
+        ],
+        "summary": {
+          "requests_per_sec": {
+            "median": 2323.8,
+            "min": 2292.0,
+            "max": 2537.3
+          },
+          "bytes_per_sec": {
+            "median": 2379523.5,
+            "min": 2347047.2,
+            "max": 2598233.1
+          },
+          "p50_ms": {
+            "median": 5.568,
+            "min": 5.037,
+            "max": 5.731
+          },
+          "p95_ms": {
+            "median": 36.062,
+            "min": 35.481,
+            "max": 37.076
+          },
+          "p99_ms": {
+            "median": 42.713,
+            "min": 42.357,
+            "max": 45.03
+          },
+          "p99_9_ms": {
+            "median": 49.078,
+            "min": 46.72,
+            "max": 53.169
+          },
+          "cpu_pct_one_core": {
+            "median": 199.4,
+            "min": 199.1,
+            "max": 199.6
+          },
+          "rss_bytes": {
+            "median": 65216512,
+            "min": 64753664,
+            "max": 65409024
+          },
+          "hwm_bytes": {
+            "median": 65216512,
+            "min": 64753664,
+            "max": 65409024
+          }
+        }
+      }
+    }
+  },
+  "classification": {
+    "S-TLS-02": {
+      "requests_per_sec": {
+        "eq": {
+          "median": 4547.1,
+          "min": 306.3,
+          "max": 5453.1
+        },
+        "ha": {
+          "median": 2323.8,
+          "min": 2292.0,
+          "max": 2537.3
+        },
+        "verdict": "Comparable"
+      },
+      "bytes_per_sec": {
+        "eq": {
+          "median": 4656216.1,
+          "min": 313674.4,
+          "max": 5583979.8
+        },
+        "ha": {
+          "median": 2379523.5,
+          "min": 2347047.2,
+          "max": 2598233.1
+        },
+        "verdict": "Comparable"
+      },
+      "p50_ms": {
+        "eq": {
+          "median": 3.92,
+          "min": 3.554,
+          "max": 63.767
+        },
+        "ha": {
+          "median": 5.568,
+          "min": 5.037,
+          "max": 5.731
+        },
+        "verdict": "Comparable"
+      },
+      "p95_ms": {
+        "eq": {
+          "median": 6.894,
+          "min": 5.151,
+          "max": 115.599
+        },
+        "ha": {
+          "median": 36.062,
+          "min": 35.481,
+          "max": 37.076
+        },
+        "verdict": "Comparable"
+      },
+      "p99_ms": {
+        "eq": {
+          "median": 10.289,
+          "min": 6.089,
+          "max": 131.419
+        },
+        "ha": {
+          "median": 42.713,
+          "min": 42.357,
+          "max": 45.03
+        },
+        "verdict": "Comparable"
+      },
+      "p99_9_ms": {
+        "eq": {
+          "median": 16.784,
+          "min": 7.872,
+          "max": 149.538
+        },
+        "ha": {
+          "median": 49.078,
+          "min": 46.72,
+          "max": 53.169
+        },
+        "verdict": "Comparable"
+      },
+      "cpu_pct_one_core": {
+        "eq": {
+          "median": 191.4,
+          "min": 186.5,
+          "max": 197.5
+        },
+        "ha": {
+          "median": 199.4,
+          "min": 199.1,
+          "max": 199.6
+        },
+        "verdict": "Better"
+      },
+      "rss_bytes": {
+        "eq": {
+          "median": 25468928,
+          "min": 25464832,
+          "max": 25493504
+        },
+        "ha": {
+          "median": 65216512,
+          "min": 64753664,
+          "max": 65409024
+        },
+        "verdict": "Better"
+      },
+      "hwm_bytes": {
+        "eq": {
+          "median": 26312704,
+          "min": 26312704,
+          "max": 26337280
+        },
+        "ha": {
+          "median": 65216512,
+          "min": 64753664,
+          "max": 65409024
+        },
+        "verdict": "Better"
+      }
+    }
+  },
+  "gaps": {
+    "S-TLS-02": {
+      "rps_eq_over_ha": 1.957,
+      "bytes_eq_over_ha": 1.957,
+      "p50_ha_over_eq": 1.42,
+      "p95_ha_over_eq": 5.231,
+      "p99_ha_over_eq": 4.151
+    }
+  },
+  "limitations": [
+    "Only 1 of the 18 BENCHMARK_PLAN scenarios were executed in this slice; the roadmap item remains open.",
+    "One Linux host; generator and containers share the host, and CPU affinity/isolated generator, proxy and backend machines from the plan were not available.",
+    "Latency percentiles are not coordinated-omission corrected (see disclosure.generator.correction).",
+    "The EQProxy image is built from the working tree, not a published release artifact.",
+    "A series whose direct sink did not exceed 1.20x the faster proxy is marked invalid/Not comparable.",
+    "S-TLS-02 uses 20 connections x 5s with a full handshake per request; both products use identical client settings. The shorter window avoids ephemeral-port/TIME_WAIT exhaustion and is recorded in disclosure.connections and disclosure.generator.durations.",
+    "TLS is 1.3-only with TLS_AES_256_GCM_SHA384; no session resumption, 0-RTT, OCSP stapling, packet loss or browser client was tested."
+  ],
+  "raw_checksums": {
+    "S-TLS-02-eqproxy-rep1.json": {
+      "sha256": "03710ab552393812843b9b5723bf57545e98986dbdfdaf2f742cf21bbd0228b7",
+      "bytes": 2628
+    },
+    "S-TLS-02-eqproxy-rep2.json": {
+      "sha256": "f5dbf2ad9cb63521cd309cb61b611924fd55466810a0866e855e64c28e492799",
+      "bytes": 2613
+    },
+    "S-TLS-02-eqproxy-rep3.json": {
+      "sha256": "73c66698ee40b34b8b12d371fed3f667d092b8942725b2c2c3f6cf2ac794ce20",
+      "bytes": 2560
+    },
+    "S-TLS-02-eqproxy-rep4.json": {
+      "sha256": "04114ef458b4a9014156a30132e9634e9d7e2501c44f9e2a5639840314c83378",
+      "bytes": 2592
+    },
+    "S-TLS-02-eqproxy-rep5.json": {
+      "sha256": "293100203501deeeb9e152cc578c5dfa4c0b18bbd1331b6ef670d146eb385a3b",
+      "bytes": 2604
+    },
+    "S-TLS-02-haproxy-rep1.json": {
+      "sha256": "f3224ecb533db2224c8ae3f8abdc2b9c7d2f098a94e134a3d0f77507f98f930f",
+      "bytes": 2613
+    },
+    "S-TLS-02-haproxy-rep2.json": {
+      "sha256": "e17db73dd68b596e89eb1a712764652f0b44299e95b6d7cb5dc88e5495251d13",
+      "bytes": 2594
+    },
+    "S-TLS-02-haproxy-rep3.json": {
+      "sha256": "f41ed3caa2deaf74f86f7c3fa3eaf32aedafadc7e90752450545dcd9e8fc6a64",
+      "bytes": 2649
+    },
+    "S-TLS-02-haproxy-rep4.json": {
+      "sha256": "75e30d973e323af499447321a77ab76c489fb20a4f49f488944334ef3e8fa46f",
+      "bytes": 2600
+    },
+    "S-TLS-02-haproxy-rep5.json": {
+      "sha256": "b58482f45779d48c3bdb868bcc0607cdf80ef3020e7c9ad006d4d496d9825d0c",
+      "bytes": 2658
+    },
+    "calibration-S-TLS-02.json": {
+      "sha256": "8e7d4482806ab66ff45d065c676e4310bd2ac5d0097ff379563d6a0c95eb3ffa",
+      "bytes": 2560
+    }
+  }
+}

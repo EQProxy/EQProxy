@@ -70,9 +70,9 @@ metrics; and a server-rendered panel with no JavaScript.
 
 Binaries and checksums live on the
 [release page](https://github.com/EQProxy/EQProxy/releases/latest). Every
-release carries four prebuilt binaries — `eqproxy-darwin-arm64`,
-`eqproxy-darwin-amd64`, `eqproxy-linux-arm64` and `eqproxy-linux-amd64` — the
-matching sources as `eqproxy-<version>-src.tar.gz`, the SBOM of each crate and
+release carries two prebuilt Linux binaries — `eqproxy-linux-arm64` and
+`eqproxy-linux-amd64` — the matching sources as
+`eqproxy-<version>-src.tar.gz`, the SBOM of each crate and
 the Docker Scout report of both image architectures, all checked by one
 `SHA256SUMS.txt`. Both images must pass
 `docker scout cves --only-severity critical,high --exit-code` on
@@ -83,12 +83,12 @@ The Linux binaries are **statically linked against musl** (`file` reports
 `static-pie linked` on amd64 and `statically linked` on arm64, no `NEEDED`
 entries, no interpreter), so they need no libc, no glibc version and no
 packages: they run on any Linux distribution of that architecture, and on
-`FROM scratch`. Building from source is `cargo build --release --locked`.
+`FROM scratch`. There is no prebuilt Darwin asset; macOS builds from source
+with `cargo build --release --locked`.
 
 ```bash
-# Pick your platform artifact:
-#   eqproxy-darwin-arm64 | eqproxy-darwin-amd64
-#   eqproxy-linux-arm64  | eqproxy-linux-amd64   (static, musl)
+# Pick your architecture:
+#   eqproxy-linux-arm64 | eqproxy-linux-amd64   (static, musl)
 curl -sSLO https://github.com/EQProxy/EQProxy/releases/latest/download/eqproxy-linux-amd64
 curl -sSLO https://github.com/EQProxy/EQProxy/releases/latest/download/SHA256SUMS.txt
 shasum -a 256 -c SHA256SUMS.txt --ignore-missing   # Linux: sha256sum -c --ignore-missing SHA256SUMS.txt

@@ -1,18 +1,19 @@
-# v0.9.2 — release preparation (not published)
+# v0.9.2 — release preparation (Linux-only prebuilt binaries)
 
 Language: **English**.
 
 **What this page answers:** what has been verified locally for the `v0.9.2`
-cut, which artifacts exist, and what still has to happen before the tag can be
-published. It is a preparation record, **not** a publication record.
+cut, which artifacts exist, and which artifacts the Linux-only release ships.
+It is a preparation record, **not** a publication record.
 
 - Version: **0.9.2** (`Cargo.toml` `[workspace.package] version`).
-- Branch: `harden/config-gate-and-errors` at `9913a69`, with the release
-  changes still uncommitted.
+- Branch: `harden/config-gate-and-errors` (the release commit is the
+  `v0.9.2` tag target).
 - Release notes: [CHANGELOG.md](../CHANGELOG.md), section
   `## [v0.9.2] — 2026-11-06` (68 extracted lines).
 - Pipeline: [.github/workflows/release.yml](../.github/workflows/release.yml).
-- State: **prepared, not tagged, not pushed, not published**.
+- State: **Linux-only release prepared; publication is owned by the tag
+  pipeline.**
 
 `README.md` is version-agnostic: install commands use the moving `latest`
 tag and `releases/latest`, so it does not need a version edit per release.
@@ -45,8 +46,8 @@ four crates at `0.9.2`.
 | `cargo fmt --all -- --check` | exit **0** |
 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | exit **0** |
 | `cargo test --workspace --locked` | exit **0** — **738 passed, 2 ignored, 0 failed** |
-| macOS `eqproxy-darwin-arm64` E2E | `--version`, validate, missing-file error, explain, diff, apply/rollback, doctor and live proxied traffic: **PASS** |
-| macOS `eqproxy-darwin-amd64` E2E | same journeys, including Rosetta live traffic: **PASS** (`MAC_E2E=PASS`, `MAC_FULL_CLI_EXIT=0`) |
+| macOS `eqproxy-darwin-arm64` E2E (local only, not shipped) | `--version`, validate, missing-file error, explain, diff, apply/rollback, doctor and live proxied traffic: **PASS** |
+| macOS `eqproxy-darwin-amd64` E2E (local only, not shipped) | same journeys, including Rosetta live traffic: **PASS** (`MAC_E2E=PASS`, `MAC_FULL_CLI_EXIT=0`) |
 | `check-evidence-test-citations.py`, `check-short-health-probes.py`, `check-secrets.py` | self-test and tree runs passed before this cut; the cut tree still uses the same gate inputs |
 | Release-note extraction | `## EQProxy v0.9.2 — 2026-11-06`, 68 lines |
 | Toolchain invariant | `rust-toolchain.toml` and `ARG RUST_VERSION` both `1.99.1` |
@@ -56,7 +57,10 @@ the stale pins.
 
 ## 3. Artifacts built locally
 
-`dist-v092/` is a local, untracked directory. Hashes are SHA-256.
+`dist-v092/` is a local, untracked directory. Hashes are SHA-256. Only the two
+Linux binaries are release assets: the release workflow has no Darwin job, and
+the macOS binaries below were verified locally during preparation only, never
+published.
 
 | Artifact | Size | SHA-256 | Verification |
 |---|---:|---|---|

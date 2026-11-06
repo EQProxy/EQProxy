@@ -49,10 +49,10 @@ release. The scan indexes the image's SBOM — {{packages}} packages on each
 architecture — so a clean report covers both: neither the pinned base nor
 EQProxy ships a known critical or high finding at the time of the release.
 
-Standalone binaries for both architectures — `eqproxy-linux-amd64` and
+Standalone Linux binaries for both architectures — `eqproxy-linux-amd64` and
 `eqproxy-linux-arm64`, static musl, no libc required — are on the release page
-together with `SHA256SUMS.txt` (four binaries plus the sources,
-`eqproxy-<version>-src.tar.gz`, all five checked in one file).
+together with `SHA256SUMS.txt` (the two Linux binaries plus the sources,
+`eqproxy-<version>-src.tar.gz`, all three checked in one file).
 
 The musl binary was measured against **genuinely built glibc binaries** on
 arm64 and amd64, same scenario and same hosts, every response a real `200`

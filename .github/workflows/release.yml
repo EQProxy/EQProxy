@@ -65,7 +65,7 @@ jobs:
       # in the `exyonq` account and is pushed with `GHCR_TOKEN`, not with this
       # repository's GITHUB_TOKEN. Fail here — before the toolchain, the
       # suites or any image byte — instead of inside docker/login-action after
-      # darwin and linux have already built: a missing secret is a
+      # the Linux job has already built: a missing secret is a
       # configuration mistake, and the message says how to fix it. Tag-only,
       # because a workflow_dispatch dry run pushes nothing and must not
       # require the secret.
@@ -83,7 +83,7 @@ jobs:
 
       # CI runs the three gates on every push. A tag push does not trigger CI,
       # so a release cannot trust a commit whose gates only ran somewhere
-      # else: they run here, on the tag commit, before darwin/linux/image can
+      # else: they run here, on the tag commit, before Linux/image can
       # build a byte or publish anything. The self-test of each detector runs
       # first, because a gate whose detector rotted would otherwise pass by
       # finding nothing.
@@ -164,190 +164,6 @@ jobs:
           echo "tag=$GITHUB_REF_NAME workspace version=$VER"
           test "v$VER" = "$GITHUB_REF_NAME" \
             || { echo "tag $GITHUB_REF_NAME does not match the workspace version $VER in Cargo.toml"; exit 1; }
-
-  darwin:
-    name: Binaries darwin (build + E2E verify)
-    needs: guard
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v7
-
-      # Same pin as CI (rust-toolchain.toml, read here): the binary this job
-      # releases must come from the compiler the suite tested, not from
-      # whatever `stable` the runner happened to carry.
-      - name: Install Rust targets (pinned in rust-toolchain.toml)
-        run: |
-          set -euo pipefail
-          channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
-          test -n "$channel"
-          rustup toolchain install "$channel" --profile minimal
-          rustup target add --toolchain "$channel" aarch64-apple-darwin x86_64-apple-darwin
-
-      - name: Allow loopback services (macOS firewall drops unsigned listeners)
-        run: |
-          sudo /usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate
-          sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate off
-
-      - name: Build darwin binaries
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          for target in aarch64-apple-darwin x86_64-apple-darwin; do
-            cargo build --release --locked -p eqproxy-cli --target "$target"
-          done
-          cp target/aarch64-apple-darwin/release/eqproxy dist/eqproxy-darwin-arm64
-          cp target/x86_64-apple-darwin/release/eqproxy dist/eqproxy-darwin-amd64
-
-      # Per-binary E2E verification (real behavior, observable results):
-      # validate, explain, diff, apply/rollback, doctor and live proxied
-      # traffic — never a smoke test.
-      - name: E2E-verify darwin binaries
-        run: |
-          set -euo pipefail
-          VER=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          GOOD_CONFIG='schema_version = 1
-          [listener.web]
-          listen = "127.0.0.1:0"
-          backend = "api"
-          [backend.api]
-          server = "127.0.0.1:9"
-          '
-          fail() { printf 'release FAILED: %s\n' "$*" >&2; exit 1; }
-          log() { printf '==> %s\n' "$*"; }
-          verify_cli() {
-            local bin="$1"
-            log "E2E $bin: --version"
-            "$bin" --version | grep -q "eqproxy $VER" || fail "$bin reports wrong version"
-            log "E2E $bin: validate accepts good config"
-            printf '%s' "$GOOD_CONFIG" | "$bin" config validate --config /dev/stdin \
-              | grep -q "config OK: 1 listener(s), 1 backend(s)" \
-              || fail "$bin validate happy path"
-            log "E2E $bin: validate rejects missing file with exit 1"
-            if "$bin" config validate --config /nonexistent-e2e.toml 2>/tmp/e2e-err.txt; then
-              fail "$bin accepted a missing file"
-            fi
-            grep -q "could not read the file" /tmp/e2e-err.txt \
-              || fail "$bin missing-file error not actionable"
-            log "E2E $bin: explain simulates without side effects"
-            printf '%s' "$GOOD_CONFIG" | "$bin" config explain --config /dev/stdin \
-              | grep -q "simulation: true (no requests issued, no state changed)" \
-              || fail "$bin explain report"
-            log "E2E $bin: diff finds no differences on identical input"
-            printf '%s' "$GOOD_CONFIG" > /tmp/e2e-left.toml
-            cp /tmp/e2e-left.toml /tmp/e2e-right.toml
-            "$bin" config diff /tmp/e2e-left.toml /tmp/e2e-right.toml 2>/dev/null \
-              | grep -q "no differences" || fail "$bin diff identical"
-            log "E2E $bin: apply stores offline and rollback walks back"
-            export EQPROXY_STATE_DIR
-            EQPROXY_STATE_DIR="$(mktemp -d /tmp/e2e-state-XXXXXX)"
-            printf '%s' "$GOOD_CONFIG" > /tmp/e2e-cand.toml
-            "$bin" config apply --config /tmp/e2e-cand.toml > /tmp/e2e-apply.txt \
-              || fail "$bin apply first failed"
-            grep -q "no previous configuration" /tmp/e2e-apply.txt \
-              || fail "$bin apply first"
-            "$bin" config apply --config /tmp/e2e-cand.toml > /tmp/e2e-apply.txt \
-              || fail "$bin apply idempotent failed"
-            grep -q "already applied" /tmp/e2e-apply.txt \
-              || fail "$bin apply idempotent"
-            log "E2E $bin: doctor passes pre-flight on a free port"
-            "$bin" doctor --config /tmp/e2e-cand.toml > /tmp/e2e-doctor.txt \
-              || fail "$bin doctor failed"
-            grep -q "doctor: PASS" /tmp/e2e-doctor.txt \
-              || fail "$bin doctor verdict"
-            grep -q "ok: bind" /tmp/e2e-doctor.txt \
-              || fail "$bin doctor bind probe"
-            if "$bin" config rollback 2>/tmp/e2e-err.txt; then
-              fail "$bin rollback with empty history succeeded"
-            fi
-            grep -q "no previous configuration" /tmp/e2e-err.txt \
-              || fail "$bin rollback empty not explicit"
-            rm -rf "$EQPROXY_STATE_DIR"
-            unset EQPROXY_STATE_DIR
-          }
-          wait_for_port() {
-            local port="$1" label="$2" i
-            for i in $(seq 1 50); do
-              if python3 -c "import socket,sys; socket.create_connection(('127.0.0.1',$port),timeout=1).close()" 2>/dev/null; then
-                return 0
-              fi
-              sleep 0.2
-            done
-            # Logs on timeout, as promised: a silent 60s wait in CI is undiagnosable.
-            {
-              echo "--- diagnostics: $label on 127.0.0.1:$port ---"
-              python3 --version 2>&1
-              echo "connect_ex (0 ok / 61 refused / 60 timeout): $(python3 -c "import socket; s=socket.socket(); s.settimeout(2); print(s.connect_ex(('127.0.0.1',$port)))" 2>&1)"
-              lsof -nP -iTCP:$port 2>&1 || true
-              echo "--- /tmp/e2e-backend.log ---"
-              cat /tmp/e2e-backend.log 2>&1 || true
-            } >&2
-            fail "$label never listened on 127.0.0.1:$port"
-          }
-          verify_live_native() {
-            local bin="$1"
-            local port backend_port
-            read -r port backend_port <<< "$(python3 -c "import socket
-          a=socket.socket(); a.bind(('127.0.0.1',0)); p1=a.getsockname()[1]; a.close()
-          b=socket.socket(); b.bind(('127.0.0.1',0)); p2=b.getsockname()[1]; b.close()
-          print(p1,p2)")"
-            log "E2E $bin: live proxied traffic on 127.0.0.1:$port"
-            # Raw-socket test backend. NOT python3 -m http.server: since
-            # CPython 3.13 the CLI resolves socket.getfqdn() between bind()
-            # and listen(), and that reverse DNS blocks for minutes on
-            # runners with a slow PTR resolver. No name resolution here.
-            python3 -c "
-          import socket
-          body = b'hello-release-e2e\n'
-          resp = (b'HTTP/1.1 200 OK\r\nContent-Length: ' + str(len(body)).encode()
-                  + b'\r\nConnection: close\r\n\r\n' + body)
-          s = socket.socket()
-          s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-          s.bind(('127.0.0.1', $backend_port))
-          s.listen(16)
-          print('listening', flush=True)
-          while True:
-              c, _ = s.accept()
-              try:
-                  c.recv(65536)
-                  c.sendall(resp)
-              finally:
-                  c.close()
-          " >/tmp/e2e-backend.log 2>&1 &
-            local backend_pid=$!
-            wait_for_port "$backend_port" "backend"
-            cat > /tmp/e2e-proxy.toml <<EOF
-          schema_version = 1
-          [listener.web]
-          listen = "127.0.0.1:$port"
-          mode = "http"
-          backend = "api"
-          [backend.api]
-          server = "127.0.0.1:$backend_port"
-          EOF
-            "$bin" run --config /tmp/e2e-proxy.toml >/tmp/e2e-proxy.log 2>&1 &
-            local proxy_pid=$!
-            wait_for_port "$port" "proxy $bin"
-            local body
-            body="$(curl -s "http://127.0.0.1:$port/")" \
-              || fail "$bin live traffic: curl failed"
-            kill "$proxy_pid" "$backend_pid" 2>/dev/null || true
-            [ "$body" = "hello-release-e2e" ] \
-              || fail "$bin live traffic mismatch: $body"
-            log "E2E $bin: live traffic OK"
-          }
-          verify_cli dist/eqproxy-darwin-arm64
-          verify_live_native dist/eqproxy-darwin-arm64
-          log "verifying darwin-amd64 (Rosetta)"
-          arch -x86_64 true 2>/dev/null \
-            || fail "Rosetta missing: darwin-amd64 NOT EXECUTED is not acceptable for release"
-          verify_cli dist/eqproxy-darwin-amd64
-          verify_live_native dist/eqproxy-darwin-amd64
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: dist-darwin
-          path: dist/eqproxy-darwin-*
-          if-no-files-found: error
 
   linux:
     name: Binaries linux (build + E2E verify) + SBOM
@@ -477,7 +293,7 @@ jobs:
     # exist until both architecture images have been scanned by Docker Scout
     # and exercised end to end. A failing scan or E2E leaves the tag without
     # a release instead of shipping one next to an unverified image.
-    needs: [darwin, linux, image]
+    needs: [linux, image]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -492,7 +308,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist sbom scout
-          find collect -type f \( -name 'eqproxy-darwin-*' -o -name 'eqproxy-linux-*' \) -exec cp {} dist/ \;
+          find collect -type f -name 'eqproxy-linux-*' -exec cp {} dist/ \;
           find collect -type f -name '*.cdx.json' -exec cp {} sbom/ \;
           find collect -type f -name 'SCOUT-*.md' -exec cp {} scout/ \;
           # Both architectures must have been scanned; a missing report means
@@ -510,7 +326,7 @@ jobs:
           else
             echo "dry run: no Scout reports expected (nothing is scanned or published)"
           fi
-          for bin in eqproxy-darwin-amd64 eqproxy-darwin-arm64 eqproxy-linux-amd64 eqproxy-linux-arm64; do
+          for bin in eqproxy-linux-amd64 eqproxy-linux-arm64; do
             test -f "dist/$bin" || { echo "missing $bin in dist/ (builds did not produce it)"; exit 1; }
           done
 
@@ -566,7 +382,7 @@ jobs:
             || { echo "source tarball does not declare version $VERSION"; exit 1; }
           echo "==> dist/$SRC: $(wc -l < "$LIST" | tr -d ' ') entries, $(wc -c < "dist/$SRC" | tr -d ' ') bytes, version $VERSION"
 
-      - name: Write SHA256SUMS.txt (the four binary lines unchanged, tarball appended)
+      - name: Write SHA256SUMS.txt (the two Linux binary lines, tarball appended)
         run: |
           set -euo pipefail
           VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
@@ -577,14 +393,13 @@ jobs:
             || { echo "expected exactly one source tarball in dist/, found $count"; exit 1; }
           sums() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
           echo "==> writing SHA256SUMS (only after every artifact passed)"
-          (cd dist && sums eqproxy-darwin-amd64 eqproxy-darwin-arm64 \
-            eqproxy-linux-amd64 eqproxy-linux-arm64 > SHA256SUMS.txt)
-          # Appended, never rewritten: the four lines a v0.6.x user already
-          # checks keep their byte-identical form.
+          (cd dist && sums eqproxy-linux-amd64 eqproxy-linux-arm64 > SHA256SUMS.txt)
+          # Appended, never rewritten: the two Linux lines a v0.6.x user
+          # already checks keep their byte-identical form.
           (cd dist && sums "$SRC" >> SHA256SUMS.txt)
           (cd dist && sums -c SHA256SUMS.txt)
           lines=$(wc -l < dist/SHA256SUMS.txt | tr -d ' ')
-          [ "$lines" = "5" ] || { echo "SHA256SUMS.txt has $lines lines, expected 5"; exit 1; }
+          [ "$lines" = "3" ] || { echo "SHA256SUMS.txt has $lines lines, expected 3"; exit 1; }
           cat dist/SHA256SUMS.txt
 
       # The release body is the changelog section of *this* version. Passing the
@@ -667,7 +482,7 @@ jobs:
 
   image:
     name: Multi-arch image (build + Scout both archs + E2E + promote)
-    needs: [darwin, linux]
+    needs: [linux]
     runs-on: ubuntu-latest
     # No `packages: write`: the GHCR push authenticates with the `exyonq` PAT
     # below, not with this workflow's GITHUB_TOKEN, which belongs to the

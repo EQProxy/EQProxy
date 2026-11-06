@@ -10,9 +10,15 @@ cd "$out"
 
 # name, CN, subjectAltName
 self_signed() {
+    # These are server leaves, not CAs. OpenSSL 3 defaults a self-signed
+    # certificate to CA:TRUE unless the extension is explicit; rustls then
+    # rejects the handshake with CaUsedAsEndEntity (seen on the Linux runner).
     openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 3650 \
         -keyout "$1.key" -out "$1.pem" -subj "/CN=$2" \
-        -addext "subjectAltName=$3" >/dev/null 2>&1
+        -addext "subjectAltName=$3" \
+        -addext "basicConstraints=critical,CA:FALSE" \
+        -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
+        -addext "extendedKeyUsage=serverAuth" >/dev/null 2>&1
 }
 
 self_signed cert localhost "DNS:localhost,IP:127.0.0.1"

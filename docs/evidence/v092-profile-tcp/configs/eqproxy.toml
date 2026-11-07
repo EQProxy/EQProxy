@@ -1,0 +1,12 @@
+schema_version = 1
+shutdown_grace = "5s"
+
+[listener.tcp]
+listen = "0.0.0.0:19641"
+mode = "tcp"
+backend = "echo"
+maxconn = 20000
+idle_timeout = "30s"
+
+[backend.echo]
+server = "origin:19004"

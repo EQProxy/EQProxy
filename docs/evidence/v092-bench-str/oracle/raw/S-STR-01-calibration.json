@@ -1,0 +1,95 @@
+{
+  "mode": "load",
+  "target": "origin:19020",
+  "conns": 16,
+  "body_bytes": 65536,
+  "warmup_s": 3,
+  "duration_s": 10,
+  "wall_s": 10.000889971,
+  "started_at": "2026-11-03T15:59:05.28181213Z",
+  "ended_at": "2026-11-03T15:59:18.282702101Z",
+  "connections": 16,
+  "reconnects": 0,
+  "cycles": 163114,
+  "errors": 0,
+  "bytes_up": 10689839104,
+  "bytes_down": 10689839104,
+  "cycles_per_sec": 16309.948461885744,
+  "bytes_up_per_sec": 1068888782.3981441,
+  "bytes_down_per_sec": 1068888782.3981441,
+  "total_mib_per_sec": 2038.743557735718,
+  "latency_ms": {
+    "count": 163114,
+    "min": 0.086201,
+    "p50": 0.640204,
+    "p95": 2.867335,
+    "p99": 4.248624,
+    "max": 15.489125,
+    "mean": 0.9801415582721344,
+    "histogram": [
+      {
+        "upper_ms": 0.1,
+        "count": 85
+      },
+      {
+        "upper_ms": 0.25,
+        "count": 26700
+      },
+      {
+        "upper_ms": 0.5,
+        "count": 39653
+      },
+      {
+        "upper_ms": 1,
+        "count": 41340
+      },
+      {
+        "upper_ms": 2,
+        "count": 33491
+      },
+      {
+        "upper_ms": 5,
+        "count": 21112
+      },
+      {
+        "upper_ms": 10,
+        "count": 725
+      },
+      {
+        "upper_ms": 20,
+        "count": 8
+      },
+      {
+        "upper_ms": 50,
+        "count": 0
+      },
+      {
+        "upper_ms": 100,
+        "count": 0
+      },
+      {
+        "upper_ms": 200,
+        "count": 0
+      },
+      {
+        "upper_ms": 500,
+        "count": 0
+      },
+      {
+        "upper_ms": 1000,
+        "count": 0
+      },
+      {
+        "upper_ms": 2000,
+        "count": 0
+      },
+      {
+        "upper_ms": 0,
+        "count": 0
+      }
+    ]
+  },
+  "generator_cpu_seconds": 18.066457,
+  "generator_cpu_pct_one_core": 180.64849280802073,
+  "sanity": "ok"
+}

@@ -1,0 +1,18 @@
+schema_version = 1
+shutdown_grace = "5s"
+
+[listener.web]
+listen = "0.0.0.0:19621"
+mode = "http"
+backend = "api"
+maxconn = 4096
+
+[listener.web.tls]
+cert = "/certs/cert.pem"
+key = "/certs/key.pem"
+alpn = ["http/1.1"]
+min_version = "1.3"
+max_version = "1.3"
+
+[backend.api]
+server = "172.22.0.2:19002"

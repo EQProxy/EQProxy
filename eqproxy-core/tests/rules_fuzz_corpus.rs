@@ -284,24 +284,9 @@ fn random_valid_spec(rng: &mut Rng) -> RuleSpec {
         }
         let name = (*name).to_owned();
         let header = match rng.below(3) {
-            0 => HeaderSpec {
-                name,
-                exact: Some("acme".to_owned()),
-                regex: None,
-                present: false,
-            },
-            1 => HeaderSpec {
-                name,
-                exact: None,
-                regex: Some(pick_key(rng, VALID_HEADER_REGEXES)),
-                present: false,
-            },
-            _ => HeaderSpec {
-                name,
-                exact: None,
-                regex: None,
-                present: true,
-            },
+            0 => HeaderSpec::exact(name, "acme"),
+            1 => HeaderSpec::regex(name, pick_key(rng, VALID_HEADER_REGEXES)),
+            _ => HeaderSpec::present(name),
         };
         spec.headers.push(header);
     }
@@ -477,12 +462,7 @@ fn known_specs() -> Vec<(RuleSpec, &'static str)> {
         (
             RuleSpec {
                 name: "bad-header-name".to_owned(),
-                headers: vec![HeaderSpec {
-                    name: "bad name".to_owned(),
-                    exact: Some("1".to_owned()),
-                    regex: None,
-                    present: false,
-                }],
+                headers: vec![HeaderSpec::exact("bad name", "1")],
                 ..RuleSpec::default()
             },
             "headers[0]",
@@ -649,9 +629,11 @@ fn host_verdict_is_invariant_under_case_and_port_suffix() {
 fn known_bad_specs_name_their_field() {
     for (spec, field) in known_specs() {
         let err = Rule::compile(&spec).expect_err("known-bad spec must be rejected");
+        let expected = (!field.is_empty()).then_some(field);
         assert_eq!(
-            err.field, field,
-            "wrong field for spec {spec:?}: {}",
+            err.field.as_deref(),
+            expected,
+            "wrong field for spec {spec:?}: {:?}",
             err.field
         );
     }

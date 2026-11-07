@@ -19,4 +19,4 @@ pub use metrics::{Metrics, MetricsSnapshot};
 pub use rules::{
     CookieSpec, HeaderSpec, MapConditionSpec, RequestFacts, Rule, RuleError, RuleSpec,
 };
-pub use shutdown::{Shutdown, ShutdownHandle};
+pub use shutdown::{GateOutcome, Shutdown, ShutdownHandle};

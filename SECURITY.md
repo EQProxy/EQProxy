@@ -9,13 +9,31 @@ table, residual risk).
 
 | Version | Security fixes |
 |---|---|
-| `0.8.x` — latest patch of the current minor | Yes |
-| `0.7.x` and earlier | No (upgrade to `0.8.x`) |
+| `0.9.x` — latest patch of the current minor | Yes |
+| `0.8.x` and earlier | No (upgrade to `0.9.x`) |
 
 EQProxy is pre-1.0: fixes land in the current minor line and are released as a
 new patch, never back-ported. The list of fixes of each release is in
 [CHANGELOG.md](CHANGELOG.md); `eqproxy --version` prints the exact build you
 are running.
+
+## Repository secret handling
+
+The tracked tree never contains private keys. Debug and test TLS material is
+generated into `OUT_DIR/fixtures` at build time; historical benchmark records
+keep only public certificates. The repository enforces this with three gates:
+
+- a pre-commit hook (`.githooks/pre-commit`) scans staged files;
+- CI scans the tracked tree and every commit added by a push or pull request,
+  including a key added and later deleted in the same change;
+- the release guard repeats those checks on the tagged tree and the exported
+  source tarball.
+
+Enable **GitHub secret scanning and push protection** in
+**Settings → Code security** so the remote refuses a credential even if a
+contributor bypasses the local hook. Do not rely on a past scan of `main`: a
+key becomes exposed as soon as a commit is published, and deleting the file in
+a later commit does not remove the historical blob.
 
 ## Reporting a vulnerability
 

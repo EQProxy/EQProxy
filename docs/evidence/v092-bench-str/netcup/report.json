@@ -1,0 +1,1484 @@
+{
+  "disclosure": {
+    "date_utc": "2026-11-03T17:05:39Z",
+    "plan": "BENCHMARK_PLAN.md \u00a72 disclosure, \u00a73 S-STR-01, \u00a74 metrics, \u00a75 bias controls",
+    "scenario": {
+      "id": "S-STR-01",
+      "load": "HTTP/1.1 keep-alive, 32 persistent connections, 65536 B upload + 65536 B download per cycle",
+      "warmup_s": 15,
+      "duration_s": 600,
+      "reps": 5,
+      "full_duplex": false,
+      "note": "upload then download; no full-duplex claim"
+    },
+    "artifacts": {
+      "eqproxy": {
+        "image": "eqproxy-bench:v092",
+        "id": "a461b0f678128017",
+        "tags": "[eqproxy-bench:v092]",
+        "created": "2026-11-02T23:51:51.238750591+01:00"
+      },
+      "haproxy": {
+        "image": "haproxy:3.4.6",
+        "id": "e273915691a8eab3",
+        "tags": "[haproxy:3.4.6]",
+        "created": "2026-10-06T01:15:42.729294789Z"
+      },
+      "generator": {
+        "image": "eqproxy-strload:v092",
+        "id": "a08f92386acd9861",
+        "tags": "[eqproxy-strload:v092]",
+        "created": "2026-11-03T16:19:36.484018571+01:00"
+      },
+      "generator_binary_sha256": "f8271337ce81681dcaba21124ab1f4153097f4910dca1d7b43f210cb3f320260"
+    },
+    "host": {
+      "uname": "Linux-6.8.0-147-generic-x86_64-with-glibc2.39",
+      "machine": "x86_64",
+      "cpu_model": "AMD EPYC 9645 96-Core Processor",
+      "host_memory_bytes": 16767594496,
+      "docker_info": "x86_64 cpus=8 memory=16767594496",
+      "docker_version": "client 29.6.1 / server 29.6.1",
+      "load_average": "0.29 0.13 0.89 1/387 1546312"
+    },
+    "topology": "one host; origin, both proxies and generator are containers on benchv092str; no host ports published",
+    "limits": {
+      "proxy_memory": "2g",
+      "proxy_cpus": "2",
+      "origin": "unlimited",
+      "generator": "unlimited"
+    },
+    "differences": [
+      "EQProxy translates the HTTP/1.1 exchange through its engine; HAProxy forwards natively",
+      "upload and download are sequential; this is not a full-duplex test",
+      "no TLS in this scenario; no rules, rewrites or compression"
+    ]
+  },
+  "calibration": {
+    "run": {
+      "mode": "load",
+      "target": "origin:19020",
+      "conns": 32,
+      "body_bytes": 65536,
+      "warmup_s": 3,
+      "duration_s": 10,
+      "wall_s": 10.000467147,
+      "started_at": "2026-11-03T15:22:08.574592448Z",
+      "ended_at": "2026-11-03T15:22:21.575059606Z",
+      "connections": 32,
+      "reconnects": 0,
+      "cycles": 527363,
+      "errors": 0,
+      "bytes_up": 34561261568,
+      "bytes_down": 34561261568,
+      "cycles_per_sec": 52733.8365546455,
+      "bytes_up_per_sec": 3455964712.4452477,
+      "bytes_down_per_sec": 3455964712.4452477,
+      "total_mib_per_sec": 6591.729569330688,
+      "latency_ms": {
+        "count": 527363,
+        "min": 0.040112,
+        "p50": 0.365963,
+        "p95": 1.784142,
+        "p99": 2.615633,
+        "max": 8.074667,
+        "mean": 0.6059222374891707,
+        "histogram": [
+          {
+            "upper_ms": 0.1,
+            "count": 45558
+          },
+          {
+            "upper_ms": 0.25,
+            "count": 148642
+          },
+          {
+            "upper_ms": 0.5,
+            "count": 126865
+          },
+          {
+            "upper_ms": 1,
+            "count": 90379
+          },
+          {
+            "upper_ms": 2,
+            "count": 99481
+          },
+          {
+            "upper_ms": 5,
+            "count": 16309
+          },
+          {
+            "upper_ms": 10,
+            "count": 129
+          },
+          {
+            "upper_ms": 20,
+            "count": 0
+          },
+          {
+            "upper_ms": 50,
+            "count": 0
+          },
+          {
+            "upper_ms": 100,
+            "count": 0
+          },
+          {
+            "upper_ms": 200,
+            "count": 0
+          },
+          {
+            "upper_ms": 500,
+            "count": 0
+          },
+          {
+            "upper_ms": 1000,
+            "count": 0
+          },
+          {
+            "upper_ms": 2000,
+            "count": 0
+          },
+          {
+            "upper_ms": 0,
+            "count": 0
+          }
+        ]
+      },
+      "generator_cpu_seconds": 34.848275,
+      "generator_cpu_pct_one_core": 348.46647149332415,
+      "sanity": "ok"
+    },
+    "headroom": 3.114285468005564,
+    "valid": true,
+    "reason": "calibration 3.114x; cycles eq/ha 1.176x"
+  },
+  "results": {
+    "S-STR-01": {
+      "eqproxy": [
+        {
+          "scenario": "S-STR-01",
+          "product": "eqproxy",
+          "repetition": 1,
+          "generator": {
+            "mode": "load",
+            "target": "eqproxy:19651",
+            "conns": 32,
+            "body_bytes": 65536,
+            "warmup_s": 15,
+            "duration_s": 600,
+            "wall_s": 600.00202081,
+            "started_at": "2026-11-03T15:22:24.767433917Z",
+            "ended_at": "2026-11-03T15:32:39.769454727Z",
+            "connections": 32,
+            "reconnects": 0,
+            "cycles": 10159765,
+            "errors": 0,
+            "bytes_up": 665830359040,
+            "bytes_down": 665830359040,
+            "cycles_per_sec": 16932.884636428997,
+            "bytes_up_per_sec": 1109713527.5330107,
+            "bytes_down_per_sec": 1109713527.5330107,
+            "total_mib_per_sec": 2116.6105795536246,
+            "latency_ms": {
+              "count": 10159765,
+              "min": 0.116643,
+              "p50": 1.815981,
+              "p95": 2.917165,
+              "p99": 3.755187,
+              "max": 45.883921,
+              "mean": 1.8891079752887183,
+              "histogram": [
+                {
+                  "upper_ms": 0.1,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 0.25,
+                  "count": 3480
+                },
+                {
+                  "upper_ms": 0.5,
+                  "count": 7232
+                },
+                {
+                  "upper_ms": 1,
+                  "count": 274090
+                },
+                {
+                  "upper_ms": 2,
+                  "count": 6245040
+                },
+                {
+                  "upper_ms": 5,
+                  "count": 3607390
+                },
+                {
+                  "upper_ms": 10,
+                  "count": 21490
+                },
+                {
+                  "upper_ms": 20,
+                  "count": 936
+                },
+                {
+                  "upper_ms": 50,
+                  "count": 107
+                },
+                {
+                  "upper_ms": 100,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 200,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 500,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 1000,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 2000,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 0,
+                  "count": 0
+                }
+              ]
+            },
+            "generator_cpu_seconds": 880.981934,
+            "generator_cpu_pct_one_core": 146.82982780802612,
+            "sanity": "ok"
+          },
+          "resources": {
+            "proxy": {
+              "name": "strbench-eq",
+              "cpu_seconds": 1222.53,
+              "cpu_percent_one_core": 203.8,
+              "baseline_rss_bytes": 20004864,
+              "rss_bytes": 20803584,
+              "hwm_bytes": 21827584,
+              "memory_per_connection_bytes": 56960
+            },
+            "limits": {
+              "nano_cpus": 2000000000,
+              "memory_bytes": 2147483648,
+              "memory_swap_bytes": 2147483648
+            }
+          },
+          "config_sha256": "67e751948f6843f9d82432ebaf3d57cb8f7509240e3deb569600e7626b3c8fe7",
+          "raw_file": "raw/S-STR-01-eqproxy-rep1.json"
+        },
+        {
+          "scenario": "S-STR-01",
+          "product": "eqproxy",
+          "repetition": 2,
+          "generator": {
+            "mode": "load",
+            "target": "eqproxy:19651",
+            "conns": 32,
+            "body_bytes": 65536,
+            "warmup_s": 15,
+            "duration_s": 600,
+            "wall_s": 600.001836405,
+            "started_at": "2026-11-03T15:53:23.931686709Z",
+            "ended_at": "2026-11-03T16:03:38.933523124Z",
+            "connections": 32,
+            "reconnects": 0,
+            "cycles": 11026959,
+            "errors": 0,
+            "bytes_up": 722662785024,
+            "bytes_down": 722662785024,
+            "cycles_per_sec": 18378.208750275935,
+            "bytes_up_per_sec": 1204434288.6580837,
+            "bytes_down_per_sec": 1204434288.6580837,
+            "total_mib_per_sec": 2297.276093784492,
+            "latency_ms": {
+              "count": 11026959,
+              "min": 0.11568,
+              "p50": 1.692558,
+              "p95": 2.585535,
+              "p99": 3.307336,
+              "max": 43.234647,
+              "mean": 1.740548761330649,
+              "histogram": [
+                {
+                  "upper_ms": 0.1,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 0.25,
+                  "count": 4587
+                },
+                {
+                  "upper_ms": 0.5,
+                  "count": 9627
+                },
+                {
+                  "upper_ms": 1,
+                  "count": 447039
+                },
+                {
+                  "upper_ms": 2,
+                  "count": 7788395
+                },
+                {
+                  "upper_ms": 5,
+                  "count": 2764930
+                },
+                {
+                  "upper_ms": 10,
+                  "count": 11745
+                },
+                {
+                  "upper_ms": 20,
+                  "count": 543
+                },
+                {
+                  "upper_ms": 50,
+                  "count": 93
+                },
+                {
+                  "upper_ms": 100,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 200,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 500,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 1000,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 2000,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 0,
+                  "count": 0
+                }
+              ]
+            },
+            "generator_cpu_seconds": 892.696771,
+            "generator_cpu_pct_one_core": 148.78233979227883,
+            "sanity": "ok"
+          },
+          "resources": {
+            "proxy": {
+              "name": "strbench-eq",
+              "cpu_seconds": 1223.83,
+              "cpu_percent_one_core": 204.0,
+              "baseline_rss_bytes": 19898368,
+              "rss_bytes": 19845120,
+              "hwm_bytes": 21544960,
+              "memory_per_connection_bytes": 51456
+            },
+            "limits": {
+              "nano_cpus": 2000000000,
+              "memory_bytes": 2147483648,
+              "memory_swap_bytes": 2147483648
+            }
+          },
+          "config_sha256": "67e751948f6843f9d82432ebaf3d57cb8f7509240e3deb569600e7626b3c8fe7",
+          "raw_file": "raw/S-STR-01-eqproxy-rep2.json"
+        },
+        {
+          "scenario": "S-STR-01",
+          "product": "eqproxy",
+          "repetition": 3,
+          "generator": {
+            "mode": "load",
+            "target": "eqproxy:19651",
+            "conns": 32,
+            "body_bytes": 65536,
+            "warmup_s": 15,
+            "duration_s": 600,
+            "wall_s": 600.00113224,
+            "started_at": "2026-11-03T16:03:44.066739203Z",
+            "ended_at": "2026-11-03T16:13:59.067871443Z",
+            "connections": 32,
+            "reconnects": 0,
+            "cycles": 10804497,
+            "errors": 0,
+            "bytes_up": 708083515392,
+            "bytes_down": 708083515392,
+            "cycles_per_sec": 18007.46101872056,
+            "bytes_up_per_sec": 1180136965.3228707,
+            "bytes_down_per_sec": 1180136965.3228707,
+            "total_mib_per_sec": 2250.93262734007,
+            "latency_ms": {
+              "count": 10804497,
+              "min": 0.122001,
+              "p50": 1.720482,
+              "p95": 2.700156,
+              "p99": 3.376653,
+              "max": 46.184861,
+              "mean": 1.7763664457761228,
+              "histogram": [
+                {
+                  "upper_ms": 0.1,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 0.25,
+                  "count": 4065
+                },
+                {
+                  "upper_ms": 0.5,
+                  "count": 8713
+                },
+                {
+                  "upper_ms": 1,
+                  "count": 409403
+                },
+                {
+                  "upper_ms": 2,
+                  "count": 7345066
+                },
+                {
+                  "upper_ms": 5,
+                  "count": 3030552
+                },
+                {
+                  "upper_ms": 10,
+                  "count": 6448
+                },
+                {
+                  "upper_ms": 20,
+                  "count": 117
+                },
+                {
+                  "upper_ms": 50,
+                  "count": 133
+                },
+                {
+                  "upper_ms": 100,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 200,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 500,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 1000,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 2000,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 0,
+                  "count": 0
+                }
+              ]
+            },
+            "generator_cpu_seconds": 876.561256,
+            "generator_cpu_pct_one_core": 146.09326697893232,
+            "sanity": "ok"
+          },
+          "resources": {
+            "proxy": {
+              "name": "strbench-eq",
+              "cpu_seconds": 1224.41,
+              "cpu_percent_one_core": 204.1,
+              "baseline_rss_bytes": 19853312,
+              "rss_bytes": 20807680,
+              "hwm_bytes": 21712896,
+              "memory_per_connection_bytes": 58112
+            },
+            "limits": {
+              "nano_cpus": 2000000000,
+              "memory_bytes": 2147483648,
+              "memory_swap_bytes": 2147483648
+            }
+          },
+          "config_sha256": "67e751948f6843f9d82432ebaf3d57cb8f7509240e3deb569600e7626b3c8fe7",
+          "raw_file": "raw/S-STR-01-eqproxy-rep3.json"
+        },
+        {
+          "scenario": "S-STR-01",
+          "product": "eqproxy",
+          "repetition": 4,
+          "generator": {
+            "mode": "load",
+            "target": "eqproxy:19651",
+            "conns": 32,
+            "body_bytes": 65536,
+            "warmup_s": 15,
+            "duration_s": 600,
+            "wall_s": 600.001805842,
+            "started_at": "2026-11-03T16:34:43.284484727Z",
+            "ended_at": "2026-11-03T16:44:58.286290618Z",
+            "connections": 32,
+            "reconnects": 0,
+            "cycles": 9851403,
+            "errors": 0,
+            "bytes_up": 645621547008,
+            "bytes_down": 645621547008,
+            "cycles_per_sec": 16418.955583267354,
+            "bytes_up_per_sec": 1076032673.1050093,
+            "bytes_down_per_sec": 1076032673.1050093,
+            "total_mib_per_sec": 2052.3694479084193,
+            "latency_ms": {
+              "count": 9851403,
+              "min": 0.117394,
+              "p50": 1.867041,
+              "p95": 3.076124,
+              "p99": 3.799546,
+              "max": 36.824907,
+              "mean": 1.9482604640397627,
+              "histogram": [
+                {
+                  "upper_ms": 0.1,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 0.25,
+                  "count": 2847
+                },
+                {
+                  "upper_ms": 0.5,
+                  "count": 8085
+                },
+                {
+                  "upper_ms": 1,
+                  "count": 257053
+                },
+                {
+                  "upper_ms": 2,
+                  "count": 5606630
+                },
+                {
+                  "upper_ms": 5,
+                  "count": 3964581
+                },
+                {
+                  "upper_ms": 10,
+                  "count": 11939
+                },
+                {
+                  "upper_ms": 20,
+                  "count": 202
+                },
+                {
+                  "upper_ms": 50,
+                  "count": 66
+                },
+                {
+                  "upper_ms": 100,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 200,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 500,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 1000,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 2000,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 0,
+                  "count": 0
+                }
+              ]
+            },
+            "generator_cpu_seconds": 878.26014,
+            "generator_cpu_pct_one_core": 146.3762494460349,
+            "sanity": "ok"
+          },
+          "resources": {
+            "proxy": {
+              "name": "strbench-eq",
+              "cpu_seconds": 1223.97,
+              "cpu_percent_one_core": 204.0,
+              "baseline_rss_bytes": 19562496,
+              "rss_bytes": 20475904,
+              "hwm_bytes": 21528576,
+              "memory_per_connection_bytes": 61440
+            },
+            "limits": {
+              "nano_cpus": 2000000000,
+              "memory_bytes": 2147483648,
+              "memory_swap_bytes": 2147483648
+            }
+          },
+          "config_sha256": "67e751948f6843f9d82432ebaf3d57cb8f7509240e3deb569600e7626b3c8fe7",
+          "raw_file": "raw/S-STR-01-eqproxy-rep4.json"
+        },
+        {
+          "scenario": "S-STR-01",
+          "product": "eqproxy",
+          "repetition": 5,
+          "generator": {
+            "mode": "load",
+            "target": "eqproxy:19651",
+            "conns": 32,
+            "body_bytes": 65536,
+            "warmup_s": 15,
+            "duration_s": 600,
+            "wall_s": 600.001195156,
+            "started_at": "2026-11-03T16:45:03.18581954Z",
+            "ended_at": "2026-11-03T16:55:18.187014736Z",
+            "connections": 32,
+            "reconnects": 0,
+            "cycles": 9781605,
+            "errors": 0,
+            "bytes_up": 641047265280,
+            "bytes_down": 641047265280,
+            "cycles_per_sec": 16302.642526331614,
+            "bytes_up_per_sec": 1068409980.6056687,
+            "bytes_down_per_sec": 1068409980.6056687,
+            "total_mib_per_sec": 2037.8303157914518,
+            "latency_ms": {
+              "count": 9781605,
+              "min": 0.12161,
+              "p50": 1.877698,
+              "p95": 3.106301,
+              "p99": 3.900404,
+              "max": 35.179611,
+              "mean": 1.962158969845797,
+              "histogram": [
+                {
+                  "upper_ms": 0.1,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 0.25,
+                  "count": 2898
+                },
+                {
+                  "upper_ms": 0.5,
+                  "count": 7765
+                },
+                {
+                  "upper_ms": 1,
+                  "count": 243035
+                },
+                {
+                  "upper_ms": 2,
+                  "count": 5511422
+                },
+                {
+                  "upper_ms": 5,
+                  "count": 3998583
+                },
+                {
+                  "upper_ms": 10,
+                  "count": 17639
+                },
+                {
+                  "upper_ms": 20,
+                  "count": 179
+                },
+                {
+                  "upper_ms": 50,
+                  "count": 84
+                },
+                {
+                  "upper_ms": 100,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 200,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 500,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 1000,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 2000,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 0,
+                  "count": 0
+                }
+              ]
+            },
+            "generator_cpu_seconds": 887.8158460000001,
+            "generator_cpu_pct_one_core": 147.969012923244,
+            "sanity": "ok"
+          },
+          "resources": {
+            "proxy": {
+              "name": "strbench-eq",
+              "cpu_seconds": 1223.95,
+              "cpu_percent_one_core": 204.0,
+              "baseline_rss_bytes": 19566592,
+              "rss_bytes": 20324352,
+              "hwm_bytes": 21438464,
+              "memory_per_connection_bytes": 58496
+            },
+            "limits": {
+              "nano_cpus": 2000000000,
+              "memory_bytes": 2147483648,
+              "memory_swap_bytes": 2147483648
+            }
+          },
+          "config_sha256": "67e751948f6843f9d82432ebaf3d57cb8f7509240e3deb569600e7626b3c8fe7",
+          "raw_file": "raw/S-STR-01-eqproxy-rep5.json"
+        }
+      ],
+      "haproxy": [
+        {
+          "scenario": "S-STR-01",
+          "product": "haproxy",
+          "repetition": 1,
+          "generator": {
+            "mode": "load",
+            "target": "haproxy:19661",
+            "conns": 32,
+            "body_bytes": 65536,
+            "warmup_s": 15,
+            "duration_s": 600,
+            "wall_s": 600.002178243,
+            "started_at": "2026-11-03T15:32:44.59790844Z",
+            "ended_at": "2026-11-03T15:42:59.600086694Z",
+            "connections": 32,
+            "reconnects": 0,
+            "cycles": 8599756,
+            "errors": 0,
+            "bytes_up": 563593609216,
+            "bytes_down": 563593609216,
+            "cycles_per_sec": 14332.874632526937,
+            "bytes_up_per_sec": 939319271.9172853,
+            "bytes_down_per_sec": 939319271.9172853,
+            "total_mib_per_sec": 1791.609329065867,
+            "latency_ms": {
+              "count": 8599756,
+              "min": 0.11461,
+              "p50": 1.237416,
+              "p95": 3.34281,
+              "p99": 38.919482,
+              "max": 50.922194,
+              "mean": 2.2316197628879455,
+              "histogram": [
+                {
+                  "upper_ms": 0.1,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 0.25,
+                  "count": 60647
+                },
+                {
+                  "upper_ms": 0.5,
+                  "count": 681620
+                },
+                {
+                  "upper_ms": 1,
+                  "count": 2470840
+                },
+                {
+                  "upper_ms": 2,
+                  "count": 3466939
+                },
+                {
+                  "upper_ms": 5,
+                  "count": 1710004
+                },
+                {
+                  "upper_ms": 10,
+                  "count": 17364
+                },
+                {
+                  "upper_ms": 20,
+                  "count": 424
+                },
+                {
+                  "upper_ms": 50,
+                  "count": 191916
+                },
+                {
+                  "upper_ms": 100,
+                  "count": 2
+                },
+                {
+                  "upper_ms": 200,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 500,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 1000,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 2000,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 0,
+                  "count": 0
+                }
+              ]
+            },
+            "generator_cpu_seconds": 743.837372,
+            "generator_cpu_pct_one_core": 123.97244526314819,
+            "sanity": "ok"
+          },
+          "resources": {
+            "proxy": {
+              "name": "strbench-ha",
+              "cpu_seconds": 1230.11,
+              "cpu_percent_one_core": 205.0,
+              "baseline_rss_bytes": 53104640,
+              "rss_bytes": 54521856,
+              "hwm_bytes": 54521856,
+              "memory_per_connection_bytes": 44288
+            },
+            "limits": {
+              "nano_cpus": 2000000000,
+              "memory_bytes": 2147483648,
+              "memory_swap_bytes": 2147483648
+            }
+          },
+          "config_sha256": "acf7f4e7b9d100d0402069a49f0938ab461e522384f08ca2ded634c85c1a4e25",
+          "raw_file": "raw/S-STR-01-haproxy-rep1.json"
+        },
+        {
+          "scenario": "S-STR-01",
+          "product": "haproxy",
+          "repetition": 2,
+          "generator": {
+            "mode": "load",
+            "target": "haproxy:19661",
+            "conns": 32,
+            "body_bytes": 65536,
+            "warmup_s": 15,
+            "duration_s": 600,
+            "wall_s": 600.001401109,
+            "started_at": "2026-11-03T15:43:04.282749105Z",
+            "ended_at": "2026-11-03T15:53:19.284150213Z",
+            "connections": 32,
+            "reconnects": 0,
+            "cycles": 8636296,
+            "errors": 0,
+            "bytes_up": 565988294656,
+            "bytes_down": 565988294656,
+            "cycles_per_sec": 14393.793054545013,
+            "bytes_up_per_sec": 943311621.622662,
+            "bytes_down_per_sec": 943311621.622662,
+            "total_mib_per_sec": 1799.2241318181266,
+            "latency_ms": {
+              "count": 8636296,
+              "min": 0.113638,
+              "p50": 1.230926,
+              "p95": 3.414905,
+              "p99": 38.324285,
+              "max": 50.679707,
+              "mean": 2.2222575112906577,
+              "histogram": [
+                {
+                  "upper_ms": 0.1,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 0.25,
+                  "count": 68884
+                },
+                {
+                  "upper_ms": 0.5,
+                  "count": 684754
+                },
+                {
+                  "upper_ms": 1,
+                  "count": 2521871
+                },
+                {
+                  "upper_ms": 2,
+                  "count": 3389433
+                },
+                {
+                  "upper_ms": 5,
+                  "count": 1756394
+                },
+                {
+                  "upper_ms": 10,
+                  "count": 22603
+                },
+                {
+                  "upper_ms": 20,
+                  "count": 407
+                },
+                {
+                  "upper_ms": 50,
+                  "count": 191943
+                },
+                {
+                  "upper_ms": 100,
+                  "count": 7
+                },
+                {
+                  "upper_ms": 200,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 500,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 1000,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 2000,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 0,
+                  "count": 0
+                }
+              ]
+            },
+            "generator_cpu_seconds": 745.996493,
+            "generator_cpu_pct_one_core": 124.3324584944557,
+            "sanity": "ok"
+          },
+          "resources": {
+            "proxy": {
+              "name": "strbench-ha",
+              "cpu_seconds": 1230.01,
+              "cpu_percent_one_core": 205.0,
+              "baseline_rss_bytes": 53235712,
+              "rss_bytes": 54734848,
+              "hwm_bytes": 54734848,
+              "memory_per_connection_bytes": 46848
+            },
+            "limits": {
+              "nano_cpus": 2000000000,
+              "memory_bytes": 2147483648,
+              "memory_swap_bytes": 2147483648
+            }
+          },
+          "config_sha256": "acf7f4e7b9d100d0402069a49f0938ab461e522384f08ca2ded634c85c1a4e25",
+          "raw_file": "raw/S-STR-01-haproxy-rep2.json"
+        },
+        {
+          "scenario": "S-STR-01",
+          "product": "haproxy",
+          "repetition": 3,
+          "generator": {
+            "mode": "load",
+            "target": "haproxy:19661",
+            "conns": 32,
+            "body_bytes": 65536,
+            "warmup_s": 15,
+            "duration_s": 600,
+            "wall_s": 600.001006352,
+            "started_at": "2026-11-03T16:14:03.933175289Z",
+            "ended_at": "2026-11-03T16:24:18.934181642Z",
+            "connections": 32,
+            "reconnects": 0,
+            "cycles": 9109171,
+            "errors": 0,
+            "bytes_up": 596978630656,
+            "bytes_down": 596978630656,
+            "cycles_per_sec": 15181.926202730338,
+            "bytes_up_per_sec": 994962715.6221354,
+            "bytes_down_per_sec": 994962715.6221354,
+            "total_mib_per_sec": 1897.7407753412922,
+            "latency_ms": {
+              "count": 9109171,
+              "min": 0.10824,
+              "p50": 1.161698,
+              "p95": 3.101734,
+              "p99": 38.868483,
+              "max": 74.357877,
+              "mean": 2.1067354529621323,
+              "histogram": [
+                {
+                  "upper_ms": 0.1,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 0.25,
+                  "count": 79851
+                },
+                {
+                  "upper_ms": 0.5,
+                  "count": 799896
+                },
+                {
+                  "upper_ms": 1,
+                  "count": 2846622
+                },
+                {
+                  "upper_ms": 2,
+                  "count": 3632337
+                },
+                {
+                  "upper_ms": 5,
+                  "count": 1548567
+                },
+                {
+                  "upper_ms": 10,
+                  "count": 9860
+                },
+                {
+                  "upper_ms": 20,
+                  "count": 142
+                },
+                {
+                  "upper_ms": 50,
+                  "count": 191879
+                },
+                {
+                  "upper_ms": 100,
+                  "count": 17
+                },
+                {
+                  "upper_ms": 200,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 500,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 1000,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 2000,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 0,
+                  "count": 0
+                }
+              ]
+            },
+            "generator_cpu_seconds": 743.24887,
+            "generator_cpu_pct_one_core": 123.87460389757436,
+            "sanity": "ok"
+          },
+          "resources": {
+            "proxy": {
+              "name": "strbench-ha",
+              "cpu_seconds": 1230.04,
+              "cpu_percent_one_core": 205.0,
+              "baseline_rss_bytes": 53575680,
+              "rss_bytes": 55029760,
+              "hwm_bytes": 55029760,
+              "memory_per_connection_bytes": 45440
+            },
+            "limits": {
+              "nano_cpus": 2000000000,
+              "memory_bytes": 2147483648,
+              "memory_swap_bytes": 2147483648
+            }
+          },
+          "config_sha256": "acf7f4e7b9d100d0402069a49f0938ab461e522384f08ca2ded634c85c1a4e25",
+          "raw_file": "raw/S-STR-01-haproxy-rep3.json"
+        },
+        {
+          "scenario": "S-STR-01",
+          "product": "haproxy",
+          "repetition": 4,
+          "generator": {
+            "mode": "load",
+            "target": "haproxy:19661",
+            "conns": 32,
+            "body_bytes": 65536,
+            "warmup_s": 15,
+            "duration_s": 600,
+            "wall_s": 600.001270998,
+            "started_at": "2026-11-03T16:24:23.555398751Z",
+            "ended_at": "2026-11-03T16:34:38.556669749Z",
+            "connections": 32,
+            "reconnects": 0,
+            "cycles": 9094671,
+            "errors": 0,
+            "bytes_up": 596028358656,
+            "bytes_down": 596028358656,
+            "cycles_per_sec": 15157.752890877318,
+            "bytes_up_per_sec": 993378493.4565359,
+            "bytes_down_per_sec": 993378493.4565359,
+            "total_mib_per_sec": 1894.7191113596648,
+            "latency_ms": {
+              "count": 9094671,
+              "min": 0.113277,
+              "p50": 1.163431,
+              "p95": 3.125862,
+              "p99": 38.619671,
+              "max": 62.225149,
+              "mean": 2.110161876104251,
+              "histogram": [
+                {
+                  "upper_ms": 0.1,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 0.25,
+                  "count": 81495
+                },
+                {
+                  "upper_ms": 0.5,
+                  "count": 776265
+                },
+                {
+                  "upper_ms": 1,
+                  "count": 2851141
+                },
+                {
+                  "upper_ms": 2,
+                  "count": 3604098
+                },
+                {
+                  "upper_ms": 5,
+                  "count": 1578285
+                },
+                {
+                  "upper_ms": 10,
+                  "count": 11193
+                },
+                {
+                  "upper_ms": 20,
+                  "count": 256
+                },
+                {
+                  "upper_ms": 50,
+                  "count": 191921
+                },
+                {
+                  "upper_ms": 100,
+                  "count": 17
+                },
+                {
+                  "upper_ms": 200,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 500,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 1000,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 2000,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 0,
+                  "count": 0
+                }
+              ]
+            },
+            "generator_cpu_seconds": 745.020922,
+            "generator_cpu_pct_one_core": 124.16989063386225,
+            "sanity": "ok"
+          },
+          "resources": {
+            "proxy": {
+              "name": "strbench-ha",
+              "cpu_seconds": 1230.03,
+              "cpu_percent_one_core": 205.0,
+              "baseline_rss_bytes": 52920320,
+              "rss_bytes": 54427648,
+              "hwm_bytes": 54427648,
+              "memory_per_connection_bytes": 47104
+            },
+            "limits": {
+              "nano_cpus": 2000000000,
+              "memory_bytes": 2147483648,
+              "memory_swap_bytes": 2147483648
+            }
+          },
+          "config_sha256": "acf7f4e7b9d100d0402069a49f0938ab461e522384f08ca2ded634c85c1a4e25",
+          "raw_file": "raw/S-STR-01-haproxy-rep4.json"
+        },
+        {
+          "scenario": "S-STR-01",
+          "product": "haproxy",
+          "repetition": 5,
+          "generator": {
+            "mode": "load",
+            "target": "haproxy:19661",
+            "conns": 32,
+            "body_bytes": 65536,
+            "warmup_s": 15,
+            "duration_s": 600,
+            "wall_s": 600.000819257,
+            "started_at": "2026-11-03T16:55:22.925325313Z",
+            "ended_at": "2026-11-03T17:05:37.926144581Z",
+            "connections": 32,
+            "reconnects": 0,
+            "cycles": 8466055,
+            "errors": 0,
+            "bytes_up": 554831380480,
+            "bytes_down": 554831380480,
+            "cycles_per_sec": 14110.072400374025,
+            "bytes_up_per_sec": 924717704.8309121,
+            "bytes_down_per_sec": 924717704.8309121,
+            "total_mib_per_sec": 1763.7590500467531,
+            "latency_ms": {
+              "count": 8466055,
+              "min": 0.10878,
+              "p50": 1.251369,
+              "p95": 3.585891,
+              "p99": 38.038181,
+              "max": 72.627105,
+              "mean": 2.2669444776410512,
+              "histogram": [
+                {
+                  "upper_ms": 0.1,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 0.25,
+                  "count": 64321
+                },
+                {
+                  "upper_ms": 0.5,
+                  "count": 650767
+                },
+                {
+                  "upper_ms": 1,
+                  "count": 2415710
+                },
+                {
+                  "upper_ms": 2,
+                  "count": 3305368
+                },
+                {
+                  "upper_ms": 5,
+                  "count": 1799422
+                },
+                {
+                  "upper_ms": 10,
+                  "count": 36816
+                },
+                {
+                  "upper_ms": 20,
+                  "count": 1751
+                },
+                {
+                  "upper_ms": 50,
+                  "count": 191898
+                },
+                {
+                  "upper_ms": 100,
+                  "count": 2
+                },
+                {
+                  "upper_ms": 200,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 500,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 1000,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 2000,
+                  "count": 0
+                },
+                {
+                  "upper_ms": 0,
+                  "count": 0
+                }
+              ]
+            },
+            "generator_cpu_seconds": 744.697065,
+            "generator_cpu_pct_one_core": 124.11600802848601,
+            "sanity": "ok"
+          },
+          "resources": {
+            "proxy": {
+              "name": "strbench-ha",
+              "cpu_seconds": 1230.09,
+              "cpu_percent_one_core": 205.0,
+              "baseline_rss_bytes": 53022720,
+              "rss_bytes": 54538240,
+              "hwm_bytes": 54538240,
+              "memory_per_connection_bytes": 47360
+            },
+            "limits": {
+              "nano_cpus": 2000000000,
+              "memory_bytes": 2147483648,
+              "memory_swap_bytes": 2147483648
+            }
+          },
+          "config_sha256": "acf7f4e7b9d100d0402069a49f0938ab461e522384f08ca2ded634c85c1a4e25",
+          "raw_file": "raw/S-STR-01-haproxy-rep5.json"
+        }
+      ]
+    }
+  },
+  "summaries": {
+    "S-STR-01": {
+      "eqproxy": {
+        "cycles_per_sec": {
+          "median": 16932.884636428997,
+          "min": 16302.642526331614,
+          "max": 18378.208750275935
+        },
+        "total_mib_per_sec": {
+          "median": 2116.6105795536246,
+          "min": 2037.8303157914518,
+          "max": 2297.276093784492
+        },
+        "p50_ms": {
+          "median": 1.815981,
+          "min": 1.692558,
+          "max": 1.877698
+        },
+        "p95_ms": {
+          "median": 2.917165,
+          "min": 2.585535,
+          "max": 3.106301
+        },
+        "p99_ms": {
+          "median": 3.755187,
+          "min": 3.307336,
+          "max": 3.900404
+        },
+        "generator_cpu_pct_one_core": {
+          "median": 146.82982780802612,
+          "min": 146.09326697893232,
+          "max": 148.78233979227883
+        },
+        "proxy_cpu_pct_one_core": {
+          "median": 204.0,
+          "min": 203.8,
+          "max": 204.1
+        },
+        "rss_bytes": {
+          "median": 20475904.0,
+          "min": 19845120.0,
+          "max": 20807680.0
+        },
+        "hwm_bytes": {
+          "median": 21544960.0,
+          "min": 21438464.0,
+          "max": 21827584.0
+        },
+        "memory_per_connection_bytes": {
+          "median": 58112.0,
+          "min": 51456.0,
+          "max": 61440.0
+        },
+        "errors": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "reconnects": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "runs": 5
+      },
+      "haproxy": {
+        "cycles_per_sec": {
+          "median": 14393.793054545013,
+          "min": 14110.072400374025,
+          "max": 15181.926202730338
+        },
+        "total_mib_per_sec": {
+          "median": 1799.2241318181266,
+          "min": 1763.7590500467531,
+          "max": 1897.7407753412922
+        },
+        "p50_ms": {
+          "median": 1.230926,
+          "min": 1.161698,
+          "max": 1.251369
+        },
+        "p95_ms": {
+          "median": 3.34281,
+          "min": 3.101734,
+          "max": 3.585891
+        },
+        "p99_ms": {
+          "median": 38.619671,
+          "min": 38.038181,
+          "max": 38.919482
+        },
+        "generator_cpu_pct_one_core": {
+          "median": 124.11600802848601,
+          "min": 123.87460389757436,
+          "max": 124.3324584944557
+        },
+        "proxy_cpu_pct_one_core": {
+          "median": 205.0,
+          "min": 205.0,
+          "max": 205.0
+        },
+        "rss_bytes": {
+          "median": 54538240.0,
+          "min": 54427648.0,
+          "max": 55029760.0
+        },
+        "hwm_bytes": {
+          "median": 54538240.0,
+          "min": 54427648.0,
+          "max": 55029760.0
+        },
+        "memory_per_connection_bytes": {
+          "median": 46848.0,
+          "min": 44288.0,
+          "max": 47360.0
+        },
+        "errors": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "reconnects": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "runs": 5
+      },
+      "gaps": {
+        "metric_eq_over_ha": 1.1764018401725065,
+        "p50_ha_over_eq": 0.6778297790560583,
+        "p99_ha_over_eq": 10.284353615412494,
+        "cpu_ratio_eq_over_ha": 0.9951219512195122,
+        "memory_ratio_eq_over_ha": 0.3950431843785205,
+        "note": "throughput ratios > 1 favour EQProxy; latency ratios > 1 mean EQProxy had lower latency; cpu/memory ratios > 1 mean EQProxy used more."
+      },
+      "classification": "Better"
+    }
+  }
+}

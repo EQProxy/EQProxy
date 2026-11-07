@@ -1,0 +1,499 @@
+{
+  "mode": "load",
+  "target": "172.30.92.10:19030",
+  "conns": 32,
+  "warmup_s": 2,
+  "duration_s": 5,
+  "started_at": "2026-11-04T19:59:34.901051633Z",
+  "measure_started_at": "2026-11-04T19:59:36.901051633Z",
+  "ended_at": "2026-11-04T19:59:41.919205317Z",
+  "total": 163587,
+  "ok": 163587,
+  "success_a": 163587,
+  "success_b": 0,
+  "unknown_backend": 0,
+  "errors": 0,
+  "requests_per_sec": 32717.4,
+  "error_rate": 0,
+  "buckets": [
+    {
+      "at_ms": 0,
+      "total": 3136,
+      "a": 3136,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 100,
+      "total": 3762,
+      "a": 3762,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 200,
+      "total": 3358,
+      "a": 3358,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 300,
+      "total": 3492,
+      "a": 3492,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 400,
+      "total": 3345,
+      "a": 3345,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 500,
+      "total": 3344,
+      "a": 3344,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 600,
+      "total": 3542,
+      "a": 3542,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 700,
+      "total": 3604,
+      "a": 3604,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 800,
+      "total": 3689,
+      "a": 3689,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 900,
+      "total": 3878,
+      "a": 3878,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 1000,
+      "total": 3611,
+      "a": 3611,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 1100,
+      "total": 3358,
+      "a": 3358,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 1200,
+      "total": 2914,
+      "a": 2914,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 1300,
+      "total": 3103,
+      "a": 3103,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 1400,
+      "total": 3494,
+      "a": 3494,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 1500,
+      "total": 3252,
+      "a": 3252,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 1600,
+      "total": 2709,
+      "a": 2709,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 1700,
+      "total": 3275,
+      "a": 3275,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 1800,
+      "total": 3082,
+      "a": 3082,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 1900,
+      "total": 3247,
+      "a": 3247,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 2000,
+      "total": 3146,
+      "a": 3146,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 2100,
+      "total": 3068,
+      "a": 3068,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 2200,
+      "total": 3135,
+      "a": 3135,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 2300,
+      "total": 2975,
+      "a": 2975,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 2400,
+      "total": 3258,
+      "a": 3258,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 2500,
+      "total": 3391,
+      "a": 3391,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 2600,
+      "total": 3486,
+      "a": 3486,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 2700,
+      "total": 3015,
+      "a": 3015,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 2800,
+      "total": 3215,
+      "a": 3215,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 2900,
+      "total": 3077,
+      "a": 3077,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 3000,
+      "total": 3091,
+      "a": 3091,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 3100,
+      "total": 2996,
+      "a": 2996,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 3200,
+      "total": 2704,
+      "a": 2704,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 3300,
+      "total": 2989,
+      "a": 2989,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 3400,
+      "total": 2929,
+      "a": 2929,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 3500,
+      "total": 2926,
+      "a": 2926,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 3600,
+      "total": 2971,
+      "a": 2971,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 3700,
+      "total": 3197,
+      "a": 3197,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 3800,
+      "total": 3472,
+      "a": 3472,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 3900,
+      "total": 3258,
+      "a": 3258,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 4000,
+      "total": 3209,
+      "a": 3209,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 4100,
+      "total": 3452,
+      "a": 3452,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 4200,
+      "total": 3271,
+      "a": 3271,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 4300,
+      "total": 3408,
+      "a": 3408,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 4400,
+      "total": 3144,
+      "a": 3144,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 4500,
+      "total": 3490,
+      "a": 3490,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 4600,
+      "total": 3539,
+      "a": 3539,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 4700,
+      "total": 3347,
+      "a": 3347,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 4800,
+      "total": 3525,
+      "a": 3525,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 4900,
+      "total": 3708,
+      "a": 3708,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    },
+    {
+      "at_ms": 5000,
+      "total": 0,
+      "a": 0,
+      "b": 0,
+      "other": 0,
+      "errors": 0
+    }
+  ],
+  "latency_ms": {
+    "count": 163587,
+    "min": 0.067455,
+    "p50": 0.828767,
+    "p95": 2.155493,
+    "p99": 3.075082,
+    "max": 11.975641,
+    "mean": 0.976919990292619,
+    "histogram": [
+      {
+        "upper_ms": 0.1,
+        "count": 109
+      },
+      {
+        "upper_ms": 0.25,
+        "count": 9668
+      },
+      {
+        "upper_ms": 0.5,
+        "count": 33439
+      },
+      {
+        "upper_ms": 1,
+        "count": 54385
+      },
+      {
+        "upper_ms": 2,
+        "count": 54883
+      },
+      {
+        "upper_ms": 5,
+        "count": 10975
+      },
+      {
+        "upper_ms": 10,
+        "count": 127
+      },
+      {
+        "upper_ms": 20,
+        "count": 1
+      },
+      {
+        "upper_ms": 50,
+        "count": 0
+      },
+      {
+        "upper_ms": 100,
+        "count": 0
+      },
+      {
+        "upper_ms": 200,
+        "count": 0
+      },
+      {
+        "upper_ms": 500,
+        "count": 0
+      },
+      {
+        "upper_ms": 1000,
+        "count": 0
+      },
+      {
+        "upper_ms": 0,
+        "count": 0
+      }
+    ]
+  },
+  "errors_by_status": {},
+  "generator_cpu_seconds": 28.252204999999996,
+  "generator_cpu_pct_one_core": 565.0440999999998,
+  "sanity": "completed"
+}

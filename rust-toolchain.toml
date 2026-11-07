@@ -4,7 +4,7 @@
 # (repaired in 7da08df); with this file the arrival of a toolchain is a
 # deliberate, verified bump instead.
 #
-# CI and the darwin release build read the `channel` line below; the release
+# CI and the release build read the `channel` line below; the release
 # image's builder names the same version in docker/Dockerfile
 # (ARG RUST_VERSION) and a CI gate refuses a mismatch.
 [toolchain]

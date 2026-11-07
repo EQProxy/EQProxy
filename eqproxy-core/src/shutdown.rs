@@ -17,6 +17,19 @@ pub struct ShutdownHandle {
     tx: watch::Sender<bool>,
 }
 
+/// Why [`Shutdown::wait`] returned.
+///
+/// `Closed` is distinct from `Triggered`: every sender was dropped without
+/// firing the signal, so a task that must only stop on an explicit shutdown
+/// can tell the two apart instead of treating a dropped channel as a signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateOutcome {
+    /// The shutdown signal fired.
+    Triggered,
+    /// All senders were dropped before the signal fired.
+    Closed,
+}
+
 /// Creates the shutdown (sender, receiver) pair.
 #[must_use]
 pub fn channel() -> (ShutdownHandle, Shutdown) {
@@ -45,11 +58,17 @@ impl Shutdown {
     }
 
     /// Waits until shutdown fires (immediate when already triggered).
-    pub async fn wait(&mut self) {
+    ///
+    /// Returns [`GateOutcome::Closed`] when every sender disappeared without
+    /// triggering; the wait itself never loses that distinction.
+    pub async fn wait(&mut self) -> GateOutcome {
         if self.is_triggered() {
-            return;
+            return GateOutcome::Triggered;
         }
-        let _ = self.rx.wait_for(|triggered| *triggered).await;
+        match self.rx.wait_for(|triggered| *triggered).await {
+            Ok(_) => GateOutcome::Triggered,
+            Err(_) => GateOutcome::Closed,
+        }
     }
 }
 
@@ -78,10 +97,11 @@ mod tests {
             let waiting = tokio::spawn(async move { waiter.wait().await });
             assert!(!shutdown.is_triggered());
             handle.trigger();
-            tokio::time::timeout(Duration::from_secs(1), waiting)
+            let outcome = tokio::time::timeout(Duration::from_secs(1), waiting)
                 .await
                 .expect("wait() must return after trigger()")
                 .expect("the task must not fail");
+            assert_eq!(outcome, GateOutcome::Triggered);
             assert!(shutdown.is_triggered());
             assert!(handle.is_triggered());
         })
@@ -93,9 +113,23 @@ mod tests {
             let (handle, shutdown) = channel();
             handle.trigger();
             let mut waiter = shutdown;
-            tokio::time::timeout(Duration::from_secs(1), waiter.wait())
+            let outcome = tokio::time::timeout(Duration::from_secs(1), waiter.wait())
                 .await
                 .expect("wait() on an already-triggered signal must be immediate");
+            assert_eq!(outcome, GateOutcome::Triggered);
+        })
+    }
+
+    #[test]
+    fn dropped_sender_is_reported_as_closed_not_triggered() {
+        sin_driver_io(async {
+            let (handle, mut shutdown) = channel();
+            drop(handle);
+            let outcome = tokio::time::timeout(Duration::from_secs(1), shutdown.wait())
+                .await
+                .expect("a dropped sender must release the waiter");
+            assert_eq!(outcome, GateOutcome::Closed);
+            assert!(!shutdown.is_triggered());
         })
     }
 }

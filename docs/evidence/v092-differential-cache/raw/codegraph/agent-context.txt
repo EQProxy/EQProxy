@@ -1,0 +1,35 @@
+**The HIT/MISS decision is made in `Cache::lookup` (eqproxy-net/src/cache.rs:333), and the proxy turns its result into an action in `plan_cache` (eqproxy-net/src/http1.rs:1919) and `CachePhase::run` (eqproxy-net/src/http1.rs:3194). What proves reuse is the `x-cache: HIT` + `age:` marker written by `serve_cached` (eqproxy-net/src/http1.rs:2099), corroborated by the `cache_hits`/`cache_misses`/`cache_stores` counters and by tests asserting the origin was dialed only once.**
+
+### The decision
+`Cache::lookup(&key, req_headers, force_revalidate)` (eqproxy-net/src/cache.rs:333) does the actual work: it finds the key's variants in `inner.map`, picks the one whose `vary_values(req_headers, &entry.vary) == entry.vary_values`, calls `entry.note_use(now)`, then:
+
+- `if entry.fresh(now) && !force_revalidate { return Lookup::Hit(entry) }` — the HIT branch (cache.rs:348-350 approx, within 333-373).
+- stale + `etag`/`last_modified` present → registers an in-flight slot and returns `Lookup::Revalidate(entry)`.
+- another task already fetching → `Lookup::Wait(shared)`; otherwise `Lookup::Fetch` after inserting itself as owner.
+
+The result type is `enum Lookup { Hit, Fetch, Revalidate, Wait }` at eqproxy-net/src/cache.rs:207.
+
+### The translation into a proxy action
+`plan_cache` (eqproxy-net/src/http1.rs:1919-1976) first applies bypass rules (`Upgrade` request, unparsable forwarded head, `cache::decide` rejection — each increments `cache_bypasses` and returns `CacheAction::Off`), builds `CacheFetch` with `cache::base_key(method, scheme, forwarded.host, forwarded.target)`, then maps `Lookup::Hit → CacheAction::Serve(entry)`, `Lookup::Fetch → cache_misses++ / Origin`, `Lookup::Revalidate → cache_misses++ / Origin{stale}`.
+
+`CacheAction` is defined at eqproxy-net/src/http1.rs:1870 (`Off`, `Serve`, `Origin`, `Direct`, `Wait`) and `CacheFetch` at eqproxy-net/src/http1.rs:1886. `CachePhase::run` (eqproxy-net/src/http1.rs:3194) calls `plan_cache`, resolves any `Wait` through `resolve_cache_wait` (eqproxy-net/src/http1.rs:1980, which re-looks-up after `cache.wait` and can still land on `Serve` without dialing — i.e. a HIT reached through the waiter path), and then increments `metrics.cache_hits` plus `entry.hits` in the `if let CacheAction::Serve(entry)` block before calling `serve_cached`.
+
+Note one ambiguity: the code calls `cache::decide`, but the graph records that edge as eqproxy-net/src/proxy.rs `decide` (node `6e019b3e-5e4a-65ec-c534-fb44db785f61`) — a name-level mis-resolution worth confirming by reading cache.rs, not proxy.rs. `Decision { force_revalidate }` itself is at eqproxy-net/src/cache.rs:901.
+
+### What proves a stored response was reused
+1. `serve_cached` (eqproxy-net/src/http1.rs:2099) renders the response from the stored `cache::StoredEntry` (`cache::render_head(entry)`, `entry.age_secs()`), never dials, and appends `x-cache: HIT` — or `x-cache: REVALIDATED` when the entry was revalidated — plus an `age:` header. Absent header ⇒ bypass, not a miss.
+2. Counters: `cache_hits` on the serve path, `cache_misses` in `plan_cache` and `resolve_cache_wait`, `cache_stores` on the store path.
+3. Integration tests in eqproxy-net/tests/e2e_cache.rs:
+   - `miss_then_hit_serves_identical_bytes` (line 407): first response `x-cache: MISS`, second `x-cache: HIT`, byte-identical bodies, `age` present, and `origin.hits("/static") == 1` with the comment "the second request never dialed"; snapshots `cache_hits == 1`, `cache_misses == 1`, `cache_stores == 1`.
+   - `a_hit_serves_the_stored_bytes_after_the_origin_changes` (line 860): after the origin's body is changed to `static-body-v2`, the next request still returns `static-body-v1` with `x-cache: HIT` and origin hits stays 1 — the strongest proof the stored bytes, not a re-fetch, were served.
+   - `pipelined_hits_keep_the_next_request_on_the_connection` (line 806): two pipelined GETs both marked `HIT`, both `static-body-v1`, origin hits 1, `cache_hits == 2`.
+   - `entries_expire_after_their_ttl` (line 542): expired entry with validators yields `x-cache: REVALIDATED` and origin hits 2 — the counter-example showing when reuse is not claimed.
+   - `head_is_served_from_the_get_entry` (line 592): a HEAD is answered from the GET entry with `HIT` and correct `content-length`, origin hits 1.
+   - `cookie_affinity_disables_the_cache_at_runtime` (line 675): no `x-cache` header at all, `cache_bypasses == 3` — shows bypass is distinct from MISS.
+4. Unit-level: `miss_then_hit` (eqproxy-net/src/cache.rs:1456) asserts `Fetch` → `Wait` (while in-flight) → `complete(key, FetchOutcome::Stored(...))` → `Hit` with body `b"hello"`.
+
+### The differential suite's own HIT/MISS notion
+`eqproxy-cli/tests/differential.rs:430` defines `struct CacheCase { id, why, request, body_prefix, expect_hit }`, where `body_prefix` carries the backend id and `expect_hit: true` means the second response must equal the first while `false` means it must differ (origin reached again). It is the only node in that file the graph returned, so **the function that evaluates `expect_hit` and compares the two responses could not be identified** — search budget ran out before I could read the assertion site; grep `expect_hit` in eqproxy-cli/tests/differential.rs to find it.
+
+### Neighbours a change must account for
+`Lookup` (cache.rs:207) and `CacheAction` (http1.rs:1870) are both enums matched in `plan_cache`, `resolve_cache_wait` and `run`; `CacheFetch`/`CacheFetch.force_revalidate`/`stale` (http1.rs:1886) flow into the `Origin` and `Direct` variants; `serve_cached` is the only writer of the `x-cache` marker; and every test above asserts on that header and on the three counters. If you alter the HIT condition, the `miss_then_hit*.rs` tests, `entries_expire_after_their_ttl` and the differential `expect_hit` cases all encode the current contract.

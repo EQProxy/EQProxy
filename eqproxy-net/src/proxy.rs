@@ -806,8 +806,8 @@ pub struct ResolvedLimits {
     pub max_head_bytes: usize,
     /// Maximum header fields per message.
     pub max_headers: usize,
-    /// Maximum request body, bytes; `0` = unlimited.
-    pub max_body_bytes: u64,
+    /// Maximum request body, bytes; `None` = unlimited.
+    pub max_body_bytes: Option<std::num::NonZeroU64>,
     /// Internal stream pipe, bytes; `None` = protocol default.
     pub stream_buffer_bytes: Option<usize>,
 }
@@ -817,7 +817,7 @@ impl Default for ResolvedLimits {
         Self {
             max_head_bytes: crate::http1::MAX_HEAD_BYTES,
             max_headers: crate::http1::MAX_HEADERS,
-            max_body_bytes: 0,
+            max_body_bytes: None,
             stream_buffer_bytes: None,
         }
     }

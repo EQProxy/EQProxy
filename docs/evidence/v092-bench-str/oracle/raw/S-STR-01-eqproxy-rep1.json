@@ -1,0 +1,118 @@
+{
+  "scenario": "S-STR-01",
+  "product": "eqproxy",
+  "repetition": 1,
+  "generator": {
+    "mode": "load",
+    "target": "eqproxy:19651",
+    "conns": 16,
+    "body_bytes": 65536,
+    "warmup_s": 15,
+    "duration_s": 600,
+    "wall_s": 600.001176164,
+    "started_at": "2026-11-03T15:59:21.236749541Z",
+    "ended_at": "2026-11-03T16:09:36.237925705Z",
+    "connections": 16,
+    "reconnects": 0,
+    "cycles": 4284962,
+    "errors": 0,
+    "bytes_up": 280819269632,
+    "bytes_down": 280819269632,
+    "cycles_per_sec": 7141.589333866205,
+    "bytes_up_per_sec": 468031198.58425564,
+    "bytes_down_per_sec": 468031198.58425564,
+    "total_mib_per_sec": 892.6986667332757,
+    "latency_ms": {
+      "count": 4284962,
+      "min": 0.225801,
+      "p50": 2.087452,
+      "p95": 4.079942,
+      "p99": 5.241109,
+      "max": 22.700964,
+      "mean": 2.2394878368368984,
+      "histogram": [
+        {
+          "upper_ms": 0.1,
+          "count": 0
+        },
+        {
+          "upper_ms": 0.25,
+          "count": 11
+        },
+        {
+          "upper_ms": 0.5,
+          "count": 34702
+        },
+        {
+          "upper_ms": 1,
+          "count": 268882
+        },
+        {
+          "upper_ms": 2,
+          "count": 1668493
+        },
+        {
+          "upper_ms": 5,
+          "count": 2252704
+        },
+        {
+          "upper_ms": 10,
+          "count": 59828
+        },
+        {
+          "upper_ms": 20,
+          "count": 340
+        },
+        {
+          "upper_ms": 50,
+          "count": 2
+        },
+        {
+          "upper_ms": 100,
+          "count": 0
+        },
+        {
+          "upper_ms": 200,
+          "count": 0
+        },
+        {
+          "upper_ms": 500,
+          "count": 0
+        },
+        {
+          "upper_ms": 1000,
+          "count": 0
+        },
+        {
+          "upper_ms": 2000,
+          "count": 0
+        },
+        {
+          "upper_ms": 0,
+          "count": 0
+        }
+      ]
+    },
+    "generator_cpu_seconds": 488.98397700000004,
+    "generator_cpu_pct_one_core": 81.49716974327143,
+    "sanity": "ok"
+  },
+  "resources": {
+    "proxy": {
+      "name": "strbench-eq",
+      "cpu_seconds": 892.16,
+      "cpu_percent_one_core": 148.7,
+      "baseline_rss_bytes": 17092608,
+      "rss_bytes": 15609856,
+      "hwm_bytes": 16920576,
+      "memory_per_connection_bytes": 0
+    },
+    "limits": {
+      "nano_cpus": 2000000000,
+      "memory_bytes": 2147483648,
+      "memory_swap_bytes": 2147483648
+    }
+  },
+  "config_sha256": "67e751948f6843f9d82432ebaf3d57cb8f7509240e3deb569600e7626b3c8fe7",
+  "raw_file": "raw/S-STR-01-eqproxy-rep1.json"
+}

@@ -1,0 +1,43 @@
+[host] {"cpu_model": "aarch64", "docker": "client 29.1.3 / server 29.1.3", "docker_info": "aarch64 cpus=4 memory=25137336320", "host_memory_bytes": 25137336320, "images": {"eqproxy": {"created": "2026-11-02T22:55:09.130698706Z", "id": "5a2e16f8b4d219ef", "image": "eqproxy-bench:v092", "tags": "[eqproxy-bench:v092]"}, "haproxy": {"created": "2026-10-06T01:15:01.231653666Z", "id": "e273915691a8eab3", "image": "haproxy:3.4.6", "tags": "[haproxy:3.4.6]"}}, "load1_before": 1.04, "load_binary_sha256": "d815a69add1833a27e1d5ff262e3a5f1b1bfcd6ccb533d5b9255711587910900", "machine": "aarch64", "probe_binary_sha256": "8d18fdf87a6d51db84cefc4d5c6c432b01dbafe2b416e832cb74640c11980d6a", "uname": "Linux-7.0.0-1013-oracle-aarch64-with-glibc2.39"}
+[calibration] {"S-TCP-01": {"generator": {"bytes": 183830528, "connections": 75964, "connections_per_sec": 15192.8, "conns": 128, "duration_s": 5, "errors": 0, "generator_cpu_pct_one_core": 184.78379275060104, "generator_cpu_seconds": 11.098014000000001, "latency_ms": {"count": 75964, "histogram": [{"count": 0, "upper_ms": 0.1}, {"count": 1, "upper_ms": 0.25}, {"count": 19, "upper_ms": 0.5}, {"count": 223, "upper_ms": 1}, {"count": 934, "upper_ms": 2}, {"count": 10165, "upper_ms": 5}, {"count": 43156, "upper_ms": 10}, {"count": 21150, "upper_ms": 20}, {"count": 316, "upper_ms": 50}, {"count": 0, "upper_ms": 100}, {"count": 0, "upper_ms": 200}, {"count": 0, "upper_ms": 500}, {"count": 0, "upper_ms": 1000}, {"count": 0, "upper_ms": 2000}, {"count": 0, "upper_ms": 0}], "max": 31.258654, "mean": 8.406027298865268, "min": 0.232641, "p50": 8.058164, "p95": 14.739202, "p99": 18.350302}, "mode": "new", "payload_bytes": 1024, "requests": 75964, "requests_per_sec": 15192.8, "sanity": "ok", "target": "origin:19004", "wall_s": 6.005945562, "warmup_s": 1}, "note": "Direct TCP echo origin; no proxy in the path. The slower of generator/origin is the ceiling.", "origin_resources": {"cpu_percent_one_core": 138.0, "cpu_seconds": 8.985, "memory_baseline_bytes": 2715648, "memory_current_bytes": 9003008, "memory_peak_bytes": 19202048}}, "S-TCP-02": {"generator": {"bytes": 13175021568, "connections": 100, "connections_per_sec": 0, "conns": 100, "duration_s": 15, "errors": 0, "generator_cpu_pct_one_core": 161.77014517941282, "generator_cpu_seconds": 29.154164, "latency_ms": {"count": 1608279, "histogram": [{"count": 51073, "upper_ms": 0.1}, {"count": 181423, "upper_ms": 0.25}, {"count": 320752, "upper_ms": 0.5}, {"count": 478198, "upper_ms": 1}, {"count": 464155, "upper_ms": 2}, {"count": 106913, "upper_ms": 5}, {"count": 5655, "upper_ms": 10}, {"count": 110, "upper_ms": 20}, {"count": 0, "upper_ms": 50}, {"count": 0, "upper_ms": 100}, {"count": 0, "upper_ms": 200}, {"count": 0, "upper_ms": 500}, {"count": 0, "upper_ms": 1000}, {"count": 0, "upper_ms": 2000}, {"count": 0, "upper_ms": 0}], "max": 16.826054, "mean": 0.9173392590980578, "min": 0.01568, "p50": 0.737324, "p95": 2.274173, "p99": 3.970182}, "mode": "stream", "payload_bytes": 4096, "requests": 1608279, "requests_per_sec": 107218.6, "sanity": "ok", "target": "origin:19004", "wall_s": 18.021968125, "warmup_s": 3}, "note": "Direct TCP echo origin; no proxy in the path. The slower of generator/origin is the ceiling.", "origin_resources": {"cpu_percent_one_core": 136.0, "cpu_seconds": 25.283, "memory_baseline_bytes": 8658944, "memory_current_bytes": 7606272, "memory_peak_bytes": 19202048}}}
+[run] S-TCP-01 rep1 eqproxy
+[run] S-TCP-01 rep1 eqproxy: 1548.6 req/s, p50 16.736 ms, cpu 171.2%
+[run] S-TCP-01 rep1 haproxy
+[run] S-TCP-01 rep1 haproxy: 1650.8 req/s, p50 18.752 ms, cpu 174.5%
+[run] S-TCP-01 rep2 haproxy
+[run] S-TCP-01 rep2 haproxy: 1677.4 req/s, p50 18.654 ms, cpu 174.6%
+[run] S-TCP-01 rep2 eqproxy
+[run] S-TCP-01 rep2 eqproxy: 1581.4 req/s, p50 18.603 ms, cpu 169.5%
+[run] S-TCP-01 rep3 eqproxy
+[run] S-TCP-01 rep3 eqproxy: 1494.6 req/s, p50 17.167 ms, cpu 170.7%
+[run] S-TCP-01 rep3 haproxy
+[run] S-TCP-01 rep3 haproxy: 1642.4 req/s, p50 19.112 ms, cpu 174.7%
+[run] S-TCP-01 rep4 haproxy
+[run] S-TCP-01 rep4 haproxy: 1704.2 req/s, p50 19.706 ms, cpu 173.9%
+[run] S-TCP-01 rep4 eqproxy
+[run] S-TCP-01 rep4 eqproxy: 1468.0 req/s, p50 16.761 ms, cpu 172.7%
+[run] S-TCP-01 rep5 eqproxy
+[run] S-TCP-01 rep5 eqproxy: 1541.2 req/s, p50 16.124 ms, cpu 171.8%
+[run] S-TCP-01 rep5 haproxy
+[run] S-TCP-01 rep5 haproxy: 1601.4 req/s, p50 17.699 ms, cpu 173.8%
+[run] S-TCP-02 rep1 eqproxy
+[run] S-TCP-02 rep1 eqproxy: 43651.9 req/s, p50 2.172 ms, cpu 128.6%
+[run] S-TCP-02 rep1 haproxy
+[run] S-TCP-02 rep1 haproxy: 42307.2 req/s, p50 2.217 ms, cpu 139.5%
+[run] S-TCP-02 rep2 haproxy
+[run] S-TCP-02 rep2 haproxy: 44054.3 req/s, p50 2.129 ms, cpu 139.9%
+[run] S-TCP-02 rep2 eqproxy
+[run] S-TCP-02 rep2 eqproxy: 43064.3 req/s, p50 2.203 ms, cpu 127.8%
+[run] S-TCP-02 rep3 eqproxy
+[run] S-TCP-02 rep3 eqproxy: 43337.4 req/s, p50 2.183 ms, cpu 127.9%
+[run] S-TCP-02 rep3 haproxy
+[run] S-TCP-02 rep3 haproxy: 41597.9 req/s, p50 2.284 ms, cpu 141.7%
+[run] S-TCP-02 rep4 haproxy
+[run] S-TCP-02 rep4 haproxy: 44018.0 req/s, p50 2.160 ms, cpu 141.2%
+[run] S-TCP-02 rep4 eqproxy
+[run] S-TCP-02 rep4 eqproxy: 43782.1 req/s, p50 2.178 ms, cpu 128.1%
+[run] S-TCP-02 rep5 eqproxy
+[run] S-TCP-02 rep5 eqproxy: 37950.3 req/s, p50 2.440 ms, cpu 116.3%
+[run] S-TCP-02 rep5 haproxy
+[run] S-TCP-02 rep5 haproxy: 41380.3 req/s, p50 2.319 ms, cpu 143.2%
+[done] /home/ubuntu/eqproxy-tcp/run-20261103T140807Z (20 runs)

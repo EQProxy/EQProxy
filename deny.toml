@@ -35,6 +35,12 @@ allow = [
     "Zlib",
 ]
 
+# CDDL-1.0 is allowed only for inferno, the flamegraph renderer of the
+# optional `profile` feature (ADR-0049). It is not a global allowance.
+[[licenses.exceptions]]
+name = "inferno"
+allow = ["CDDL-1.0"]
+
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"

@@ -652,12 +652,7 @@ async fn rules_route_by_path_host_method_header_and_ip() {
             RuleSpec {
                 name: "trusted-ip".to_owned(),
                 ip: vec!["127.0.0.0/8".to_owned()],
-                headers: vec![HeaderSpec {
-                    name: "x-trace".to_owned(),
-                    exact: None,
-                    regex: None,
-                    present: true,
-                }],
+                headers: vec![HeaderSpec::present("x-trace")],
                 ..RuleSpec::default()
             },
             "trusted",
@@ -1446,22 +1441,12 @@ async fn canary_by_cookie_and_header_overrides_route_to_the_canary() {
     let routes = vec![
         to_canary(RuleSpec {
             name: "by-header".to_owned(),
-            headers: vec![HeaderSpec {
-                name: "x-canary".to_owned(),
-                exact: Some("always".to_owned()),
-                regex: None,
-                present: false,
-            }],
+            headers: vec![HeaderSpec::exact("x-canary", "always")],
             ..RuleSpec::default()
         }),
         to_canary(RuleSpec {
             name: "by-cookie".to_owned(),
-            cookies: vec![eqproxy_core::rules::CookieSpec {
-                name: "canary".to_owned(),
-                exact: Some("always".to_owned()),
-                regex: None,
-                present: false,
-            }],
+            cookies: vec![eqproxy_core::rules::CookieSpec::exact("canary", "always")],
             ..RuleSpec::default()
         }),
     ];

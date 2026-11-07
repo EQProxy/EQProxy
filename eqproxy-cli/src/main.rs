@@ -13,6 +13,9 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+#[cfg(feature = "profile")]
+mod profile;
+
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -38,22 +41,35 @@ use eqproxy_net::{
 };
 
 /// Writes a generated report to stdout, treating a reader that closed the
-/// pipe as success.
+/// pipe as success and reporting every other I/O failure to the caller.
 ///
 /// `println!` panics on `EPIPE`, so `eqproxy config explain | head` used to
 /// abort with "failed printing to stdout: Broken pipe" once the reader had
-/// seen enough. Printing a report is best-effort: the reader stopping early
-/// is not an error and must not turn a successful command into a panic.
-fn emit_report(text: &str) {
+/// seen enough. A reader stopping early is not an error; a real write error
+/// must reach the command's exit status instead of being swallowed.
+fn emit_report(text: &str) -> std::io::Result<()> {
     use std::io::{ErrorKind, Write as _};
     let mut out = std::io::stdout().lock();
-    match out
+    let result = out
         .write_all(text.as_bytes())
         .and_then(|()| out.write_all(b"\n"))
-    {
-        Ok(()) => {}
-        Err(err) if err.kind() == ErrorKind::BrokenPipe => {}
-        Err(err) => eprintln!("error: could not write the report to stdout: {err}"),
+        .and_then(|()| out.flush());
+    match result {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == ErrorKind::BrokenPipe => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+/// Emits a report and turns a real stdout failure into the command's
+/// failure path. The helper keeps every caller from silently ignoring it.
+fn emit_report_or_exit(text: &str) -> Option<u8> {
+    match emit_report(text) {
+        Ok(()) => None,
+        Err(err) => {
+            eprintln!("error: could not write the report to stdout: {err}");
+            Some(1)
+        }
     }
 }
 
@@ -180,20 +196,27 @@ enum ConfigCommand {
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
+    // Sampling covers the whole invocation and is dumped after `run` returns,
+    // which is the graceful shutdown path. Without the feature or without
+    // `EQPROXY_PPROF_DIR` this is a no-op and costs nothing.
+    #[cfg(feature = "profile")]
+    let profiler = profile::start();
     let code = match cli.command {
         Command::Run {
             config,
             metrics_interval,
         } => run(config, metrics_interval).await,
-        Command::Config { command } => config_command(command),
+        Command::Config { command } => config_command(command).await,
         Command::Doctor { config } => doctor(config.as_deref()),
     };
+    #[cfg(feature = "profile")]
+    profile::finish(profiler);
     ExitCode::from(code)
 }
 
-fn config_command(command: ConfigCommand) -> u8 {
+async fn config_command(command: ConfigCommand) -> u8 {
     match command {
-        ConfigCommand::Validate { config } => validate(&config),
+        ConfigCommand::Validate { config } => validate(&config).await,
         ConfigCommand::Explain {
             config,
             listener,
@@ -213,7 +236,7 @@ fn config_command(command: ConfigCommand) -> u8 {
         ),
         ConfigCommand::Diff { left, right } => diff(&left, &right),
         ConfigCommand::Plan { config } => plan(&config),
-        ConfigCommand::Apply { config } => apply(&config),
+        ConfigCommand::Apply { config } => apply(&config).await,
         ConfigCommand::Schema { output } => schema(output.as_deref()),
         ConfigCommand::Rollback => rollback(),
         ConfigCommand::Import {
@@ -247,10 +270,7 @@ fn schema(output: Option<&std::path::Path>) -> u8 {
             }
             0
         }
-        None => {
-            emit_report(&schema);
-            0
-        }
+        None => emit_report_or_exit(&schema).unwrap_or_default(),
     }
 }
 
@@ -280,17 +300,47 @@ fn parse_and_check(source: &str, path: &Path) -> Result<(Config, CheckResult), C
     Ok((config, result))
 }
 
-fn validate(path: &Path) -> u8 {
-    let (config, result) = match load_and_check(path) {
-        Ok(loaded) => loaded,
-        Err(err) => {
-            eprintln!("{err}");
-            return 1;
-        }
-    };
-    for warning in &result.warnings {
-        eprintln!("warning: {warning}");
-    }
+/// How much preparation a [`gate`] call performs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GateMode {
+    /// Semantic checks plus resolution; never opens the access log
+    /// (ADR-0020). Used by `config validate` and `config apply`.
+    Check,
+    /// Full serving preparation: metrics, access log, shared registries and
+    /// live backends. Used by `run`.
+    Serve,
+}
+
+/// What the gate proved before a command may write state or bind.
+struct Prepared {
+    config: Config,
+    listeners: Vec<ResolvedListener>,
+    admin: Option<ResolvedAdmin>,
+    serve: Option<ServePrepared>,
+}
+
+/// Process resources created only for a serving generation.
+struct ServePrepared {
+    metrics: Arc<Metrics>,
+    modes: Arc<eqproxy_net::ServerModes>,
+    live_backends: Vec<Arc<ResolvedBackend>>,
+    access: Option<Arc<eqproxy_net::AccessLog>>,
+    access_handle: Option<eqproxy_net::AccessHandle>,
+}
+
+/// The single fail-closed gate shared by `validate`, `apply` and `run`.
+///
+/// Callers keep ownership of reading and parsing because `apply` must gate
+/// the exact bytes it stores (one read, including `/dev/stdin`). The gate
+/// owns the decisions that follow: semantic errors, resolution, the
+/// zero-listener rule and the admin plane. `Check` never opens the access
+/// log (ADR-0020); warnings are printed only after every check passes.
+async fn gate(
+    config: Config,
+    result: CheckResult,
+    path: &Path,
+    mode: GateMode,
+) -> Result<Prepared, u8> {
     if !result.is_valid() {
         for err in &result.errors {
             eprintln!("{err}");
@@ -300,18 +350,106 @@ fn validate(path: &Path) -> u8 {
             result.errors.len(),
             path.display()
         );
-        return 1;
+        return Err(1);
     }
-    // Resolution loads certificates/keys and verifies the config is
-    // really usable (addresses, TLS, balancing), not just parseable.
-    if let Err(msg) = resolve(&config, base_dir(path)) {
-        eprintln!("error: inconsistent configuration after validation: {msg}");
-        return 1;
+
+    let base = base_dir(path);
+    let mut serve = None;
+    let listeners = match mode {
+        GateMode::Check => {
+            if let Some(access_cfg) = access_settings(&config, base)
+                && let Err(err) = eqproxy_net::AccessLog::probe(&access_cfg)
+            {
+                eprintln!("error: access log cannot be opened: {err}");
+                return Err(1);
+            }
+            match resolve(&config, base) {
+                Ok(listeners) => listeners,
+                Err(msg) => {
+                    eprintln!("error: inconsistent configuration after validation: {msg}");
+                    return Err(1);
+                }
+            }
+        }
+        GateMode::Serve => {
+            let metrics = Arc::new(Metrics::with_detail(
+                config.metrics.detailed,
+                config.metrics.max_series,
+            ));
+            let access_handle = match access_settings(&config, base) {
+                Some(access_cfg) => {
+                    match eqproxy_net::AccessLog::start(&access_cfg, Arc::clone(&metrics)).await {
+                        Ok(handle) => Some(handle),
+                        Err(err) => {
+                            eprintln!("error: access log cannot be opened: {err}");
+                            return Err(1);
+                        }
+                    }
+                }
+                None => None,
+            };
+            let access = access_handle.as_ref().map(|handle| Arc::clone(&handle.log));
+            let modes = Arc::new(eqproxy_net::ServerModes::new());
+            let (listeners, live_backends) =
+                match resolve_with(&config, base, &modes, access.as_ref(), &metrics) {
+                    Ok(resolved) => resolved,
+                    Err(msg) => {
+                        eprintln!("error: inconsistent configuration after validation: {msg}");
+                        return Err(1);
+                    }
+                };
+            serve = Some(ServePrepared {
+                metrics,
+                modes,
+                live_backends,
+                access,
+                access_handle,
+            });
+            listeners
+        }
+    };
+
+    if listeners.is_empty() {
+        eprintln!("error: the configuration defines no listeners; nothing to serve");
+        return Err(1);
     }
+
+    let admin = match resolve_admin(&config, base) {
+        Ok(admin) => admin,
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            return Err(1);
+        }
+    };
+
+    for warning in &result.warnings {
+        eprintln!("warning: {warning}");
+    }
+
+    Ok(Prepared {
+        config,
+        listeners,
+        admin,
+        serve,
+    })
+}
+
+async fn validate(path: &Path) -> u8 {
+    let (config, result) = match load_and_check(path) {
+        Ok(loaded) => loaded,
+        Err(err) => {
+            eprintln!("{err}");
+            return 1;
+        }
+    };
+    let prepared = match gate(config, result, path, GateMode::Check).await {
+        Ok(prepared) => prepared,
+        Err(code) => return code,
+    };
     println!(
         "config OK: {} listener(s), {} backend(s) in {}",
-        config.listener.len(),
-        config.backend.len(),
+        prepared.config.listener.len(),
+        prepared.config.backend.len(),
         path.display()
     );
     0
@@ -349,8 +487,7 @@ fn diff(left: &Path, right: &Path) -> u8 {
         eprintln!("invalid config: refusing to diff until both sides validate");
         return 1;
     }
-    emit_report(&diff_report(&left_config, &right_config));
-    0
+    emit_report_or_exit(&diff_report(&left_config, &right_config)).unwrap_or_default()
 }
 
 /// Renders the comparison. Pure function of the two parsed configs
@@ -656,10 +793,10 @@ fn explain(
             return 1;
         }
     };
-    emit_report(&explain_report(
+    emit_report_or_exit(&explain_report(
         &config, listener, method, host, req_path, &headers, client_ip,
-    ));
-    0
+    ))
+    .unwrap_or_default()
 }
 
 /// Shows what `run` would activate from this config, without starting
@@ -698,8 +835,7 @@ fn plan(path: &Path) -> u8 {
         eprintln!("error: the configuration defines no listeners; nothing to serve");
         return 1;
     }
-    emit_report(&plan_report(&config, &listeners));
-    0
+    emit_report_or_exit(&plan_report(&config, &listeners)).unwrap_or_default()
 }
 
 /// Renders the activation inventory. Pure function of the validated config
@@ -931,7 +1067,7 @@ fn atomic_write(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
 ///
 /// This touches no running process: hot-apply under traffic stays pending
 /// (S-CFG-01); the operator keeps pointing `run --config` at their file.
-fn apply(path: &Path) -> u8 {
+async fn apply(path: &Path) -> u8 {
     // Single read: the bytes gate the config AND become the stored
     // current (pipes like /dev/stdin cannot be read twice).
     let candidate = match std::fs::read(path) {
@@ -955,26 +1091,13 @@ fn apply(path: &Path) -> u8 {
             return 1;
         }
     };
-    for warning in &result.warnings {
-        eprintln!("warning: {warning}");
-    }
-    if !result.is_valid() {
-        for err in &result.errors {
-            eprintln!("{err}");
-        }
-        return 1;
-    }
-    let listeners = match resolve(&config, base_dir(path)) {
-        Ok(listeners) => listeners,
-        Err(msg) => {
-            eprintln!("error: inconsistent configuration after validation: {msg}");
-            return 1;
-        }
+    let prepared = match gate(config, result, path, GateMode::Check).await {
+        Ok(prepared) => prepared,
+        Err(code) => return code,
     };
-    if listeners.is_empty() {
-        eprintln!("error: the configuration defines no listeners; nothing to serve");
-        return 1;
-    }
+    let Prepared {
+        config, listeners, ..
+    } = prepared;
 
     let dir = state_dir();
     let history = dir.join("history");
@@ -1034,7 +1157,9 @@ fn apply(path: &Path) -> u8 {
                 current.display(),
                 changes.len()
             );
-            emit_report(&diff_report(&prev, &config));
+            if let Some(code) = emit_report_or_exit(&diff_report(&prev, &config)) {
+                return code;
+            }
         }
         None => {
             println!(
@@ -1042,7 +1167,9 @@ fn apply(path: &Path) -> u8 {
                 path.display(),
                 current.display()
             );
-            emit_report(&plan_report(&config, &listeners));
+            if let Some(code) = emit_report_or_exit(&plan_report(&config, &listeners)) {
+                return code;
+            }
         }
     }
     0
@@ -1211,11 +1338,15 @@ fn rollback() -> u8 {
                 "rolled back: current restored from {name} ({} difference(s) vs applied)",
                 changes.len()
             );
-            emit_report(&diff_report(&prev, &config));
+            if let Some(code) = emit_report_or_exit(&diff_report(&prev, &config)) {
+                return code;
+            }
         }
         None => {
             println!("rolled back: current restored from {name} (no previous current to compare)");
-            emit_report(&plan_report(&config, &listeners));
+            if let Some(code) = emit_report_or_exit(&plan_report(&config, &listeners)) {
+                return code;
+            }
         }
     }
     0
@@ -2507,7 +2638,8 @@ impl ConfigApplier {
 fn resolve(config: &Config, base_dir: &Path) -> Result<Vec<ResolvedListener>, String> {
     // One-off registry: the check paths (`config validate`, `plan`) only need
     // the listeners, and no state can be declared there. No access sink: a
-    // validation command never opens a log file (ADR-0020). The cache gets
+    // validation command never creates or writes a log file (ADR-0020); the
+    // gate probes a configured destination separately. The cache gets
     // a throwaway registry: validation still loads the disk (a bad
     // directory rejects the candidate) but counts nothing live.
     resolve_with(
@@ -2709,10 +2841,22 @@ fn resolve_with(
             // the runtime share the matcher grammar), order preserved.
             let mut routes = Vec::with_capacity(listener.rules.len());
             for (i, rule) in listener.rules.iter().enumerate() {
-                let compiled =
-                    eqproxy_core::rules::Rule::compile(&rule.to_spec(i)).map_err(|why| {
-                        format!("listener.{name}.rules[{i}].{}: {}", why.field, why.cause)
-                    })?;
+                let spec = rule.to_spec(i).map_err(|why| {
+                    let at = why
+                        .field
+                        .as_deref()
+                        .map(|field| format!(".{field}"))
+                        .unwrap_or_default();
+                    format!("listener.{name}.rules[{i}]{at}: {}", why.cause)
+                })?;
+                let compiled = eqproxy_core::rules::Rule::compile(&spec).map_err(|why| {
+                    let at = why
+                        .field
+                        .as_deref()
+                        .map(|field| format!(".{field}"))
+                        .unwrap_or_default();
+                    format!("listener.{name}.rules[{i}]{at}: {}", why.cause)
+                })?;
                 // The rewrite applies to the forwarded request on both
                 // forwarding actions (`use_backend` and `split`).
                 let rewrite = || {
@@ -3184,66 +3328,33 @@ async fn run(path: PathBuf, metrics_interval: String) -> u8 {
             return 1;
         }
     };
-    for warning in &result.warnings {
-        eprintln!("warning: {warning}");
-    }
-    if !result.is_valid() {
-        for err in &result.errors {
-            eprintln!("{err}");
-        }
-        return 1;
-    }
-
-    // CE4: the detail registry exists from startup; whether it records, and
-    // the budget it can never exceed, come from the configuration.
-    let metrics = Arc::new(Metrics::with_detail(
-        config.metrics.detailed,
-        config.metrics.max_series,
-    ));
-    // Access log (ADR-0020): opened once, before any listener serves. A
-    // configured sink the process cannot open is a startup error, never a
-    // silent downgrade.
-    let access_handle = match access_settings(&config, base_dir(&path)) {
-        Some(access_cfg) => {
-            match eqproxy_net::AccessLog::start(&access_cfg, Arc::clone(&metrics)).await {
-                Ok(handle) => Some(handle),
-                Err(err) => {
-                    eprintln!("error: access log cannot be opened: {err}");
-                    return 1;
-                }
-            }
-        }
-        None => None,
+    let prepared = match gate(config, result, &path, GateMode::Serve).await {
+        Ok(prepared) => prepared,
+        Err(code) => return code,
     };
-    let access = access_handle.as_ref().map(|handle| Arc::clone(&handle.log));
-    // One registry for the whole process: the admin plane writes to it and
-    // every balancer (startup and each SIGHUP reload) reads it (ADR-0018).
-    let modes = Arc::new(eqproxy_net::ServerModes::new());
-    let (listeners, live_backends) =
-        match resolve_with(&config, base_dir(&path), &modes, access.as_ref(), &metrics) {
-            Ok(resolved) => resolved,
-            Err(msg) => {
-                eprintln!("error: inconsistent configuration after validation: {msg}");
-                return 1;
-            }
-        };
-    if listeners.is_empty() {
-        eprintln!("error: the configuration defines no listeners; nothing to serve");
+    let Prepared {
+        config,
+        listeners,
+        admin: admin_cfg,
+        serve,
+    } = prepared;
+    let Some(serve) = serve else {
+        eprintln!("error: internal error: the serving gate returned no serving state");
         return 1;
-    }
-    let admin_cfg = match resolve_admin(&config, base_dir(&path)) {
-        Ok(admin) => admin,
-        Err(msg) => {
-            eprintln!("error: {msg}");
-            return 1;
-        }
     };
+    let ServePrepared {
+        metrics,
+        modes,
+        live_backends,
+        access,
+        access_handle,
+    } = serve;
 
     // The shutdown and reload signals are armed before any listener is bound
     // or announced. `tokio::signal::unix::signal` installs the OS handler when
-    // it is called, so a SIGINT or SIGHUP arriving the instant the first
-    // socket is ready finds the handler instead of the default action, which
-    // terminates the process without a clean shutdown or a reload.
+    // it is called, so a SIGINT, SIGTERM or SIGHUP arriving the instant the
+    // first socket is ready finds the handler instead of the default action,
+    // which terminates the process without a clean shutdown or a reload.
     let (handle, signal) = shutdown::channel();
     // One queue for every configuration mutation (ADR-0019): the admin API
     // and SIGHUP both land here, so the revision check and the swap it
@@ -3260,12 +3371,25 @@ async fn run(path: PathBuf, metrics_interval: String) -> u8 {
                     return 1;
                 }
             };
+        // SIGTERM is the default `docker stop` signal, so it must drain and
+        // report the final metrics exactly like Ctrl-C; without this handler
+        // the process dies with 143 and the profiler never writes its dump.
+        let mut terminate =
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(terminate) => terminate,
+                Err(err) => {
+                    eprintln!("ERROR SIGTERM handler unavailable: {err}");
+                    return 1;
+                }
+            };
         let signal_handle = handle.clone();
         tokio::spawn(async move {
-            if interrupt.recv().await.is_some() {
-                eprintln!("INFO shutdown signal received; draining connections");
-                signal_handle.trigger();
+            tokio::select! {
+                _ = interrupt.recv() => {}
+                _ = terminate.recv() => {}
             }
+            eprintln!("INFO shutdown signal received; draining connections");
+            signal_handle.trigger();
         });
 
         // SIGHUP → hot config reload (S-CFG-01, unix). The signal does not

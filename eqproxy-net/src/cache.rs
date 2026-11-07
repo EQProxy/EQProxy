@@ -223,6 +223,15 @@ pub struct SharedFetch {
     result: Mutex<Option<FetchResult>>,
 }
 
+/// Reads the published outcome. Kept out of [`Cache::wait`] so the lock is
+/// acquired and released in a synchronous helper, never around an `.await`.
+fn published_result(shared: &SharedFetch) -> Option<FetchResult> {
+    *shared
+        .result
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// What the fetch owner publishes to the waiters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FetchResult {
@@ -376,16 +385,21 @@ impl Cache {
     /// the waiter fetches on its own rather than piling up behind a stuck
     /// fetch. `Some(Gone)` is a failed or unstorable fetch: same fallback.
     pub async fn wait(&self, shared: &SharedFetch) -> Option<FetchResult> {
-        let notified =
-            tokio::time::timeout(self.settings.lock_wait, shared.notify.notified()).await;
-        if notified.is_err() {
-            return None;
+        // Register interest before looking at `result`: `notify_waiters`
+        // only wakes waiters that are already registered, and `complete`
+        // may run between those two operations. `enable` makes this future
+        // visible to the notifier; checking `result` afterwards closes the
+        // remaining window (a completion that happened before `enable`).
+        let notified = shared.notify.notified();
+        tokio::pin!(notified);
+        let _ = notified.as_mut().enable();
+        if let Some(result) = published_result(shared) {
+            return Some(result);
         }
-        let guard = shared
-            .result
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *guard
+        match tokio::time::timeout(self.settings.lock_wait, notified).await {
+            Ok(()) => published_result(shared),
+            Err(_) => None,
+        }
     }
 
     /// Reports the fetch outcome: inserts (with eviction and write-through)
@@ -470,23 +484,8 @@ impl Cache {
         let weight = entry.weight();
         let old_weight = old.weight();
         let path = self.disk_file(&key, &entry.vary_values);
-        let mut evicted_files = Vec::new();
-        {
-            let mut inner = self.lock();
-            inner.bytes = inner.bytes.saturating_sub(old_weight);
-            evict_locked(
-                &self.settings,
-                &mut inner,
-                weight,
-                &self.metrics,
-                &mut evicted_files,
-            );
-            inner.bytes += weight;
-            if let Some(variants) = inner.map.get_mut(&key) {
-                variants.retain(|existing| existing.vary_values != entry.vary_values);
-                variants.push(entry);
-            }
-        }
+        let (evicted_files, stored) =
+            self.refresh_store(&key, entry, &old.vary_values, weight, old_weight);
         if !evicted_files.is_empty() {
             tokio::task::spawn_blocking(move || {
                 for stale in evicted_files {
@@ -499,12 +498,6 @@ impl Cache {
         self.metrics
             .cache_revalidations
             .fetch_add(1, Ordering::Relaxed);
-        let stored = self.lock().map.get(&key).and_then(|variants| {
-            variants
-                .iter()
-                .find(|existing| existing.vary_values == old.vary_values)
-                .cloned()
-        });
         if let Some(stored) = stored {
             self.persist_variant(&key, &stored, &path).await;
         }
@@ -580,34 +573,7 @@ impl Cache {
         // Disk files are per variant (key + `Vary` values), so evicting one
         // variant never resurrects it from another variant's file.
         let variant_file = self.disk_file(&key, &entry.vary_values);
-        let mut evicted_files = Vec::new();
-        {
-            let mut inner = self.lock();
-            evict_locked(
-                &self.settings,
-                &mut inner,
-                weight,
-                &self.metrics,
-                &mut evicted_files,
-            );
-            // Same variant stored twice (owner + direct fallback racing):
-            // keep the newest.
-            let replaced = inner
-                .map
-                .get(&key)
-                .map(|variants| {
-                    variants
-                        .iter()
-                        .filter(|existing| existing.vary_values == entry.vary_values)
-                        .map(|existing| existing.weight())
-                        .sum()
-                })
-                .unwrap_or(0);
-            inner.bytes = inner.bytes.saturating_sub(replaced) + weight;
-            let variants = inner.map.entry(key.clone()).or_default();
-            variants.retain(|existing| existing.vary_values != entry.vary_values);
-            variants.push(Arc::clone(&entry));
-        }
+        let evicted_files = self.insert_store(&key, &entry, weight);
         if !evicted_files.is_empty() {
             tokio::task::spawn_blocking(move || {
                 for stale in evicted_files {
@@ -622,23 +588,7 @@ impl Cache {
     }
 
     async fn remove(&self, key: &CacheKey) {
-        let paths: Vec<PathBuf> = {
-            let mut inner = self.lock();
-            match inner.map.remove(key) {
-                Some(variants) => {
-                    let weight = variants.iter().map(|entry| entry.weight()).sum();
-                    inner.bytes = inner.bytes.saturating_sub(weight);
-                    self.metrics
-                        .cache_evictions
-                        .fetch_add(variants.len() as u64, Ordering::Relaxed);
-                    variants
-                        .iter()
-                        .map(|entry| self.disk_file(key, &entry.vary_values))
-                        .collect()
-                }
-                None => Vec::new(),
-            }
-        };
+        let paths = self.remove_store(key);
         if !paths.is_empty() {
             tokio::task::spawn_blocking(move || {
                 for path in paths {
@@ -647,6 +597,97 @@ impl Cache {
             })
             .await
             .ok();
+        }
+    }
+
+    /// Applies one revalidation to the map. Synchronous by construction: the
+    /// guard is acquired and released here, so it can never cross an await.
+    fn refresh_store(
+        &self,
+        key: &CacheKey,
+        entry: Arc<StoredEntry>,
+        old_vary_values: &[String],
+        weight: usize,
+        old_weight: usize,
+    ) -> (Vec<PathBuf>, Option<Arc<StoredEntry>>) {
+        let mut evicted_files = Vec::new();
+        let mut inner = self.lock();
+        inner.bytes = inner.bytes.saturating_sub(old_weight);
+        evict_locked(
+            &self.settings,
+            &mut inner,
+            weight,
+            &self.metrics,
+            &mut evicted_files,
+        );
+        inner.bytes += weight;
+        if let Some(variants) = inner.map.get_mut(key) {
+            variants.retain(|existing| existing.vary_values != entry.vary_values);
+            variants.push(entry);
+        }
+        let stored = inner.map.get(key).and_then(|variants| {
+            variants
+                .iter()
+                .find(|existing| existing.vary_values.as_slice() == old_vary_values)
+                .cloned()
+        });
+        (evicted_files, stored)
+    }
+
+    /// Applies one store to the map; the caller performs persistence after
+    /// this synchronous critical section returns.
+    fn insert_store(
+        &self,
+        key: &CacheKey,
+        entry: &Arc<StoredEntry>,
+        weight: usize,
+    ) -> Vec<PathBuf> {
+        let mut evicted_files = Vec::new();
+        let mut inner = self.lock();
+        evict_locked(
+            &self.settings,
+            &mut inner,
+            weight,
+            &self.metrics,
+            &mut evicted_files,
+        );
+        // Same variant stored twice (owner + direct fallback racing): keep
+        // the newest.
+        let replaced = inner
+            .map
+            .get(key)
+            .map(|variants| {
+                variants
+                    .iter()
+                    .filter(|existing| existing.vary_values == entry.vary_values)
+                    .map(|existing| existing.weight())
+                    .sum()
+            })
+            .unwrap_or(0);
+        inner.bytes = inner.bytes.saturating_sub(replaced) + weight;
+        let variants = inner.map.entry(key.clone()).or_default();
+        variants.retain(|existing| existing.vary_values != entry.vary_values);
+        variants.push(Arc::clone(entry));
+        evicted_files
+    }
+
+    /// Removes every variant of one key and returns the disk files to delete
+    /// after the guard is gone.
+    fn remove_store(&self, key: &CacheKey) -> Vec<PathBuf> {
+        let mut inner = self.lock();
+        match inner.map.remove(key) {
+            Some(variants) => {
+                let weight = variants.iter().map(|entry| entry.weight()).sum();
+                inner.bytes = inner.bytes.saturating_sub(weight);
+                self.metrics
+                    .cache_evictions
+                    .fetch_add(variants.len() as u64, Ordering::Relaxed);
+                variants
+                    .iter()
+                    .map(|entry| self.disk_file(key, &entry.vary_values))
+                    .collect()
+            }
+            None => Vec::new(),
         }
     }
 
@@ -1450,6 +1491,74 @@ mod tests {
             ttl: Duration::from_secs(60),
             stored_at_unix: unix_now(),
         }
+    }
+
+    #[tokio::test]
+    async fn a_completion_before_wait_is_not_lost() {
+        let cache = Cache::load(
+            CacheSettings {
+                lock_wait: Duration::from_millis(50),
+                ..settings()
+            },
+            metrics(),
+        )
+        .expect("builds");
+        let key = key();
+        assert!(matches!(cache.lookup(&key, &[], false), Lookup::Fetch));
+        let shared = match cache.lookup(&key, &[], false) {
+            Lookup::Wait(shared) => shared,
+            _ => panic!("the second lookup must wait on the in-flight fetch"),
+        };
+        cache.complete(key, FetchOutcome::Stored(parts(200))).await;
+        assert_eq!(
+            cache.wait(&shared).await,
+            Some(FetchResult::Ready),
+            "a completion published before wait() must not be lost"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wait_observes_a_later_completion() {
+        let cache = Cache::load(
+            CacheSettings {
+                lock_wait: Duration::from_secs(1),
+                ..settings()
+            },
+            metrics(),
+        )
+        .expect("builds");
+        let key = key();
+        assert!(matches!(cache.lookup(&key, &[], false), Lookup::Fetch));
+        let shared = match cache.lookup(&key, &[], false) {
+            Lookup::Wait(shared) => shared,
+            _ => panic!("the second lookup must wait on the in-flight fetch"),
+        };
+        let wait = cache.wait(&shared);
+        let complete = async {
+            tokio::task::yield_now().await;
+            cache.complete(key, FetchOutcome::Stored(parts(200))).await;
+        };
+        let (result, ()) = tokio::join!(wait, complete);
+        assert_eq!(result, Some(FetchResult::Ready));
+    }
+
+    #[tokio::test]
+    async fn a_wait_times_out_without_a_completion() {
+        let cache = Cache::load(
+            CacheSettings {
+                lock_wait: Duration::from_millis(10),
+                ..settings()
+            },
+            metrics(),
+        )
+        .expect("builds");
+        let key = key();
+        assert!(matches!(cache.lookup(&key, &[], false), Lookup::Fetch));
+        let shared = match cache.lookup(&key, &[], false) {
+            Lookup::Wait(shared) => shared,
+            _ => panic!("the second lookup must wait on the in-flight fetch"),
+        };
+        assert_eq!(cache.wait(&shared).await, None);
     }
 
     #[tokio::test]

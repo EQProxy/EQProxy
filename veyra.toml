@@ -9,6 +9,12 @@
 binaries = ["eqproxy"]
 timeout_seconds = 60
 
+# v0.9.1 is the published baseline. The workspace is not on crates.io, so
+# without an explicit Git tag cargo-semver-checks would skip the check.
+[semver]
+baseline = "v0.9.1"
+release_type = "patch"
+
 # Real happy path: a valid config is accepted and reports the summary.
 # /dev/stdin delivers the config via stdin without checkout paths.
 [[e2e.scenarios]]

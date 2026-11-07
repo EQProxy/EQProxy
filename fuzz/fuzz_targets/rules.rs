@@ -51,11 +51,11 @@ fuzz_target!(|data: &[u8]| {
                 1 => raw.split_once('~').unwrap_or((raw.as_str(), "")),
                 _ => (raw.trim_end_matches('!'), ""),
             };
-            spec.headers.push(HeaderSpec {
-                name: name.to_owned(),
-                exact: (kind == 0).then(|| value.to_owned()),
-                regex: (kind == 1).then(|| value.to_owned()),
-                present: kind == 2,
+            let name = name.to_owned();
+            spec.headers.push(match kind {
+                0 => HeaderSpec::exact(name, value),
+                1 => HeaderSpec::regex(name, value),
+                _ => HeaderSpec::present(name),
             });
         }
     }

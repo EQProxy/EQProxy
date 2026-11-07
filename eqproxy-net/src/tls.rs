@@ -474,6 +474,15 @@ pub fn server_config_with_sni_and_max(
         builder.with_no_client_auth().with_cert_resolver(resolver)
     };
     config.alpn_protocols = alpn.iter().map(|proto| proto.as_bytes().to_vec()).collect();
+    // TLS 1.3 session resumption (A16). rustls is stateless by default: without
+    // a ticketer every handshake is full, even when the client presents a
+    // ticket. The aws-lc-rs ticketer is the provider already linked (no new
+    // dependency) and rotates its keys every 6 h with a 12 h lifetime. It is
+    // intentionally not operator-configurable in this slice: a shared key is
+    // required across instances, and that is a deployment concern, not a
+    // per-listener tuning knob.
+    config.ticketer = rustls::crypto::aws_lc_rs::Ticketer::new()
+        .map_err(|e| TlsError::Config(format!("TLS session ticket keys: {e}")))?;
     let fingerprint =
         material_fingerprint(cert_chain_pem, key_pem, sni, client_ca_pem, alpn, min, max);
     let non_certificate_fingerprint = fixed_material_fingerprint(client_ca_pem, alpn, min, max);
@@ -686,13 +695,13 @@ impl ServerCertVerifier for NoVerifier {
 mod tests {
     use super::*;
 
-    const CERT: &[u8] = include_bytes!("../tests/fixtures/cert.pem");
-    const KEY: &[u8] = include_bytes!("../tests/fixtures/key.pem");
-    const ALPHA: &[u8] = include_bytes!("../tests/fixtures/alpha.pem");
-    const ALPHA_KEY: &[u8] = include_bytes!("../tests/fixtures/alpha.key");
-    const BETA: &[u8] = include_bytes!("../tests/fixtures/beta.pem");
-    const BETA_KEY: &[u8] = include_bytes!("../tests/fixtures/beta.key");
-    const MTLS_CA: &[u8] = include_bytes!("../tests/fixtures/mtls-ca.pem");
+    const CERT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/cert.pem"));
+    const KEY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/key.pem"));
+    const ALPHA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/alpha.pem"));
+    const ALPHA_KEY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/alpha.key"));
+    const BETA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/beta.pem"));
+    const BETA_KEY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/beta.key"));
+    const MTLS_CA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/mtls-ca.pem"));
 
     /// Leaf DER of a PEM chain (what the handshake serves).
     fn leaf(pem: &[u8]) -> Vec<u8> {
@@ -970,6 +979,86 @@ mod tests {
             !live.can_adopt_certificates(&wider),
             "a live QUIC endpoint freezes the version range"
         );
+    }
+
+    #[cfg_attr(miri, ignore = "uses rustls/aws-lc-rs (FFI not emulatable by miri)")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tls13_session_ticket_resumes_on_a_second_connection() {
+        use rustls::HandshakeKind;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::{TcpListener, TcpStream};
+
+        async fn echo(acceptor: TlsAcceptor, io: TcpStream) {
+            let mut stream = acceptor.accept(io).await.expect("server handshake");
+            let mut buf = [0u8; 4];
+            stream.read_exact(&mut buf).await.expect("read request");
+            stream.write_all(&buf).await.expect("write echo");
+            stream.shutdown().await.expect("close");
+        }
+
+        async fn one(
+            connector: TlsConnector,
+            name: ServerName<'static>,
+            addr: SocketAddr,
+        ) -> HandshakeKind {
+            let client_io = TcpStream::connect(addr).await.expect("TCP connect");
+            let mut client = connector
+                .connect(name, client_io)
+                .await
+                .expect("client handshake");
+            let kind = client
+                .get_ref()
+                .1
+                .handshake_kind()
+                .expect("handshake completed");
+            client.write_all(b"ping").await.expect("write request");
+            let mut got = [0u8; 4];
+            client.read_exact(&mut got).await.expect("read echo");
+            assert_eq!(&got, b"ping");
+            // The server may close first after writing the echo; a second
+            // close_notify is then a BrokenPipe, not a failed resume.
+            let _ = client.shutdown().await;
+            kind
+        }
+
+        let server = server_config(CERT, KEY, None, &["http/1.1".to_owned()], TlsVersion::V1_3)
+            .expect("server config");
+        let acceptor = TlsAcceptor::from(Arc::clone(&server.config));
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind real TCP listener");
+        let addr = listener.local_addr().expect("listener address");
+        let server_task = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().await.expect("accept");
+                tokio::spawn(echo(acceptor.clone(), stream));
+            }
+        });
+        let mut roots = RootCertStore::empty();
+        for cert in parse_certs(CERT).expect("fixture certificate") {
+            roots.add(cert).expect("fixture root");
+        }
+        let mut client_config =
+            rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+        client_config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        let connector = TlsConnector::from(Arc::new(client_config));
+        let name = ServerName::try_from("localhost".to_owned()).expect("server name");
+
+        let first = one(connector.clone(), name.clone(), addr).await;
+        assert_ne!(
+            first,
+            HandshakeKind::Resumed,
+            "the first connection has no ticket to resume"
+        );
+        let second = one(connector, name, addr).await;
+        assert_eq!(
+            second,
+            HandshakeKind::Resumed,
+            "the ticket from the first connection must resume the second"
+        );
+        server_task.await.expect("server listener task");
     }
 
     #[cfg_attr(miri, ignore = "uses rustls/aws-lc-rs (FFI not emulatable by miri)")]

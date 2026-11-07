@@ -31,8 +31,8 @@ use eqproxy_net::{
 mod common;
 
 const WAIT: Duration = Duration::from_secs(10);
-const CERT: &[u8] = include_bytes!("fixtures/cert.pem");
-const KEY: &[u8] = include_bytes!("fixtures/key.pem");
+const CERT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/cert.pem"));
+const KEY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/key.pem"));
 
 fn http_listener(server: SocketAddr) -> ResolvedListener {
     ResolvedListener::new(
@@ -344,6 +344,39 @@ async fn h2_decodes_chunked_responses_and_keeps_trailers() {
     );
     let trailers = trailers.expect("h1 trailers must arrive as h2 trailers");
     assert_eq!(trailers.get("x-checksum").expect("trailer"), "abc123");
+    drop(send);
+    stop_proxy(handle, serve).await;
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs TCP sockets: miri does not support networking (rust-lang/miri#3449)"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn h2_default_pipe_relays_a_megabyte_response_without_truncation() {
+    // The default h2 client-stream pipe is 16 KiB (ADR-0048). A 1 MiB
+    // response must cross it with backpressure, not be truncated or dropped.
+    const BODY: usize = 1024 * 1024;
+    let mut raw = format!("HTTP/1.1 200 OK\r\ncontent-length: {BODY}\r\nconnection: close\r\n\r\n")
+        .into_bytes();
+    raw.resize(raw.len() + BODY, b'x');
+    let raw: &'static [u8] = Box::leak(raw.into_boxed_slice());
+
+    let origin = start_raw_origin(raw).await;
+    let (proxy, handle, serve) = start_proxy(http_listener(origin)).await;
+    let mut send = h2_connect(proxy).await;
+
+    let response = tokio::time::timeout(WAIT, h2_get(&mut send, "/large"))
+        .await
+        .expect("response in time");
+    let (status, _headers, body, _trailers) = read_response(response).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body.len(), BODY, "the whole response body must arrive");
+    assert!(
+        body.iter().all(|byte| *byte == b'x'),
+        "the response body must not be corrupted"
+    );
+
     drop(send);
     stop_proxy(handle, serve).await;
 }

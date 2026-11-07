@@ -24,11 +24,13 @@ use eqproxy_net::{
 mod common;
 
 const WAIT: Duration = Duration::from_secs(5);
-const MTLS_CA: &[u8] = include_bytes!("fixtures/mtls-ca.pem");
-const MTLS_SERVER: &[u8] = include_bytes!("fixtures/mtls-server.pem");
-const MTLS_SERVER_KEY: &[u8] = include_bytes!("fixtures/mtls-server.key");
-const MTLS_CLIENT: &[u8] = include_bytes!("fixtures/mtls-client.pem");
-const MTLS_CLIENT_KEY: &[u8] = include_bytes!("fixtures/mtls-client.key");
+const MTLS_CA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/mtls-ca.pem"));
+const MTLS_SERVER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/mtls-server.pem"));
+const MTLS_SERVER_KEY: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/mtls-server.key"));
+const MTLS_CLIENT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/mtls-client.pem"));
+const MTLS_CLIENT_KEY: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/mtls-client.key"));
 
 // ---------------------------------------------------------------- helpers ---
 
@@ -998,8 +1000,8 @@ async fn tls_roundtrip_ok(proxy: SocketAddr, connector: tokio_rustls::TlsConnect
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn hot_reload_swaps_tls_material_on_the_kept_socket() {
-    const OLD_CERT: &[u8] = include_bytes!("fixtures/cert.pem");
-    const OLD_KEY: &[u8] = include_bytes!("fixtures/key.pem");
+    const OLD_CERT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/cert.pem"));
+    const OLD_KEY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/key.pem"));
 
     let echo = start_echo().await;
     let metrics = Arc::new(Metrics::default());
@@ -1595,8 +1597,8 @@ fn mtls_client_connector(with_client_cert: bool, wrong_cert: bool) -> tokio_rust
     let mut config = if with_client_cert {
         let (cert_pem, key_pem): (&[u8], &[u8]) = if wrong_cert {
             (
-                include_bytes!("fixtures/cert.pem"),
-                include_bytes!("fixtures/key.pem"),
+                include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/cert.pem")),
+                include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/key.pem")),
             )
         } else {
             (MTLS_CLIENT, MTLS_CLIENT_KEY)

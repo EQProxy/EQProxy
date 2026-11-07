@@ -1,0 +1,52 @@
+{
+  "binary": "./eqproxy-v093",
+  "duration_requested_s": 360,
+  "duration_actual_s": 360.0,
+  "target_rate_rps": 200.0,
+  "workers": 64,
+  "requests_ok": 72000,
+  "cpu_budget": 0.5,
+  "fd_budget": 512,
+  "fd_growth_budget": 16,
+  "requests_errors": 0,
+  "requests_bad_status": 0,
+  "achieved_rps": 200.0,
+  "latency_ms": {
+    "avg": 2.664,
+    "p50": 4,
+    "p95": 4,
+    "p99": 8
+  },
+  "backend_a_requests": 36000,
+  "backend_b_requests": 36000,
+  "proxy_exit_code": 0,
+  "budgets": {
+    "steady_rss_mib": 25.67,
+    "peak_rss_mib": 27.03,
+    "steady_cpu_cores": 0.016,
+    "peak_fds": 138,
+    "fd_growth": 7,
+    "fd_net_growth": 7,
+    "fd_range": 7,
+    "error_rate_pct": 0.0,
+    "clean_shutdown": true,
+    "budget_steady_rss_mib": 64,
+    "budget_peak_rss_mib": 128,
+    "budget_steady_cpu_cores": 0.5,
+    "budget_peak_fds": 512,
+    "budget_fd_growth": 16,
+    "gate_seconds": 86400,
+    "rss_measured": true,
+    "cpu_measured": true,
+    "fds_measured": true,
+    "warmup_completed": true,
+    "full_window": false,
+    "validation_only": true,
+    "pass": true,
+    "gate_pass": false
+  },
+  "host": {
+    "uname": "Linux 6.8.0-147-generic x86_64",
+    "cpus": 8
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "binary": "/root/eqproxy-v092/eqproxy-v093",
+  "binary_sha256": "854fbd02ea2f6883e6aef209b8fbe6f544b394c9f900136056e0c648c29c2579",
+  "host": {
+    "system": "Linux",
+    "release": "6.8.0-147-generic",
+    "machine": "x86_64",
+    "cpus": 8
+  },
+  "scenarios": [
+    {
+      "name": "fd",
+      "pass": true,
+      "nofile": 64,
+      "connections_opened": 183,
+      "connect_errors": 1,
+      "alive_during_exhaustion": true,
+      "recovery_status": 200,
+      "proxy_exit_code": 0,
+      "accept_failures_logged": 24,
+      "panic": false
+    },
+    {
+      "name": "queue",
+      "pass": true,
+      "clients": 3,
+      "statuses": [
+        503,
+        503,
+        200
+      ],
+      "backend_requests": 1,
+      "alive": true,
+      "proxy_exit_code": 0
+    },
+    {
+      "name": "memory",
+      "pass": true,
+      "declared_body_bytes": 131072,
+      "limit_bytes": 65536,
+      "status": 413,
+      "backend_requests_after_big": 0,
+      "recovery_status": 200,
+      "alive": true,
+      "proxy_exit_code": 0
+    }
+  ],
+  "pass": true
+}

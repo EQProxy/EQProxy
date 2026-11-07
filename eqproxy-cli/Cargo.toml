@@ -10,16 +10,32 @@ description = "EQProxy CLI: run, config validate and operations commands"
 name = "eqproxy"
 path = "src/main.rs"
 
+[features]
+# Profiling-only build (never enabled in the release image): a SIGPROF
+# sampler integrated in the process. `perf` cannot be used on the evidence
+# hosts (`kernel.perf_event_paranoid=4`), and pprof's timer needs no
+# perf_event_open. The dump is written on the normal shutdown path when
+# `EQPROXY_PPROF_DIR` is set.
+profile = ["dep:pprof", "dep:inferno"]
+
 [dependencies]
 clap = { workspace = true }
 # Global allocator (ADR-0014): musl's single-lock malloc measured ~20 % of
 # S-H3-01 CPU plus futex wakeups; mimalloc keeps per-thread free lists.
 mimalloc = { version = "0.1", default-features = false }
+# Profiling-only dependencies (feature `profile`). `pprof`'s `flamegraph`
+# feature pins inferno 0.11 / quick-xml 0.26 (RUSTSEC-2026-0194/0195), so the
+# SVG is rendered here with inferno 0.12 directly (ADR-0049). No protobuf
+# codec: `protoc` is not needed to build.
+pprof = { version = "0.15", default-features = false, optional = true }
+inferno = { version = "0.12.8", default-features = false, features = [
+    "nameattr",
+], optional = true }
 rlimit = { workspace = true }
 tokio = { workspace = true }
-eqproxy-core = { path = "../eqproxy-core", version = "0.9.1" }
-eqproxy-config = { path = "../eqproxy-config", version = "0.9.1" }
-eqproxy-net = { path = "../eqproxy-net", version = "0.9.1" }
+eqproxy-core = { path = "../eqproxy-core", version = "0.9.2" }
+eqproxy-config = { path = "../eqproxy-config", version = "0.9.2" }
+eqproxy-net = { path = "../eqproxy-net", version = "0.9.2" }
 
 [lints]
 workspace = true

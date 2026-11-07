@@ -32,12 +32,13 @@ use eqproxy_net::{
 mod common;
 
 const WAIT: Duration = Duration::from_secs(10);
-const CERT: &[u8] = include_bytes!("fixtures/cert.pem");
-const KEY: &[u8] = include_bytes!("fixtures/key.pem");
+const CERT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/cert.pem"));
+const KEY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/key.pem"));
 // Rotation target: a different chain (and root) for the same name.
-const MTLS_SERVER: &[u8] = include_bytes!("fixtures/mtls-server.pem");
-const MTLS_SERVER_KEY: &[u8] = include_bytes!("fixtures/mtls-server.key");
-const MTLS_CA: &[u8] = include_bytes!("fixtures/mtls-ca.pem");
+const MTLS_SERVER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/mtls-server.pem"));
+const MTLS_SERVER_KEY: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/mtls-server.key"));
+const MTLS_CA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/mtls-ca.pem"));
 
 // ---------------------------------------------------------------- harness ---
 

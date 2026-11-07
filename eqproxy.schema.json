@@ -879,7 +879,7 @@
           "minimum": 0
         },
         "stream_buffer_bytes": {
-          "description": "Buffer of each internal h2/h3/WebSocket stream pipe, in bytes.\nAbsent = the protocol default (64 KiB; 16 KiB for h3), which is what\nthe dataplane used before this knob existed. Present: 1024..=1048576.",
+          "description": "Buffer of each internal stream pipe, in bytes.\nAbsent = the protocol default: 16 KiB for the h2 client stream and\nh3; 64 KiB for the h2 backend exchange and WebSocket. Present:\n1024..=1048576.",
           "type": [
             "integer",
             "null"

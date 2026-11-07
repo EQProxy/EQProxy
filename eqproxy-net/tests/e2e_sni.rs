@@ -19,12 +19,12 @@ use eqproxy_net::tls::{self, SniCertPem, TlsVersion};
 use eqproxy_net::{BoundProxy, ProxyMode, ResolvedBackend, ResolvedListener, SwapRequest, bind};
 
 const WAIT: Duration = Duration::from_secs(5);
-const CERT: &[u8] = include_bytes!("fixtures/cert.pem");
-const KEY: &[u8] = include_bytes!("fixtures/key.pem");
-const ALPHA: &[u8] = include_bytes!("fixtures/alpha.pem");
-const ALPHA_KEY: &[u8] = include_bytes!("fixtures/alpha.key");
-const BETA: &[u8] = include_bytes!("fixtures/beta.pem");
-const BETA_KEY: &[u8] = include_bytes!("fixtures/beta.key");
+const CERT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/cert.pem"));
+const KEY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/key.pem"));
+const ALPHA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/alpha.pem"));
+const ALPHA_KEY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/alpha.key"));
+const BETA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/beta.pem"));
+const BETA_KEY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fixtures/beta.key"));
 
 /// Leaf DER of a PEM chain (what a handshake serves).
 fn leaf(pem: &[u8]) -> Vec<u8> {

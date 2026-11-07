@@ -1,0 +1,13 @@
+warning: remove `dbg!`; use the configured logger or access log instead
+  --> $DIR/main.rs:5:1
+   |
+LL | / fn main() {
+LL | |     let value = dbg!(compute());
+LL | |     assert_eq!(value, 7);
+LL | | }
+   | |_^
+   |
+   = note: `#[warn(eqproxy_no_dbg)]` on by default
+
+warning: 1 warning emitted
+

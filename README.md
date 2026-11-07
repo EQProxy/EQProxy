@@ -96,7 +96,11 @@ chmod +x eqproxy-linux-amd64
 ./eqproxy-linux-amd64 --version
 ```
 
-Docker (linux/amd64 + linux/arm64, Wolfi base), same digests on both registries:
+## Docker
+
+The same multi-architecture image (`linux/amd64` + `linux/arm64`, Wolfi base)
+is published on Docker Hub and GitHub Container Registry with identical
+digests:
 
 ```bash
 docker pull exyonq/eqproxy:latest           # Docker Hub

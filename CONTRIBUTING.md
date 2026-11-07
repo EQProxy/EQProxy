@@ -188,15 +188,18 @@ is no Darwin asset: the release is Linux-only. The full record — local gates,
 all ten asset digests, the local preparation builds that were **not** shipped,
 and the audit legs — is [docs/release-0.9.2.md](docs/release-0.9.2.md).
 
-Only a `v*` tag publishes. The release workflow needs three repository
-secrets (Settings → Secrets and variables → Actions); none of them belongs in
-the tree:
+Only a `v*` tag publishes. The release workflow needs two repository secrets
+(Settings → Secrets and variables → Actions); neither belongs in the tree:
 
 | Secret | Value |
 |---|---|
-| `GHCR_TOKEN` | Classic PAT of the `exyonq` GitHub account with `write:packages`. |
 | `DOCKERHUB_USERNAME` | Docker Hub account that owns `exyonq/eqproxy`. |
 | `DOCKERHUB_TOKEN` | Docker Hub token with read/write on that repository. |
+
+The GHCR push uses the workflow's automatic `GITHUB_TOKEN` with
+`packages: write`; `ghcr.io/eqproxy/eqproxy` is linked to
+[`EQProxy/EQProxy`](https://github.com/EQProxy/EQProxy). No package PAT secret
+is required.
 
 The image job is a hard gate: it builds one candidate index, scans both
 `linux/amd64` and `linux/arm64` with Docker Scout
@@ -205,18 +208,13 @@ digest. The release job requires both Scout reports, so a critical/high
 finding or a missing report fails the tag. Never bypass, waive or replace it
 with a smoke check.
 
-`GHCR_TOKEN` exists because packages do not follow a repository transfer: the
-image stays in the `exyonq` user namespace after the move to
-[`EQProxy/EQProxy`](https://github.com/EQProxy/EQProxy), while the workflow's
-`GITHUB_TOKEN` belongs to the new owner and cannot write there. GitHub
-Packages only accepts **classic** tokens, so a fine-grained PAT will fail the
-push with a permission error even if it looks correctly scoped.
+The GHCR package lives in the same user namespace as the repository owner, so
+the image job pushes with the workflow's `GITHUB_TOKEN`; no package PAT or
+classic-token exception is needed.
 
-To rotate it, create a new classic token on `exyonq` with `write:packages`,
-update the `GHCR_TOKEN` secret, and re-run the failed tag. Revoke the old
-token afterwards. If the image is ever moved to the `EQProxy` namespace, the
-PAT and the literal `ghcr.io/exyonq/eqproxy` references in the workflow go
-away together.
+To rotate the Docker Hub token, create a new token on the `exyonq` account
+with write access to `exyonq/eqproxy`, update the `DOCKERHUB_TOKEN` secret, and
+re-run the failed tag. Revoke the old token afterwards.
 
 ## Commit style
 

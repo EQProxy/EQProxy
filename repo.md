@@ -5,16 +5,19 @@ Language: **English**.
 Minimal-observability TCP/HTTP reverse proxy, written in safe Rust
 (`#![forbid(unsafe_code)]`).
 
-## Status — v0.9.1 «parity gaps, semantics and release»
+## Status — v0.9.2 «session resumption, banner and shutdown»
 
-Current version: **v0.9.1** (2026-11-01), released and published: annotated tag
-over `e7473ea`, release run 41299478887 green on all six jobs, the scanned
-image index `sha256:95170d9a…` promoted unchanged to `:0.9.1` and `:latest`,
-0 critical / 0 high on both architectures
-([artifact gate](docs/release-0.9.1.md#51-result-2026-11-01)). It adds
+Current version: **v0.9.2** (2026-11-06), released and published: annotated tag
+over `6478f10`, release run 42281241472 green on all five jobs, the scanned
+image index `sha256:6392aa30…` promoted unchanged to `:0.9.2` and `:latest` on
+GHCR and mirrored to Docker Hub, 0 critical / 0 high on both architectures
+([publication record](docs/release-0.9.2.md)). It adds TLS 1.3 session
+resumption, the `Server: EQProxy` banner on every dataplane response, a
+16 KiB HTTP/2 stream pipe, graceful shutdown on SIGTERM and a profiler that
+clears the `quick-xml` advisories. It follows the v0.9.1 line, which added
 Unix-domain backends and per-server `source` bind, custom error pages, the TLS
-1.2/1.3 range with `errorloc`, the semantic
-reference and the complete 120-row parity matrix. On top of v0.8.5, it is a
+1.2/1.3 range with `errorloc`, the semantic reference and the complete
+120-row parity matrix. On top of v0.8.5, it is a
 TCP/HTTP proxy — HTTP/1.1, HTTP/2
 and HTTP/3 — with TLS termination and verified backend TLS, typed routing rules
 per listener, weighted round-robin/leastconn/slow start, active health checks,
@@ -58,10 +61,10 @@ the full example lives in [eqproxy.toml.example](eqproxy.toml.example).
 
 ## Container
 
-Multi-architecture (linux/amd64, linux/arm64) at `ghcr.io/ExyonQ/eqproxy`:
+Multi-architecture (linux/amd64, linux/arm64) at `ghcr.io/exyonq/eqproxy`:
 
 ```bash
-docker run --rm ghcr.io/ExyonQ/eqproxy:0.9.1 --help
+docker run --rm ghcr.io/exyonq/eqproxy:0.9.2 --help
 ```
 
 ## Audit limitations (v0.5 audit; applicability policy in ADR-0030)

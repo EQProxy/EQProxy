@@ -90,6 +90,17 @@ jobs:
       - name: Health probes have 1 s of timeout
         run: python3 .github/scripts/check-short-health-probes.py
 
+      # docker/Dockerfile ends with `FROM runtime AS profile`, so a build that
+      # omits --target tags the profiling stage — that is what v0.9.3 shipped.
+      # Every image build in release.yml must name runtime; the binary export
+      # names export. The self-test runs first, so a rotted detector cannot
+      # pass by finding nothing.
+      - name: Self-test the release image target gate
+        run: python3 .github/scripts/check-docker-build-target.py --self-test
+
+      - name: Release image builds select the runtime stage
+        run: python3 .github/scripts/check-docker-build-target.py
+
       # The malformed-registry, count and duplicate branches that a green run
       # never reaches.
       - name: Self-test the uid-skip detector

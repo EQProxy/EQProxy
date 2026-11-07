@@ -8,6 +8,11 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# The workflow only reads the repository; declare it instead of inheriting the
+# repository default, which may be read/write. CodeQL flags the omission.
+permissions:
+  contents: read
+
 jobs:
   linux-tier1:
     name: Linux x86_64 (tier-1)

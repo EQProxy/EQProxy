@@ -33,6 +33,11 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Least privilege by default: every job only reads the repository. The
+# `release` job raises this to `contents: write` for its own steps.
+permissions:
+  contents: read
+
 jobs:
   guard:
     name: Line gates pass before any build

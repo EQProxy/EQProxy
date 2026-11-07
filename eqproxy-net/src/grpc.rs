@@ -47,8 +47,8 @@ use eqproxy_core::Metrics;
 pub(crate) type Unserved = Box<(Request<RecvStream>, h2::server::SendResponse<Bytes>)>;
 
 use crate::http1::{
-    BodyFraming, HeadLimits, RequestHead, apply_forwarded, apply_header_actions, apply_rewrite,
-    cookie_value, parse_request_head,
+    BodyFraming, HeadLimits, RequestHead, apply_forwarded, apply_header_actions,
+    apply_normalized_head, apply_rewrite, cookie_value, parse_request_head,
 };
 use crate::http2::{DATA_CHUNK, StreamError, build_request_head, capacity};
 use crate::proxy::{
@@ -183,12 +183,16 @@ pub(crate) async fn serve(
     while let Some(stripped) = base_head.strip_suffix(b"\r\n") {
         base_head = stripped;
     }
+    // H-01: the head built from `:path`/`:authority` is normalized before
+    // rule actions and forwarding, exactly like the h1 engine does, so the
+    // rules and the origin see the same bytes.
+    let normalized_head = apply_normalized_head(base_head, &head);
     // Exactly the head the h1 engine would forward: rule header actions first,
     // then the forwarded-headers policy, then the path rewrite.
-    let acted =
-        actions.map(|actions| apply_header_actions(base_head, actions, peer, &head.host, scheme));
-    let base = acted.as_deref().unwrap_or(base_head);
-    let forwarded = apply_forwarded(base, peer, cfg.forwarded_headers, scheme);
+    let acted = actions
+        .map(|actions| apply_header_actions(&normalized_head, actions, peer, &head.host, scheme));
+    let base = acted.as_deref().unwrap_or(&normalized_head);
+    let forwarded = apply_forwarded(base, peer, cfg.forwarded_headers, scheme, false);
     let forwarded = match rewrite {
         Some(rewrite) => apply_rewrite(&forwarded, rewrite, &head.target),
         None => forwarded,

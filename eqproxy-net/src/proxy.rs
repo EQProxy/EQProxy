@@ -984,6 +984,16 @@ impl ResolvedListener {
         self
     }
 
+    /// True when a routing rule constrains the `Host` (H-01): an HTTP/1.0
+    /// request without one cannot match that rule, so the request is
+    /// refused instead of falling through to the default backend.
+    #[must_use]
+    pub fn requires_host(&self) -> bool {
+        self.routes
+            .iter()
+            .any(|route| route.rule.has_host_condition())
+    }
+
     /// Decision for one request: first matching rule wins, the default
     /// backend is the fallback (per-request: keep-alive connections may
     /// route each exchange differently).

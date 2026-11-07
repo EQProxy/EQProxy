@@ -621,6 +621,15 @@ async fn per_server_maxconn_caps_concurrency_and_answers_503() {
     )
     .await;
 
+    // `active_count` is reserved before the origin receives the request.
+    // Wait for the observed exchange so the "no extra request" check
+    // measures the cap, not scheduler delay.
+    eventually(
+        || a.served.load(Ordering::SeqCst) == 1,
+        "the first exchange reached the capped origin",
+    )
+    .await;
+
     // At the cap: explicit 503, nothing reaches the origin.
     assert_eq!(
         get_status(proxy_addr).await,

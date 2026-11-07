@@ -973,7 +973,9 @@ pub struct RuleConfig {
     pub host_regex: Option<String>,
     /// Exact path (query string excluded, case-sensitive).
     pub path: Option<String>,
-    /// Literal path prefix (no normalization: `/v1` also matches `/v10`).
+    /// Literal path prefix, matched against the normalized path (H-01:
+    /// `.`/`..` resolved, `//` collapsed, unreserved `%XX` decoded); `/v1`
+    /// also matches `/v10`.
     pub path_prefix: Option<String>,
     /// Path regex (unanchored).
     pub path_regex: Option<String>,

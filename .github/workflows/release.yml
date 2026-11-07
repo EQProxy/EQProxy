@@ -64,7 +64,7 @@ jobs:
           python3 .github/scripts/check-secrets.py --range origin/main..HEAD
 
 
-      # CI runs the three gates on every push. A tag push does not trigger CI,
+      # CI runs the four gates on every push. A tag push does not trigger CI,
       # so a release cannot trust a commit whose gates only ran somewhere
       # else: they run here, on the tag commit, before Linux/image can
       # build a byte or publish anything. The self-test of each detector runs
@@ -91,6 +91,15 @@ jobs:
 
       - name: Health probes have 1 s of timeout
         run: python3 .github/scripts/check-short-health-probes.py
+
+      # docker/Dockerfile ends with `FROM runtime AS profile`; a build without
+      # --target tags the profiling stage. The image job builds three times
+      # (candidate and two dry runs), and every one must name runtime.
+      - name: Self-test the release image target gate
+        run: python3 .github/scripts/check-docker-build-target.py --self-test
+
+      - name: Release image builds select the runtime stage
+        run: python3 .github/scripts/check-docker-build-target.py
 
       - name: Self-test the uid-skip detector
         run: python3 .github/scripts/check-uid-skips.py --self-test
@@ -510,6 +519,7 @@ jobs:
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
           docker buildx build --pull --file docker/Dockerfile \
+            --target runtime \
             --platform linux/amd64,linux/arm64 \
             --provenance=mode=max --sbom=true \
             --tag "ghcr.io/eqproxy/eqproxy:${VERSION}-candidate" --push .
@@ -935,14 +945,15 @@ jobs:
           TAGS="--tag ghcr.io/eqproxy/eqproxy:$VERSION"
           case "$VERSION" in *-*) ;; *) TAGS="$TAGS --tag ghcr.io/eqproxy/eqproxy:latest" ;; esac
           docker buildx build --pull --file docker/Dockerfile \
+            --target runtime \
             --platform linux/amd64,linux/arm64 \
             --provenance=mode=max --sbom=true \
             $TAGS .
           # A dry run publishes nothing, but the image must still be shown to
           # work: load the native build and run it (Scout and the arm64 E2E
           # need a registry reference, so they stay tag-only).
-          docker buildx build --pull --file docker/Dockerfile --platform linux/amd64 \
-            --tag eqproxy-dryrun:ci --load .
+          docker buildx build --pull --file docker/Dockerfile --target runtime \
+            --platform linux/amd64 --tag eqproxy-dryrun:ci --load .
           VER=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           docker run --rm eqproxy-dryrun:ci --version | grep -q "eqproxy $VER" \
             || { echo "dry-run image reports the wrong version"; exit 1; }

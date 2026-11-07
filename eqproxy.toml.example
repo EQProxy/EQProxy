@@ -234,7 +234,8 @@ max_stream_duration = "0s"
 # Routing rules (B-H3/B-H4; mode = "http" only): ordered, first match
 # wins; the listener's `backend` is the fallback when no rule matches.
 # Conditions AND together: host/host_prefix/host_regex (case-insensitive,
-# port-free), path/path_prefix/path_regex (literal, no normalization),
+# port-free), path/path_prefix/path_regex (matched against the normalized
+# path: `.`/`..` resolved, `//` collapsed, unreserved `%XX` decoded),
 # methods, headers (exact/regex/present), cookies (exact/regex/present,
 # B-I11; RFC 6265 pair parsing, names case-insensitive), ip (CIDR
 # blocks) and map (C10 hot data maps, below). Exactly one action per

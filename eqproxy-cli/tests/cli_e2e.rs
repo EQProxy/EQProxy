@@ -969,6 +969,284 @@ fn run_http_mode_proxies_requests_and_rejects_smuggling() {
     assert_eq!(status.code(), Some(0), "clean shutdown must exit with 0");
 }
 
+#[cfg_attr(
+    miri,
+    ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
+)]
+#[test]
+fn run_http_mode_strips_hop_by_hop_before_the_backend_and_rejects_nomination() {
+    let (backend, seen) = start_head_recording_backend("ok");
+    let config = temp_config(
+        "http-hop-by-hop",
+        &format!(
+            "schema_version = 1\n[listener.web]\nlisten = \"127.0.0.1:0\"\nbackend = \"api\"\nmode = \"http\"\n[backend.api]\nserver = \"{backend}\"\n"
+        ),
+    );
+    let mut child = bin()
+        .args(["run", "--config"])
+        .arg(&config)
+        .args(["--metrics-interval", "1h"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn eqproxy run (hop-by-hop)");
+    let mut stderr = BufReader::new(child.stderr.take().expect("stderr piped"));
+
+    let mut proxy_addr = String::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut line = String::new();
+    while Instant::now() < deadline {
+        line.clear();
+        let read = stderr.read_line(&mut line).expect("leer stderr");
+        assert!(read > 0, "eqproxy closed stderr without announcing bind");
+        if let Some(addr) = line.split("listening on ").nth(1) {
+            proxy_addr = addr.trim().to_owned();
+            break;
+        }
+    }
+    assert!(!proxy_addr.is_empty(), "the address was not announced");
+
+    let response = proxied(
+        &proxy_addr,
+        b"GET /hop HTTP/1.1\r\nHost: t\r\nConnection: keep-alive, x-remove, close\r\nX-Remove: secret\r\nKeep-Alive: timeout=5\r\nProxy-Connection: keep-alive\r\nTE: trailers\r\nTrailer: x-trailer\r\nX-Keep: yes\r\n\r\n",
+    );
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response:?}");
+
+    let recorded = seen.lock().expect("recorded head").clone();
+    assert_eq!(recorded.len(), 1, "backend saw: {recorded:?}");
+    let lower = recorded[0].to_ascii_lowercase();
+    for forbidden in [
+        "\r\nconnection:",
+        "\r\nx-remove:",
+        "\r\nkeep-alive:",
+        "\r\nproxy-connection:",
+        "\r\nte:",
+        "\r\ntrailer:",
+    ] {
+        assert!(
+            !lower.contains(forbidden),
+            "{forbidden:?} reached the backend: {:?}",
+            recorded[0]
+        );
+    }
+    assert!(recorded[0].contains("\r\nHost: t"), "{recorded:?}");
+    assert!(recorded[0].contains("\r\nX-Keep: yes"), "{recorded:?}");
+
+    let rejected = proxied(
+        &proxy_addr,
+        b"POST /hop HTTP/1.1\r\nHost: t\r\nConnection: content-length\r\nContent-Length: 3\r\n\r\nabc",
+    );
+    assert!(
+        rejected.starts_with("HTTP/1.1 400"),
+        "Connection nomination must be rejected: {rejected:?}"
+    );
+    let recorded = seen.lock().expect("recorded head");
+    assert_eq!(
+        recorded.len(),
+        1,
+        "the rejected request reached the backend: {recorded:?}"
+    );
+
+    let pid = child.id();
+    let kill = Command::new("kill")
+        .args(["-INT", &pid.to_string()])
+        .status()
+        .expect("run kill");
+    assert!(kill.success(), "kill -INT must be accepted");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("try_wait") {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("eqproxy did not finish after SIGINT");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    remove_temp(&config);
+    assert_eq!(status.code(), Some(0), "clean shutdown must exit with 0");
+}
+
+/// H-01 through the **real** binary: one normalization of target and Host
+/// before rules and forwarding. `//admin`, `/public/../admin`, `%2e%2e` and
+/// a trailing-dot Host reach the rule-protected backend, and the origin sees
+/// exactly the normalized request line and Host. A target that would escape
+/// the root or change meaning (`/..`, `%2f`, `%zz`) is refused, never
+/// forwarded, and an HTTP/1.0 request without Host cannot match a host rule.
+#[cfg_attr(
+    miri,
+    ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
+)]
+#[test]
+fn run_http_mode_normalizes_target_and_host_before_rules_and_forwarding() {
+    let (protected, protected_seen) = start_head_recording_backend("protected");
+    let (fallback, fallback_seen) = start_head_recording_backend("fallback");
+    let config = temp_config(
+        "http-normalize",
+        &format!(
+            "schema_version = 1\n\
+             [listener.web]\n\
+             listen = \"127.0.0.1:0\"\n\
+             backend = \"fallback\"\n\
+             mode = \"http\"\n\
+             \n\
+             [[listener.web.rules]]\n\
+             name = \"admin\"\n\
+             host = \"admin.example.com\"\n\
+             path_prefix = \"/admin\"\n\
+             use_backend = \"protected\"\n\
+             \n\
+             [backend.protected]\n\
+             server = \"{protected}\"\n\
+             [backend.fallback]\n\
+             server = \"{fallback}\"\n"
+        ),
+    );
+    let mut child = bin()
+        .args(["run", "--config"])
+        .arg(&config)
+        .args(["--metrics-interval", "1h"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn eqproxy run (normalize)");
+    let mut stderr = BufReader::new(child.stderr.take().expect("stderr piped"));
+    let mut proxy_addr = String::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut line = String::new();
+    while Instant::now() < deadline {
+        line.clear();
+        let read = stderr.read_line(&mut line).expect("leer stderr");
+        assert!(read > 0, "eqproxy closed stderr without announcing bind");
+        if let Some(addr) = line.split("listening on ").nth(1) {
+            proxy_addr = addr.trim().to_owned();
+            break;
+        }
+    }
+    assert!(!proxy_addr.is_empty(), "the address was not announced");
+
+    let cases: &[(&[u8], &str, &str)] = &[
+        (
+            b"GET //admin/secret HTTP/1.1\r\nHost: admin.example.com.\r\nConnection: close\r\n\r\n",
+            "protected",
+            "duplicate slashes and a trailing-dot Host",
+        ),
+        (
+            b"GET /public/../admin/secret HTTP/1.0\r\nHost: Admin.Example.COM.\r\nConnection: close\r\n\r\n",
+            "protected",
+            "dot segments with an HTTP/1.0 request that carries Host",
+        ),
+        (
+            b"GET /public/%2e%2e/admin/secret?x=1 HTTP/1.1\r\nHost: admin.example.com\r\nConnection: close\r\n\r\n",
+            "protected",
+            "unreserved percent-escapes",
+        ),
+        (
+            b"GET /public HTTP/1.1\r\nHost: admin.example.com\r\nConnection: close\r\n\r\n",
+            "fallback",
+            "control: a path outside the rule still falls back",
+        ),
+    ];
+    for (request, expected, why) in cases {
+        let response = proxied(&proxy_addr, request);
+        assert!(
+            response.starts_with("HTTP/1.1 200 OK"),
+            "{why}: {response:?}"
+        );
+        assert_eq!(body_of(&response), *expected, "{why}: {response:?}");
+    }
+
+    let seen = protected_seen.lock().expect("protected heads").clone();
+    assert_eq!(seen.len(), 3, "protected backend saw: {seen:?}");
+    assert!(
+        seen[0].starts_with("GET /admin/secret HTTP/1.1\r\n"),
+        "the origin must see the normalized target: {:?}",
+        seen[0]
+    );
+    assert!(
+        seen[0]
+            .to_ascii_lowercase()
+            .contains("\r\nhost: admin.example.com\r\n"),
+        "the origin must see the normalized Host: {:?}",
+        seen[0]
+    );
+    assert!(
+        seen[2].starts_with("GET /admin/secret?x=1 HTTP/1.1\r\n"),
+        "the escaped target must be normalized on the wire: {:?}",
+        seen[2]
+    );
+    let fallback_requests = fallback_seen.lock().expect("fallback heads").clone();
+    assert_eq!(
+        fallback_requests.len(),
+        1,
+        "fallback backend saw: {fallback_requests:?}"
+    );
+
+    // Ambiguous or escaping targets are refused, never sent upstream.
+    for (request, why) in [
+        (
+            &b"GET /../etc/passwd HTTP/1.1\r\nHost: admin.example.com\r\nConnection: close\r\n\r\n"
+                [..],
+            "dot segments above the root",
+        ),
+        (
+            &b"GET /a/%2f/b HTTP/1.1\r\nHost: admin.example.com\r\nConnection: close\r\n\r\n"[..],
+            "an encoded slash",
+        ),
+        (
+            &b"GET /%zz HTTP/1.1\r\nHost: admin.example.com\r\nConnection: close\r\n\r\n"[..],
+            "an invalid escape",
+        ),
+    ] {
+        let response = proxied(&proxy_addr, request);
+        assert!(
+            response.starts_with("HTTP/1.1 400"),
+            "{why} must be rejected: {response:?}"
+        );
+    }
+    // HTTP/1.0 without Host cannot match a host rule: the fallback backend
+    // would serve what the rule protects, so the request is refused.
+    let rejected = proxied(
+        &proxy_addr,
+        b"GET /public HTTP/1.0\r\nConnection: close\r\n\r\n",
+    );
+    assert!(
+        rejected.starts_with("HTTP/1.1 400"),
+        "a host rule must refuse a Host-less HTTP/1.0 request: {rejected:?}"
+    );
+    assert_eq!(
+        protected_seen.lock().expect("protected heads").len(),
+        3,
+        "a rejected request reached the protected backend"
+    );
+    assert_eq!(
+        fallback_seen.lock().expect("fallback heads").len(),
+        1,
+        "a rejected request reached the fallback backend"
+    );
+
+    let pid = child.id();
+    let kill = Command::new("kill")
+        .args(["-INT", &pid.to_string()])
+        .status()
+        .expect("run kill");
+    assert!(kill.success(), "kill -INT must be accepted");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("try_wait") {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("eqproxy did not finish after SIGINT");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    remove_temp(&config);
+    assert_eq!(status.code(), Some(0), "clean shutdown must exit with 0");
+}
+
 /// Minimal identity backend: answers `200 OK` with the given body and
 /// closes (the routing cases send `Connection: close`).
 fn start_identity_backend(body: &'static str) -> std::net::SocketAddr {
@@ -999,6 +1277,48 @@ fn start_identity_backend(body: &'static str) -> std::net::SocketAddr {
         }
     });
     addr
+}
+
+/// Backend that answers `200 OK` with `body` and records the complete request
+/// head, so a test can assert exactly which headers the proxy forwarded.
+fn start_head_recording_backend(
+    body: &'static str,
+) -> (
+    std::net::SocketAddr,
+    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) {
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind head recorder");
+    let addr = listener.local_addr().expect("addr head recorder");
+    let keep = std::sync::Arc::clone(&seen);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let keep = std::sync::Arc::clone(&keep);
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 8192];
+                let mut total = 0usize;
+                loop {
+                    match stream.read(&mut buf[total..]) {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => total += n,
+                    }
+                    if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                keep.lock()
+                    .expect("record head")
+                    .push(String::from_utf8_lossy(&buf[..total]).into_owned());
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            });
+        }
+    });
+    (addr, seen)
 }
 
 /// One request through the real binary; returns the raw response.

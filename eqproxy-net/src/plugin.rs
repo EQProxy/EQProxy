@@ -43,6 +43,7 @@ pub const RESERVED_HEADERS: &[&str] = &[
     "transfer-encoding",
     "connection",
     "host",
+    "keep-alive",
     "upgrade",
     "expect",
     "te",

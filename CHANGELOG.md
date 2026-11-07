@@ -5,6 +5,20 @@ Fixed); versions are `vMAJOR.MINOR.PATCH` git tags.
 
 ## [Unreleased]
 
+### Fixed
+
+- **H-01: one URI and Host normalization before rules and forwarding.**
+  `parse_request_head` resolves dot segments, collapses duplicate slashes
+  and decodes unreserved `%XX` once; it also lowercases the Host and removes
+  one trailing DNS dot (an exact `host` rule ignores that root dot too).
+  Rules, cache keys, rewrites and the origin now see
+  that same normalized request line and Host, so `//admin`,
+  `/public/../admin`, `%2e%2e` and `Host: admin.example.com.` no longer
+  bypass a rule. Encoded slashes, invalid escapes, NUL bytes, fragments and
+  `..` above the root are refused with 400, and an HTTP/1.0 request without
+  Host is refused when a rule constrains the Host. h2/h3 and gRPC inherit
+  the normalization through the same parser and head builder.
+
 ## [v0.9.3] — 2026-11-07
 
 ### Added

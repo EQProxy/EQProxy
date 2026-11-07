@@ -5,6 +5,30 @@ Fixed); versions are `vMAJOR.MINOR.PATCH` git tags.
 
 ## [Unreleased]
 
+## [v0.9.3] — 2026-11-07
+
+### Added
+
+- **Reproducible GHCR manifest checker.**
+  `.github/scripts/check-ghcr-manifest.py` fetches an anonymous token, hashes
+  the exact index bytes, checks the expected digest, `Docker-Content-Digest`,
+  both platforms and both attestations. It guards the release-documentation
+  change and has live passes for `0.9.1`, `0.9.2` and `latest`.
+
+### Changed
+
+- **Release images publish to the EQProxy GHCR namespace.** The release
+  workflow requests `packages: write`, logs in as `eqproxy` with its automatic
+  `GITHUB_TOKEN`, and pushes `ghcr.io/eqproxy/eqproxy`; Docker Hub remains
+  `exyonq/eqproxy`. The long-lived `GHCR_TOKEN` PAT is no longer required.
+  Before this release, all 28 historical tags were copied without rebuilding
+  and their digests compared between both namespaces.
+- **Docker documentation follows the new namespace.** The Dockerfile examples
+  and the Docker Hub page point at `ghcr.io/eqproxy/eqproxy`.
+
+No dataplane or configuration behavior changed in this patch; the release
+validates the migrated publishing path end to end.
+
 ## [v0.9.2] — 2026-11-06
 
 ### Added

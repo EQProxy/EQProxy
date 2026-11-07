@@ -1,7 +1,7 @@
 # Contributing to EQProxy
 
 EQProxy is a reverse proxy and load balancer in Rust. It is pre-1.0: v0.9.2 is
-the latest release. Issues and pull requests are
+the latest published release (2026-11-06). Issues and pull requests are
 welcome; for a change that touches behaviour, configuration or the wire
 protocol, open an issue first so the scope can be agreed before code is
 written.
@@ -151,6 +151,42 @@ git log origin/main..HEAD --format=%b | grep -iE '^co-authored-by:'
 ```
 
 ## Releases
+
+### Latest published release — v0.9.2
+
+`v0.9.2` was published `2026-11-06T23:11:38Z` from the annotated tag `v0.9.2`
+(`1ba58ea21388a5a69f8a3d577576ae9e14ec312b`) over commit
+`6478f10b2d92792f9dba1c0cec5753fb738d9e89` (`release: publish Linux-only
+v0.9.2 artifacts`). The tag run
+[42281241472](https://github.com/EQProxy/EQProxy/actions/runs/42281241472)
+finished `success` with all five jobs green, and its `release` job produced the
+ten assets: two Linux binaries, the source tarball, four CycloneDX SBOMs, the
+two Scout reports and `SHA256SUMS.txt`. Its image job built and scanned the
+`0.9.2-candidate` index and promoted that exact digest.
+
+| Release asset | SHA-256 |
+|---|---|
+| `eqproxy-linux-amd64` | `e12aa71290ab6a9c9b69f585f3f765a445e2130790bfa72149668c0a45b59929` |
+| `eqproxy-linux-arm64` | `7946fa089b6d8c74590763d913e46e9ad183002b55a61425eb87ec8b103bc29e` |
+| `eqproxy-0.9.2-src.tar.gz` | `a466d37098e203be1819b142c68fb7e78bb9e955b0bc545920b7630f64bf7cdd` |
+| `SHA256SUMS.txt` (the file itself) | `998bf36883f7a31bb042608e38fd8b0ebdf958170b9f9c4807a42d4e559852ec` |
+
+Those three lines are exactly what `SHA256SUMS.txt` checks; the SBOMs and the
+Scout reports are not listed in it.
+
+Both registries serve one OCI index, promoted by digest after the Scout scan:
+`sha256:6392aa3018c71a1bc87b3df22ec9e3d13a5b306e15fa66cbe4f819a49e77ea3f`
+for `ghcr.io/exyonq/eqproxy:0.9.2`, `ghcr.io/exyonq/eqproxy:latest`,
+`docker.io/exyonq/eqproxy:0.9.2` and `docker.io/exyonq/eqproxy:latest`. Its
+platform manifests are
+`sha256:b984b522fa32b82830194183a52a8238f34a5dc95545a29aff8d574ede7084e6`
+(`linux/amd64`) and
+`sha256:d8b681d54304202ce24149390a05140f61448cf5a68c32a56a358437525f29ba`
+(`linux/arm64`); Docker Scout reports **0 critical / 0 high** on both, and
+`docker run … --version` on the published tag answers `eqproxy 0.9.2`. There
+is no Darwin asset: the release is Linux-only. The full record — local gates,
+all ten asset digests, the local preparation builds that were **not** shipped,
+and the audit legs — is [docs/release-0.9.2.md](docs/release-0.9.2.md).
 
 Only a `v*` tag publishes. The release workflow needs three repository
 secrets (Settings → Secrets and variables → Actions); none of them belongs in

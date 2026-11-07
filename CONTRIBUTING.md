@@ -176,10 +176,9 @@ Scout reports are not listed in it.
 
 Both registries serve one OCI index, promoted by digest after the Scout scan:
 `sha256:6392aa3018c71a1bc87b3df22ec9e3d13a5b306e15fa66cbe4f819a49e77ea3f`
-for `ghcr.io/eqproxy/eqproxy:0.9.2`, `ghcr.io/eqproxy/eqproxy:latest`,
-`docker.io/exyonq/eqproxy:0.9.2` and `docker.io/exyonq/eqproxy:latest`. The
-v0.9.2 versions are copied to the `EQProxy` account by the migration; the
-digest does not change. The index's platform manifests are
+for `ghcr.io/exyonq/eqproxy:0.9.2`, `ghcr.io/exyonq/eqproxy:latest`,
+`docker.io/exyonq/eqproxy:0.9.2` and `docker.io/exyonq/eqproxy:latest`. Its
+platform manifests are
 `sha256:b984b522fa32b82830194183a52a8238f34a5dc95545a29aff8d574ede7084e6`
 (`linux/amd64`) and
 `sha256:d8b681d54304202ce24149390a05140f61448cf5a68c32a56a358437525f29ba`
@@ -189,19 +188,15 @@ is no Darwin asset: the release is Linux-only. The full record — local gates,
 all ten asset digests, the local preparation builds that were **not** shipped,
 and the audit legs — is [docs/release-0.9.2.md](docs/release-0.9.2.md).
 
-Only a `v*` tag publishes. The release workflow needs two repository
-secrets (Settings → Secrets and variables → Actions); neither belongs in the
-tree:
+Only a `v*` tag publishes. The release workflow needs three repository
+secrets (Settings → Secrets and variables → Actions); none of them belongs in
+the tree:
 
 | Secret | Value |
 |---|---|
+| `GHCR_TOKEN` | Classic PAT of the `exyonq` GitHub account with `write:packages`. |
 | `DOCKERHUB_USERNAME` | Docker Hub account that owns `exyonq/eqproxy`. |
 | `DOCKERHUB_TOKEN` | Docker Hub token with read/write on that repository. |
-
-GHCR needs no secret: the image job pushes to `ghcr.io/eqproxy/eqproxy`
-with the workflow's `GITHUB_TOKEN` and `packages: write`, because the package
-belongs to the same account as the repository and is linked to it. The former
-`GHCR_TOKEN` PAT is retired.
 
 The image job is a hard gate: it builds one candidate index, scans both
 `linux/amd64` and `linux/arm64` with Docker Scout
@@ -210,21 +205,18 @@ digest. The release job requires both Scout reports, so a critical/high
 finding or a missing report fails the tag. Never bypass, waive or replace it
 with a smoke check.
 
-The package migration to `EQProxy` (see
-[docs/package-transfer-eqproxy.md](docs/package-transfer-eqproxy.md)) copies
-the v0.9.2 and `latest` tags to `ghcr.io/eqproxy/eqproxy` without changing
-their digests. GitHub does not transfer GHCR packages between owners and does
-not redirect the old namespace, so the old package is retired only after a
-deprecation window. Because the package and the repository belong to the same
-account and the package is linked to the repository, the workflow
-authenticates with its own `GITHUB_TOKEN` under `packages: write`; no PAT is
-involved. GitHub Packages
-only accepts **classic** PATs, which is one more reason the long-lived token
-is gone. Delete the `GHCR_TOKEN` secret and revoke the PAT after the first
-successful release on the new namespace.
+`GHCR_TOKEN` exists because packages do not follow a repository transfer: the
+image stays in the `exyonq` user namespace after the move to
+[`EQProxy/EQProxy`](https://github.com/EQProxy/EQProxy), while the workflow's
+`GITHUB_TOKEN` belongs to the new owner and cannot write there. GitHub
+Packages only accepts **classic** tokens, so a fine-grained PAT will fail the
+push with a permission error even if it looks correctly scoped.
 
-Docker Hub still authenticates with `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN`;
-rotate the Hub token the same way, update the secret and re-run the failed tag.
+To rotate it, create a new classic token on `exyonq` with `write:packages`,
+update the `GHCR_TOKEN` secret, and re-run the failed tag. Revoke the old
+token afterwards. If the image is ever moved to the `EQProxy` namespace, the
+PAT and the literal `ghcr.io/exyonq/eqproxy` references in the workflow go
+away together.
 
 ## Commit style
 

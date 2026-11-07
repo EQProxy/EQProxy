@@ -5,15 +5,6 @@ Fixed); versions are `vMAJOR.MINOR.PATCH` git tags.
 
 ## [Unreleased]
 
-### Changed
-
-- **GHCR package moves to the `EQProxy` account.** The release workflow now
-  pushes `ghcr.io/eqproxy/eqproxy` with its `GITHUB_TOKEN` (`packages: write`)
-  and no longer needs a classic `GHCR_TOKEN`; Docker Hub keeps the
-  `exyonq/eqproxy` mirror with identical digests. The versions and digests of
-  existing releases do not change. Runbook:
-  [docs/package-transfer-eqproxy.md](docs/package-transfer-eqproxy.md).
-
 ## [v0.9.2] — 2026-11-06
 
 ### Added

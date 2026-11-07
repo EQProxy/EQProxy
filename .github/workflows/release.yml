@@ -15,13 +15,15 @@ name: Release
 # so a branch run can never publish anything.
 #
 # Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   GHCR_TOKEN           Classic PAT owned by the `exyonq` GitHub account with
+#                        the `write:packages` scope. The `ghcr.io/exyonq/eqproxy`
+#                        package lives in that user namespace; the repository
+#                        transfer to `EQProxy/EQProxy` did not move it, and the
+#                        workflow's GITHUB_TOKEN now belongs to the new owner,
+#                        so it cannot write there. GitHub Packages rejects
+#                        fine-grained PATs: the token must be classic.
 #   DOCKERHUB_USERNAME   Docker Hub account that owns `exyonq/eqproxy`.
 #   DOCKERHUB_TOKEN      Docker Hub token with read/write on that repository.
-#
-# GHCR needs no repository secret: after the package migration to the `EQProxy`
-# account, the package belongs to the same account as this repository, is
-# linked to it, and is pushed with the workflow's `GITHUB_TOKEN` under
-# `packages: write`. The former `GHCR_TOKEN` PAT is retired.
 
 on:
   push:
@@ -30,12 +32,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-
-# Least privilege by default: every job only reads the repository. The
-# `release` job raises this to `contents: write` for its own steps, and the
-# image job raises `packages: write` for the GHCR push with `GITHUB_TOKEN`.
-permissions:
-  contents: read
 
 jobs:
   guard:
@@ -64,6 +60,26 @@ jobs:
           set -euo pipefail
           git fetch --no-tags origin main:refs/remotes/origin/main
           python3 .github/scripts/check-secrets.py --range origin/main..HEAD
+
+      # A tag run publishes to `ghcr.io/exyonq/eqproxy`, a package that lives
+      # in the `exyonq` account and is pushed with `GHCR_TOKEN`, not with this
+      # repository's GITHUB_TOKEN. Fail here — before the toolchain, the
+      # suites or any image byte — instead of inside docker/login-action after
+      # the Linux job has already built: a missing secret is a
+      # configuration mistake, and the message says how to fix it. Tag-only,
+      # because a workflow_dispatch dry run pushes nothing and must not
+      # require the secret.
+      - name: GHCR token is configured
+        if: github.ref_type == 'tag'
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GHCR_TOKEN:-}" ]; then
+            echo "::error::GHCR_TOKEN is not set. Tag runs push ghcr.io/exyonq/eqproxy, whose package belongs to the 'exyonq' account. Create a classic PAT with the 'write:packages' scope on that account and add it as a repository secret named GHCR_TOKEN (Settings -> Secrets and variables -> Actions). See CONTRIBUTING.md#releases."
+            exit 1
+          fi
+          echo "GHCR_TOKEN is set (value not printed)."
 
       # CI runs the three gates on every push. A tag push does not trigger CI,
       # so a release cannot trust a commit whose gates only ran somewhere
@@ -468,12 +484,12 @@ jobs:
     name: Multi-arch image (build + Scout both archs + E2E + promote)
     needs: [linux]
     runs-on: ubuntu-latest
-    # The package belongs to the same account as this repository and is
-    # linked to it, so `GITHUB_TOKEN` can push to GHCR with `packages: write`.
-    # No PAT is involved.
+    # No `packages: write`: the GHCR push authenticates with the `exyonq` PAT
+    # below, not with this workflow's GITHUB_TOKEN, which belongs to the
+    # repository owner (EQProxy) and has no rights over a package in another
+    # user's namespace.
     permissions:
       contents: read
-      packages: write
     steps:
       - uses: actions/checkout@v7
 
@@ -481,17 +497,20 @@ jobs:
 
       - uses: docker/setup-buildx-action@v4
 
-      # The package is migrated to the `EQProxy` account and linked to
-      # this repository, so the workflow's `GITHUB_TOKEN` (with
-      # `packages: write`) is the push identity. Tag-only, like every step
-      # that touches a registry: a dry run builds without pushing.
-      - name: Log in to GHCR (EQProxy package namespace)
+      # The package stays in the `exyonq` namespace after the repository
+      # transfer, so the login identity is the account that owns it, not
+      # `github.actor` or `github.repository_owner` (both are now EQProxy).
+      # `GHCR_TOKEN` is a classic PAT of `exyonq` with `write:packages`;
+      # `GITHUB_TOKEN` cannot write to another owner's package. Tag-only, like
+      # every step that touches a registry: a dry run builds without pushing
+      # and must not fail on a repository that has not set the secret yet.
+      - name: Log in to GHCR (exyonq package namespace)
         if: github.ref_type == 'tag'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
-          username: eqproxy
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: exyonq
+          password: ${{ secrets.GHCR_TOKEN }}
 
       # Publish gate (owner decision 2026-10-20, extended the same day to
       # **both** architectures): the image is built once and pushed under a
@@ -513,7 +532,7 @@ jobs:
           docker buildx build --pull --file docker/Dockerfile \
             --platform linux/amd64,linux/arm64 \
             --provenance=mode=max --sbom=true \
-            --tag "ghcr.io/eqproxy/eqproxy:${VERSION}-candidate" --push .
+            --tag "ghcr.io/exyonq/eqproxy:${VERSION}-candidate" --push .
 
       - name: Record the candidate index digest
         if: github.ref_type == 'tag'
@@ -521,7 +540,7 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
-          REF="ghcr.io/eqproxy/eqproxy:${VERSION}-candidate"
+          REF="ghcr.io/exyonq/eqproxy:${VERSION}-candidate"
           # The digest of the index bytes is the digest `imagetools create`
           # promotes and the one the post-promotion check compares against.
           DIGEST=$(docker buildx imagetools inspect --raw "$REF" | sha256sum | cut -d' ' -f1)
@@ -557,7 +576,7 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
-          REF="ghcr.io/eqproxy/eqproxy:${VERSION}-candidate"
+          REF="ghcr.io/exyonq/eqproxy:${VERSION}-candidate"
           DIGEST="${{ steps.candidate.outputs.digest }}"
           mkdir -p scout
           for arch in amd64 arm64; do
@@ -624,7 +643,7 @@ jobs:
             log "E2E $proxy_image: live traffic OK ($verdict)"
           }
           VERSION="${GITHUB_REF_NAME#v}"
-          image="ghcr.io/eqproxy/eqproxy:${VERSION}-candidate"
+          image="ghcr.io/exyonq/eqproxy:${VERSION}-candidate"
           for arch in amd64 arm64; do
             log "E2E $image (linux/$arch): --version"
             docker run --rm --platform "linux/$arch" "$image" --version \
@@ -733,7 +752,7 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
-          image="ghcr.io/eqproxy/eqproxy:${VERSION}-candidate"
+          image="ghcr.io/exyonq/eqproxy:${VERSION}-candidate"
           fail() { printf 'release FAILED: %s\n' "$*" >&2; exit 1; }
           log() { printf '==> %s\n' "$*"; }
           for arch in amd64 arm64; do
@@ -764,9 +783,9 @@ jobs:
           INDEX="${{ steps.candidate.outputs.digest }}"
           # `:latest` only tracks final releases: a prerelease tag (with a
           # `-` suffix) never re-points it.
-          TAGS="--tag ghcr.io/eqproxy/eqproxy:$VERSION"
-          case "$VERSION" in *-*) ;; *) TAGS="$TAGS --tag ghcr.io/eqproxy/eqproxy:latest" ;; esac
-          docker buildx imagetools create $TAGS "ghcr.io/eqproxy/eqproxy@sha256:$INDEX"
+          TAGS="--tag ghcr.io/exyonq/eqproxy:$VERSION"
+          case "$VERSION" in *-*) ;; *) TAGS="$TAGS --tag ghcr.io/exyonq/eqproxy:latest" ;; esac
+          docker buildx imagetools create $TAGS "ghcr.io/exyonq/eqproxy@sha256:$INDEX"
 
       # Mirror the exact verified manifest (same digests) to Docker Hub.
       # Secrets DOCKERHUB_USERNAME/DOCKERHUB_TOKEN come from the maintainer's
@@ -779,7 +798,7 @@ jobs:
           INDEX="${{ steps.candidate.outputs.digest }}"
           TAGS="--tag exyonq/eqproxy:$VERSION"
           case "$VERSION" in *-*) ;; *) TAGS="$TAGS --tag exyonq/eqproxy:latest" ;; esac
-          docker buildx imagetools create $TAGS "ghcr.io/eqproxy/eqproxy@sha256:$INDEX"
+          docker buildx imagetools create $TAGS "ghcr.io/exyonq/eqproxy@sha256:$INDEX"
 
       # The published tags must be the scanned index on both registries —
       # otherwise "Scout says 0C/0H" would be a claim about different bytes.
@@ -789,15 +808,15 @@ jobs:
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
           INDEX="${{ steps.candidate.outputs.digest }}"
-          REFS="ghcr.io/eqproxy/eqproxy:$VERSION exyonq/eqproxy:$VERSION ghcr.io/eqproxy/eqproxy:${VERSION}-candidate"
-          case "$VERSION" in *-*) ;; *) REFS="$REFS ghcr.io/eqproxy/eqproxy:latest exyonq/eqproxy:latest" ;; esac
+          REFS="ghcr.io/exyonq/eqproxy:$VERSION exyonq/eqproxy:$VERSION ghcr.io/exyonq/eqproxy:${VERSION}-candidate"
+          case "$VERSION" in *-*) ;; *) REFS="$REFS ghcr.io/exyonq/eqproxy:latest exyonq/eqproxy:latest" ;; esac
           for ref in $REFS; do
             got=$(docker buildx imagetools inspect --raw "$ref" | sha256sum | cut -d' ' -f1)
             [ "$got" = "$INDEX" ] \
               || { echo "$ref points at sha256:$got, not the scanned sha256:$INDEX"; exit 1; }
             echo "$ref -> sha256:$INDEX (scanned)"
           done
-          docker buildx imagetools inspect "ghcr.io/eqproxy/eqproxy:$VERSION"
+          docker buildx imagetools inspect "ghcr.io/exyonq/eqproxy:$VERSION"
 
       # What the candidate E2E proved is the bytes before promotion. This
       # replays the same journeys on the image a user actually pulls, from
@@ -919,7 +938,7 @@ jobs:
             log "published $ref linux/$arch: version, digest, h2 gate, config apply and live traffic OK"
           }
           i=0
-          for ref in "ghcr.io/eqproxy/eqproxy:$VERSION" "exyonq/eqproxy:$VERSION"; do
+          for ref in "ghcr.io/exyonq/eqproxy:$VERSION" "exyonq/eqproxy:$VERSION"; do
             for arch in amd64 arm64; do
               i=$((i + 1))
               verify_published "$ref" "$arch" "eqpub-$i" "172.23.$i.0/24"
@@ -933,8 +952,8 @@ jobs:
           # A branch name may contain `/`, which is not valid in a Docker
           # tag; the dry run gets a valid, clearly non-release tag.
           VERSION="dryrun-${GITHUB_SHA::12}"
-          TAGS="--tag ghcr.io/eqproxy/eqproxy:$VERSION"
-          case "$VERSION" in *-*) ;; *) TAGS="$TAGS --tag ghcr.io/eqproxy/eqproxy:latest" ;; esac
+          TAGS="--tag ghcr.io/exyonq/eqproxy:$VERSION"
+          case "$VERSION" in *-*) ;; *) TAGS="$TAGS --tag ghcr.io/exyonq/eqproxy:latest" ;; esac
           docker buildx build --pull --file docker/Dockerfile \
             --platform linux/amd64,linux/arm64 \
             --provenance=mode=max --sbom=true \

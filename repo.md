@@ -61,11 +61,10 @@ the full example lives in [eqproxy.toml.example](eqproxy.toml.example).
 
 ## Container
 
-Multi-architecture (linux/amd64, linux/arm64) at `ghcr.io/eqproxy/eqproxy`
-(Docker Hub keeps `exyonq/eqproxy`):
+Multi-architecture (linux/amd64, linux/arm64) at `ghcr.io/exyonq/eqproxy`:
 
 ```bash
-docker run --rm ghcr.io/eqproxy/eqproxy:0.9.2 --help
+docker run --rm ghcr.io/exyonq/eqproxy:0.9.2 --help
 ```
 
 ## Audit limitations (v0.5 audit; applicability policy in ADR-0030)

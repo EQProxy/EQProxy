@@ -3,8 +3,9 @@
 Language: **English** (public documentation).
 
 Status: **planned, not executed** (2026-11-07). This page is the runbook. It
-does not claim that the migration has happened, and the workflow/documentation
-change that points at `ghcr.io/eqproxy/eqproxy` must not be merged before the
+does not claim that the migration has happened. The current published docs and
+release workflow remain on `ghcr.io/exyonq`; the new-namespace change is
+deferred until the copy and link are verified, and must not be merged before the
 new package exists.
 
 ## 1. The target is a user account, not an organization
@@ -62,7 +63,7 @@ dry run is a pre-check, not evidence that the copy happened.
 | Repository access | the `ExyonQ` token has `push`, not `admin` (`permissions.admin = false`) |
 | Current workflow | pushes GHCR with `GHCR_TOKEN` (classic PAT of `ExyonQ`, `write:packages`); Docker Hub mirror `exyonq/eqproxy` with `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` |
 | Browser session | only `Doken-Tokuyama`; it is not a package admin and its repo settings request returns 404 |
-| Current docs | README, CONTRIBUTING, CHANGELOG, repo.md, Dockerfile and the Docker Hub page updated to the new GHCR namespace in the same change set; historical release/evidence pages keep their publication-time refs |
+| Current docs | README, CONTRIBUTING, CHANGELOG, repo.md, Dockerfile and the Docker Hub page keep `ghcr.io/exyonq`; the new-namespace change is deferred until the copy is verified. Historical release/evidence pages keep their publication-time refs |
 
 The package owner (`ExyonQ`), the target account (`EQProxy`), the repository
 owner (`EQProxy`) and the browser session (`Doken-Tokuyama`) are four
@@ -191,9 +192,10 @@ re-checking the digest and that the image carries no secrets. This is
 irreversible; the old package is public, and users must be able to pull the
 new one without credentials.
 
-### 7.7 Merge the workflow and documentation change
+### 7.7 Apply and merge the workflow and documentation change
 
-Merge only after 7.4–7.6 pass. The image job then:
+Apply and merge only after 7.4–7.6 pass; the current tree still uses the old
+namespace. The image job then:
 
 - logs in to `ghcr.io` as `eqproxy` with `GITHUB_TOKEN`;
 - pushes `ghcr.io/eqproxy/eqproxy` with `packages: write`;
@@ -249,7 +251,7 @@ digest with every published tag; a mismatch fails the tag.
 | Workflow uses `GITHUB_TOKEN` | run log: `Log in to GHCR (EQProxy package namespace)`, no `GHCR_TOKEN` |
 | Scout digest == published tag == Hub mirror | release run's promotion/verification steps |
 | `GHCR_TOKEN` gone | `gh secret list` has no `GHCR_TOKEN` |
-| Current docs point at the new namespace | `grep -rn 'ghcr.io/exyonq/eqproxy' README.md CONTRIBUTING.md CHANGELOG.md repo.md docs/docker-hub-readme.md docker/Dockerfile` is empty; historical pages keep their refs |
+| After applying the change, current docs point at the new namespace | `grep -rn 'ghcr.io/exyonq/eqproxy' README.md CONTRIBUTING.md CHANGELOG.md repo.md docs/docker-hub-readme.md docker/Dockerfile` is empty; historical pages keep their refs |
 | Old refs behave as documented | before deletion they still serve the old package; after deletion they fail (no redirect) |
 
 ## 9. Rollback and abort

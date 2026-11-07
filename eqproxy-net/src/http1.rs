@@ -2,8 +2,10 @@
 //!
 //! Security policy (THREAT_MODEL §2.1): **single shared parser between
 //! analysis and forwarding** — every ambiguous message is rejected BEFORE
-//! touching the backend, and what is forwarded is byte-for-byte what the
-//! parser validated:
+//! touching the backend, and what is forwarded is the parser-validated
+//! message after hop-by-hop sanitization (F1): `Connection` and every header
+//! it names, `Proxy-Connection`, `Keep-Alive`, `TE` and `Trailer` never
+//! cross it, and `Upgrade` survives only for an upgrade request.
 //! - `Content-Length` and `Transfer-Encoding` together → 400 (T01).
 //! - duplicated `Content-Length` or `Transfer-Encoding` → 400 (T01).
 //! - `Transfer-Encoding` other than exact `chunked` → 400 (T01).
@@ -347,6 +349,17 @@ fn request_framing(
             "connection" => {
                 for token in value.split(',') {
                     match token.trim().to_ascii_lowercase().as_str() {
+                        // A proxy must remove the headers named by Connection
+                        // (RFC 9110 §7.6.1). Naming one of these would let the
+                        // client choose a framing or routing header after the
+                        // parser has validated it, so reject the message
+                        // instead of forwarding a contradictory request.
+                        "content-length" | "transfer-encoding" | "host" | "connection" => {
+                            return Err(Reject {
+                                status: 400,
+                                reason: "connection header names a framing or routing header",
+                            });
+                        }
                         "close" => connection_close = true,
                         "keep-alive" => connection_keep_alive = true,
                         "upgrade" => has_upgrade = true,
@@ -1507,9 +1520,43 @@ fn join_head_lines(lines: &[Vec<u8>], capacity: usize) -> Vec<u8> {
     joined
 }
 
+/// True for the hop-by-hop fields a proxy must remove before forwarding
+/// (RFC 9110 §7.6.1). `Upgrade` is conditional and handled separately.
+fn is_hop_by_hop_header(name: &[u8]) -> bool {
+    matches!(
+        name,
+        b"connection" | b"proxy-connection" | b"keep-alive" | b"te" | b"trailer" | b"upgrade"
+    )
+}
+
+/// Header names listed by every `Connection` field, lowercased. The request
+/// parser has already rejected framing/routing names before this runs.
+fn connection_tokens(lines: &[&[u8]]) -> Vec<Vec<u8>> {
+    let mut tokens = Vec::new();
+    for line in lines.iter().skip(1) {
+        let name_end = line.iter().position(|&b| b == b':').unwrap_or(line.len());
+        if name_end == line.len() || !line[..name_end].eq_ignore_ascii_case(b"connection") {
+            continue;
+        }
+        for token in line[name_end + 1..].split(|&b| b == b',') {
+            let token = trim_ows(token);
+            if !token.is_empty() {
+                tokens.push(token.to_ascii_lowercase());
+            }
+        }
+    }
+    tokens
+}
+
 /// Applies `X-Forwarded-For`/`X-Real-IP`/`X-Forwarded-Proto` per
 /// listener policy (B-N4) to the forwarded copy of the head — the
 /// client's bytes are never mutated.
+///
+/// Hop-by-hop sanitization (F1) is unconditional, including when the
+/// forwarded-headers policy is `Off`: `Connection` itself, every header it
+/// names, `Proxy-Connection`, `Keep-Alive`, `TE` and `Trailer` are removed.
+/// `Upgrade` is preserved only when `keep_upgrade` says the request is an
+/// upgrade, and then a canonical `Connection: upgrade` is emitted.
 ///
 /// - `Append`: `X-Forwarded-For` grows with the client address (header
 ///   created when absent); `X-Real-IP` only when absent.
@@ -1521,10 +1568,8 @@ pub(crate) fn apply_forwarded(
     peer: SocketAddr,
     mode: ForwardedMode,
     scheme: &str,
+    keep_upgrade: bool,
 ) -> Vec<u8> {
-    if matches!(mode, ForwardedMode::Off) {
-        return head.to_vec();
-    }
     let client_ip = peer.ip().to_string();
 
     // Split into CRLF lines (the only accepted line end).
@@ -1536,13 +1581,31 @@ pub(crate) fn apply_forwarded(
     }
     lines.push(rest);
 
-    let mut out: Vec<Vec<u8>> = Vec::with_capacity(lines.len() + 2);
+    let nominated = connection_tokens(&lines);
+    let mut out: Vec<Vec<u8>> = Vec::with_capacity(lines.len() + 3);
     let mut xff_done = false;
-    for line in lines {
+    for (index, line) in lines.iter().enumerate() {
+        if index == 0 {
+            out.push(line.to_vec());
+            continue;
+        }
         let name_end = line.iter().position(|&b| b == b':').unwrap_or(line.len());
         let name = line[..name_end].to_ascii_lowercase();
+        if is_hop_by_hop_header(&name) {
+            if keep_upgrade && name == b"upgrade" {
+                out.push(line.to_vec());
+            }
+            continue;
+        }
+        if nominated
+            .iter()
+            .any(|token| token.as_slice() == name.as_slice())
+        {
+            continue;
+        }
         match name.as_slice() {
             b"x-forwarded-for" => match mode {
+                ForwardedMode::Off => out.push(line.to_vec()),
                 ForwardedMode::Replace => {} // dropped; rewritten below
                 ForwardedMode::Append => {
                     if !xff_done {
@@ -1559,20 +1622,24 @@ pub(crate) fn apply_forwarded(
                         out.push(merged);
                     }
                 }
-                ForwardedMode::Off => {}
             },
             b"x-real-ip" if matches!(mode, ForwardedMode::Replace) => {} // dropped
-            b"x-forwarded-proto" => {}                                   // dropped; rewritten below
+            b"x-forwarded-proto" if !matches!(mode, ForwardedMode::Off) => {} // dropped; rewritten below
             _ => out.push(line.to_vec()),
         }
     }
-    if !xff_done {
-        out.push(format!("x-forwarded-for: {client_ip}").into_bytes());
+    if keep_upgrade {
+        out.push(b"connection: upgrade".to_vec());
     }
-    if matches!(mode, ForwardedMode::Replace) {
-        out.push(format!("x-real-ip: {client_ip}").into_bytes());
+    if !matches!(mode, ForwardedMode::Off) {
+        if !xff_done {
+            out.push(format!("x-forwarded-for: {client_ip}").into_bytes());
+        }
+        if matches!(mode, ForwardedMode::Replace) {
+            out.push(format!("x-real-ip: {client_ip}").into_bytes());
+        }
+        out.push(format!("x-forwarded-proto: {scheme}").into_bytes());
     }
-    out.push(format!("x-forwarded-proto: {scheme}").into_bytes());
     join_head_lines(&out, head.len() + 64)
 }
 
@@ -3069,7 +3136,13 @@ impl RequestPrepPhase<'_, '_> {
         let acted = rule_headers
             .map(|actions| apply_header_actions(head_bytes, actions, peer, &request.host, scheme));
         let base: &[u8] = acted.as_deref().unwrap_or(head_bytes);
-        let forwarded_base = apply_forwarded(base, peer, cfg.forwarded_headers, scheme);
+        let forwarded_base = apply_forwarded(
+            base,
+            peer,
+            cfg.forwarded_headers,
+            scheme,
+            request.wants_upgrade,
+        );
         let forwarded_base = match rewrite {
             Some(rewrite) => apply_rewrite(&forwarded_base, rewrite, &request.target),
             None => forwarded_base,
@@ -4562,6 +4635,105 @@ mod tests {
         let parsed =
             req("POST /a HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n").expect("te");
         assert_eq!(parsed.framing, BodyFraming::Chunked);
+    }
+
+    #[test]
+    fn forwarding_strips_hop_by_hop_and_nominated_headers_in_every_mode() {
+        let peer: SocketAddr = "127.0.0.1:4567".parse().expect("peer");
+        let head = b"GET / HTTP/1.1\r\nHost: x\r\nConnection: keep-alive, x-remove, close\r\nX-Remove: secret\r\nKeep-Alive: timeout=5\r\nProxy-Connection: keep-alive\r\nTE: trailers\r\nTrailer: x-trailer\r\nX-Keep: yes";
+        let text = String::from_utf8(apply_forwarded(
+            head,
+            peer,
+            ForwardedMode::Off,
+            "http",
+            false,
+        ))
+        .expect("ascii head");
+        let lower = text.to_ascii_lowercase();
+        for forbidden in [
+            "\r\nconnection:",
+            "\r\nx-remove:",
+            "\r\nkeep-alive:",
+            "\r\nproxy-connection:",
+            "\r\nte:",
+            "\r\ntrailer:",
+        ] {
+            assert!(
+                !lower.contains(forbidden),
+                "{forbidden:?} survived: {text:?}"
+            );
+        }
+        assert!(text.contains("\r\nHost: x"), "{text:?}");
+        assert!(text.contains("\r\nX-Keep: yes"), "{text:?}");
+    }
+
+    #[test]
+    fn forwarding_preserves_upgrade_only_for_upgrade_requests() {
+        let peer: SocketAddr = "127.0.0.1:4567".parse().expect("peer");
+        let head = b"GET / HTTP/1.1\r\nHost: x\r\nConnection: keep-alive, Upgrade\r\nUpgrade: websocket\r\nX-Keep: yes";
+        let upgraded = String::from_utf8(apply_forwarded(
+            head,
+            peer,
+            ForwardedMode::Off,
+            "http",
+            true,
+        ))
+        .expect("ascii head");
+        let lower = upgraded.to_ascii_lowercase();
+        assert!(lower.contains("\r\nconnection: upgrade"), "{upgraded:?}");
+        assert!(lower.contains("\r\nupgrade: websocket"), "{upgraded:?}");
+        assert!(!lower.contains("keep-alive"), "{upgraded:?}");
+
+        let plain = String::from_utf8(apply_forwarded(
+            head,
+            peer,
+            ForwardedMode::Off,
+            "http",
+            false,
+        ))
+        .expect("ascii head");
+        let lower = plain.to_ascii_lowercase();
+        assert!(!lower.contains("upgrade"), "{plain:?}");
+        assert!(!lower.contains("connection"), "{plain:?}");
+    }
+
+    #[test]
+    fn connection_nominated_xff_is_dropped_before_the_append_policy() {
+        let peer: SocketAddr = "127.0.0.1:4567".parse().expect("peer");
+        let head = b"GET / HTTP/1.1\r\nHost: x\r\nConnection: x-forwarded-for\r\nX-Forwarded-For: 6.6.6.6\r\nX-Keep: yes";
+        let text = String::from_utf8(apply_forwarded(
+            head,
+            peer,
+            ForwardedMode::Append,
+            "http",
+            false,
+        ))
+        .expect("ascii head");
+        assert!(!text.contains("6.6.6.6"), "{text:?}");
+        assert!(
+            text.to_ascii_lowercase()
+                .contains("\r\nx-forwarded-for: 127.0.0.1"),
+            "{text:?}"
+        );
+        assert!(text.contains("\r\nX-Keep: yes"), "{text:?}");
+    }
+
+    #[test]
+    fn connection_naming_framing_or_routing_headers_is_rejected() {
+        for token in ["content-length", "transfer-encoding", "host", "connection"] {
+            let head = format!("GET / HTTP/1.1\r\nHost: x\r\nConnection: {token}\r\n");
+            let err = req(&head).expect_err(&head);
+            assert_eq!(err.status, 400, "case: {head:?}");
+            assert!(
+                err.reason.contains("connection"),
+                "case: {head:?}: {}",
+                err.reason
+            );
+        }
+        assert!(
+            req("GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n").is_ok(),
+            "a benign connection option must still parse"
+        );
     }
 
     #[test]

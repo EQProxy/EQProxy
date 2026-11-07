@@ -188,7 +188,7 @@ pub(crate) async fn serve(
     let acted =
         actions.map(|actions| apply_header_actions(base_head, actions, peer, &head.host, scheme));
     let base = acted.as_deref().unwrap_or(base_head);
-    let forwarded = apply_forwarded(base, peer, cfg.forwarded_headers, scheme);
+    let forwarded = apply_forwarded(base, peer, cfg.forwarded_headers, scheme, false);
     let forwarded = match rewrite {
         Some(rewrite) => apply_rewrite(&forwarded, rewrite, &head.target),
         None => forwarded,

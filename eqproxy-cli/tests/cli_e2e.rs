@@ -969,6 +969,105 @@ fn run_http_mode_proxies_requests_and_rejects_smuggling() {
     assert_eq!(status.code(), Some(0), "clean shutdown must exit with 0");
 }
 
+#[cfg_attr(
+    miri,
+    ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
+)]
+#[test]
+fn run_http_mode_strips_hop_by_hop_before_the_backend_and_rejects_nomination() {
+    let (backend, seen) = start_head_recording_backend("ok");
+    let config = temp_config(
+        "http-hop-by-hop",
+        &format!(
+            "schema_version = 1\n[listener.web]\nlisten = \"127.0.0.1:0\"\nbackend = \"api\"\nmode = \"http\"\n[backend.api]\nserver = \"{backend}\"\n"
+        ),
+    );
+    let mut child = bin()
+        .args(["run", "--config"])
+        .arg(&config)
+        .args(["--metrics-interval", "1h"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn eqproxy run (hop-by-hop)");
+    let mut stderr = BufReader::new(child.stderr.take().expect("stderr piped"));
+
+    let mut proxy_addr = String::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut line = String::new();
+    while Instant::now() < deadline {
+        line.clear();
+        let read = stderr.read_line(&mut line).expect("leer stderr");
+        assert!(read > 0, "eqproxy closed stderr without announcing bind");
+        if let Some(addr) = line.split("listening on ").nth(1) {
+            proxy_addr = addr.trim().to_owned();
+            break;
+        }
+    }
+    assert!(!proxy_addr.is_empty(), "the address was not announced");
+
+    let response = proxied(
+        &proxy_addr,
+        b"GET /hop HTTP/1.1\r\nHost: t\r\nConnection: keep-alive, x-remove, close\r\nX-Remove: secret\r\nKeep-Alive: timeout=5\r\nProxy-Connection: keep-alive\r\nTE: trailers\r\nTrailer: x-trailer\r\nX-Keep: yes\r\n\r\n",
+    );
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response:?}");
+
+    let recorded = seen.lock().expect("recorded head").clone();
+    assert_eq!(recorded.len(), 1, "backend saw: {recorded:?}");
+    let lower = recorded[0].to_ascii_lowercase();
+    for forbidden in [
+        "\r\nconnection:",
+        "\r\nx-remove:",
+        "\r\nkeep-alive:",
+        "\r\nproxy-connection:",
+        "\r\nte:",
+        "\r\ntrailer:",
+    ] {
+        assert!(
+            !lower.contains(forbidden),
+            "{forbidden:?} reached the backend: {:?}",
+            recorded[0]
+        );
+    }
+    assert!(recorded[0].contains("\r\nHost: t"), "{recorded:?}");
+    assert!(recorded[0].contains("\r\nX-Keep: yes"), "{recorded:?}");
+
+    let rejected = proxied(
+        &proxy_addr,
+        b"POST /hop HTTP/1.1\r\nHost: t\r\nConnection: content-length\r\nContent-Length: 3\r\n\r\nabc",
+    );
+    assert!(
+        rejected.starts_with("HTTP/1.1 400"),
+        "Connection nomination must be rejected: {rejected:?}"
+    );
+    let recorded = seen.lock().expect("recorded head");
+    assert_eq!(
+        recorded.len(),
+        1,
+        "the rejected request reached the backend: {recorded:?}"
+    );
+
+    let pid = child.id();
+    let kill = Command::new("kill")
+        .args(["-INT", &pid.to_string()])
+        .status()
+        .expect("run kill");
+    assert!(kill.success(), "kill -INT must be accepted");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("try_wait") {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("eqproxy did not finish after SIGINT");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    remove_temp(&config);
+    assert_eq!(status.code(), Some(0), "clean shutdown must exit with 0");
+}
+
 /// Minimal identity backend: answers `200 OK` with the given body and
 /// closes (the routing cases send `Connection: close`).
 fn start_identity_backend(body: &'static str) -> std::net::SocketAddr {
@@ -999,6 +1098,48 @@ fn start_identity_backend(body: &'static str) -> std::net::SocketAddr {
         }
     });
     addr
+}
+
+/// Backend that answers `200 OK` with `body` and records the complete request
+/// head, so a test can assert exactly which headers the proxy forwarded.
+fn start_head_recording_backend(
+    body: &'static str,
+) -> (
+    std::net::SocketAddr,
+    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) {
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind head recorder");
+    let addr = listener.local_addr().expect("addr head recorder");
+    let keep = std::sync::Arc::clone(&seen);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let keep = std::sync::Arc::clone(&keep);
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 8192];
+                let mut total = 0usize;
+                loop {
+                    match stream.read(&mut buf[total..]) {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => total += n,
+                    }
+                    if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                keep.lock()
+                    .expect("record head")
+                    .push(String::from_utf8_lossy(&buf[..total]).into_owned());
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            });
+        }
+    });
+    (addr, seen)
 }
 
 /// One request through the real binary; returns the raw response.

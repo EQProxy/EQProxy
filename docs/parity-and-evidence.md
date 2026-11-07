@@ -1,9 +1,9 @@
-# Parity and evidence — what v0.9.1 ships and how it is proven
+# Parity and evidence — what v0.9.2 ships and how it is proven
 
 Language: **English**.
 
 **What this page answers:** the detailed capability and evidence record that
-used to open the README: what 0.9.1 adds, what the earlier lines added, the
+used to open the README: what 0.9.2 adds, what the earlier lines added, the
 measured performance including the losses, and the release gates. Moved from
 the README on 2026-11-01; only link targets were adjusted for this directory.
 
@@ -20,11 +20,14 @@ the README on 2026-11-01; only link targets were adjusted for this directory.
 
 ## Release status
 
-**Status: v0.9.1 (2026-11-01) — released and published; artifact gate met.
-0.9.1 adds Unix-domain backends and per-server `source` bind,
+**Status: v0.9.2 (2026-11-06) — released and published; artifact gate met.
+0.9.2 adds TLS 1.3 session resumption, the `Server: EQProxy` banner on every
+dataplane response, a 16 KiB HTTP/2 stream pipe, graceful shutdown on SIGTERM
+and a profiler on `inferno` that clears the `quick-xml` advisories. It builds
+on the v0.9.1 line — Unix-domain backends and per-server `source` bind,
 custom error pages, the TLS version range and `errorloc`, the semantic
-reference and the complete 120-row parity matrix. It builds on the v0.8.5
-line: request-filter plugins as WASM with deny-by-default capabilities
+reference and the complete 120-row parity matrix — which in turn built on
+v0.8.5: request-filter plugins as WASM with deny-by-default capabilities
 (no WASI, no network, no filesystem to grant), a per-listener HTTP response
 cache with `Vary`, ETag/304 revalidation and cache-lock, per-listener message
 limits and stream buffers, hot TLS secrets in both directions, per-server
@@ -143,6 +146,11 @@ The v0.8 administration surface has its own pages:
 [backup pool](evidence/v08-allbackups.md).
 ## Releases, benchmarks and soak
 
+Release v0.9.2 (tag `v0.9.2`, release run 42281241472 green on all five
+jobs, image index `sha256:6392aa30…` scanned 0 critical / 0 high on both
+architectures and promoted unchanged to `:0.9.2` and `:latest` on GHCR and
+mirrored to Docker Hub — [publication record](release-0.9.2.md); Linux
+binaries for amd64 and arm64 plus the multi-arch image, no Darwin asset).
 Release v0.9.1 (tag `v0.9.1`, release run 41299478887 green on all six
 jobs, image index `sha256:95170d9a…` scanned 0 critical / 0 high on both
 architectures and promoted unchanged to `:0.9.1` and `:latest` on GHCR and
@@ -168,11 +176,13 @@ Worse ([pool sizing](evidence/v07-h2-pool-sizing.md),
 
 ## Scope and non-goals
 
-**Scope honesty:** v0.9.1 is not declared production ready (Phase 9 gate
-pending); its roadmap is closed at 13/13 and its publication gate is met:
-annotated tag over the release commit `e7473ea`, all six tag-run jobs green,
-the scanned index promoted unchanged, and the published image re-pulled and
-exercised ([artifact gate](release-0.9.1.md#51-result-2026-11-01)).
+**Scope honesty:** v0.9.2 is not declared production ready (Phase 9 gate
+pending); its publication gate is met: annotated tag over the release commit
+`6478f10`, all five tag-run jobs green, the scanned index promoted unchanged,
+and the published image re-pulled, run (`--version` answers `eqproxy 0.9.2`)
+and re-scanned ([publication record](release-0.9.2.md)). The v0.9.1 release
+was not declared production ready either; its own gate was met
+([artifact gate](release-0.9.1.md#51-result-2026-11-01)).
 The v0.8.5 release was not declared production
 ready either. Its own gate was met: 22/22 boxes of the v0.8.5 roadmap, including
 the artifact gate — tag == `Cargo.toml`, every binary and both image

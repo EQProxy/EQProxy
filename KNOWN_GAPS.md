@@ -2,7 +2,7 @@
 
 Language: **English**.
 
-**What this page answers:** what v0.9.1 does not do, or does not prove yet, so a
+**What this page answers:** what v0.9.2 does not do, or does not prove yet, so a
 trial on a staging config starts from an honest list. It is not a roadmap; the
 reasons and the rejected alternatives are in the linked ADRs.
 
@@ -33,9 +33,11 @@ reasons and the rejected alternatives are in the linked ADRs.
 - **HTTP/3** is experimental: browsers and `curl` over h3 are unverified, and
   the QUIC adversarial tests of [THREAT_MODEL](THREAT_MODEL.md) T19 are not
   executed ([ADR-0013](docs/adr/0013-http3-quic.md)).
-- **No users outside the author yet.** v0.9.1 is not declared production ready;
+- **No users outside the author yet.** v0.9.2 is not declared production ready;
   the Phase 9 gate is pending.
-- The macOS binaries are not static; only the Linux ones are.
+- **The v0.9.2 release is Linux-only:** no Darwin binary is published, so macOS
+  users build from source. The macOS binaries verified locally during
+  preparation were never shipped.
 
 ## Limits of the evidence
 
@@ -45,8 +47,10 @@ reasons and the rejected alternatives are in the linked ADRs.
 - The differential corpus covers declared shared semantics; a green corpus is
   the absence of a counterexample, not equivalence
   ([corpus](docs/differential-corpus.md)).
-- The published source tarball is inspected and its file list checked, but it is
-  not rebuilt in CI ([release checklist §5.2](docs/release-0.9.1.md#52-not-verified-by-hand)).
+- The published source tarball is not rebuilt in CI. For v0.9.2 its SHA-256 was
+  verified against the published `SHA256SUMS.txt`, but the file-list inspection
+  belongs to the v0.9.1 cut
+  ([release checklist §5.2](docs/release-0.9.1.md#52-not-verified-by-hand)).
 
 ## Report a gap
 

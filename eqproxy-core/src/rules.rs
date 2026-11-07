@@ -3,15 +3,19 @@
 //!
 //! Semantics are defined once here (Q8) and never silently changed:
 //!
-//! - `host`/`host_prefix`: case-insensitive, compared against the Host
-//!   header **without** any `:port` suffix (IPv6 literals are compared
-//!   without brackets).
+//! - `host`/`host_prefix`: case-insensitive, compared against the parsed
+//!   Host (lowercased, one trailing DNS dot removed) **without** any
+//!   `:port` suffix (IPv6 literals are compared without brackets). An exact
+//!   `host` may carry that root dot; a `host_prefix` keeps every character,
+//!   so a trailing dot there is a label separator, not the root.
 //! - `host_regex`: unanchored match (as with `expect rstring`) against the
-//!   same lowercased, port-free host; anchor with `^…$` for a full match.
-//! - `path`/`path_prefix`: case-sensitive and **literal** — no
-//!   normalization of any kind, so the prefix `/v1` also matches `/v10`
-//!   (write `/v1/` to avoid it), applied to the target with the query
-//!   string removed.
+//!   same normalized, lowercased, port-free host; anchor with `^…$` for a
+//!   full match.
+//! - `path`/`path_prefix`: case-sensitive, matched against the **normalized**
+//!   path (H-01): dot segments resolved, duplicate slashes collapsed and
+//!   unreserved `%XX` decoded once by the HTTP/1.1 parser. The prefix `/v1`
+//!   also matches `/v10` (write `/v1/` to avoid it); the query string is
+//!   excluded.
 //! - `path_regex`: unanchored match against that same path.
 //! - `methods`: exact, case-sensitive tokens (HTTP methods are
 //!   case-sensitive).
@@ -38,14 +42,15 @@ use std::net::IpAddr;
 use crate::expectation::{IpAllowlist, RegexMatcher};
 use crate::maps::{MapKey, MapRegistry};
 
-/// Facts of the request being routed. `host` is the Host header as
-/// received (may carry `:port`); `path` is the request target with the
-/// query string removed (both are normalized by [`Rule`]).
+/// Facts of the request being routed. `host` is the parsed Host (normalized
+/// by the request parser: lowercased, one trailing DNS dot removed; may
+/// carry `:port`); `path` is the normalized request target with the query
+/// string removed (both are compared by [`Rule`]).
 #[derive(Debug, Clone, Copy)]
 pub struct RequestFacts<'a> {
     /// Request method (case-sensitive token).
     pub method: &'a str,
-    /// Host header value as received (may include `:port`, may be empty).
+    /// Normalized Host value (may include `:port`, may be empty).
     pub host: &'a str,
     /// Request target path, query string excluded.
     pub path: &'a str,
@@ -267,7 +272,7 @@ pub struct MapConditionSpec {
 pub struct RuleSpec {
     /// Display name for `explain` and logs.
     pub name: String,
-    /// Exact host.
+    /// Exact host (case-insensitive; one trailing DNS root dot is ignored).
     pub host: Option<String>,
     /// Host prefix.
     pub host_prefix: Option<String>,
@@ -394,7 +399,9 @@ impl Rule {
         }
 
         let host = if let Some(exact) = &spec.host {
-            Some(HostMatch::Exact(exact.to_ascii_lowercase()))
+            let lower = exact.to_ascii_lowercase();
+            let normalized = lower.strip_suffix('.').unwrap_or(&lower);
+            Some(HostMatch::Exact(normalized.to_owned()))
         } else if let Some(prefix) = &spec.host_prefix {
             Some(HostMatch::Prefix(prefix.to_ascii_lowercase()))
         } else if let Some(pattern) = &spec.host_regex {
@@ -572,6 +579,14 @@ impl Rule {
             ip,
             map,
         })
+    }
+
+    /// True when the rule constrains the `Host` (H-01): an HTTP/1.0 request
+    /// without one cannot match it, so it is refused instead of falling
+    /// through to the listener's default backend.
+    #[must_use]
+    pub fn has_host_condition(&self) -> bool {
+        self.host.is_some()
     }
 
     /// True when every condition holds.
@@ -793,20 +808,21 @@ pub fn cookie_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&
     None
 }
 
-/// Borrowed host with any `:port` suffix removed (bracket-aware for IPv6
-/// literals, which lose the brackets too). The malformed shapes are part of
-/// the frozen Q8 semantics: `a:b:c` -> `a`, `example.com:abc` ->
-/// `example.com`, `::1` -> `""`, `[::1]:8080` -> `::1`.
+/// Borrowed host with any `:port` suffix and one trailing DNS root dot
+/// removed (bracket-aware for IPv6 literals, which lose the brackets too).
+/// The malformed shapes are part of the frozen Q8 semantics: `a:b:c` -> `a`,
+/// `example.com:abc` -> `example.com`, `::1` -> `""`, `[::1]:8080` -> `::1`.
 fn host_without_port(host: &str) -> &str {
-    if let Some(rest) = host.strip_prefix('[') {
+    let host = if let Some(rest) = host.strip_prefix('[') {
         rest.split(']').next().unwrap_or(rest)
     } else {
         host.split(':').next().unwrap_or(host)
-    }
+    };
+    host.strip_suffix('.').unwrap_or(host)
 }
 
-/// Lowercased host with any `:port` suffix removed (bracket-aware for
-/// IPv6 literals, which lose the brackets too).
+/// Lowercased host with any `:port` suffix and one trailing DNS root dot
+/// removed (bracket-aware for IPv6 literals, which lose the brackets too).
 #[must_use]
 pub fn host_key(host: &str) -> String {
     host_without_port(host).to_ascii_lowercase()
@@ -1108,6 +1124,26 @@ mod tests {
     }
 
     #[test]
+    fn host_exact_ignores_one_trailing_dns_dot() {
+        let rule = compile(RuleSpec {
+            name: "api".to_owned(),
+            host: Some("API.Example.com.".to_owned()),
+            ..RuleSpec::default()
+        });
+        assert!(rule.matches(&facts("GET", "api.example.com", "/")));
+        assert!(rule.matches(&facts("GET", "API.Example.com.", "/")));
+        assert!(rule.matches(&facts("GET", "api.example.com.:8443", "/")));
+        assert!(!rule.matches(&facts("GET", "api.example.com.evil", "/")));
+
+        let plain = compile(RuleSpec {
+            name: "plain".to_owned(),
+            host: Some("api.example.com".to_owned()),
+            ..RuleSpec::default()
+        });
+        assert!(plain.matches(&facts("GET", "api.example.com.", "/")));
+    }
+
+    #[test]
     fn host_prefix_and_regex() {
         let prefix = compile(RuleSpec {
             name: "p".to_owned(),
@@ -1116,6 +1152,8 @@ mod tests {
         });
         assert!(prefix.matches(&facts("GET", "api.example.com", "/")));
         assert!(!prefix.matches(&facts("GET", "xapi.example.com", "/")));
+        // The trailing dot in `api.` is a label boundary, never stripped.
+        assert!(!prefix.matches(&facts("GET", "apix.example.com", "/")));
 
         let regex = compile(RuleSpec {
             name: "r".to_owned(),
@@ -1541,6 +1579,7 @@ mod tests {
     #[test]
     fn host_key_and_path_of_normalize() {
         assert_eq!(host_key("API.Example.com:8443"), "api.example.com");
+        assert_eq!(host_key("API.Example.com.:8443"), "api.example.com");
         assert_eq!(host_key("[::1]:8080"), "::1");
         assert_eq!(host_key("plain"), "plain");
         assert_eq!(path_of("/a/b?x=1&y=2"), "/a/b");

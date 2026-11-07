@@ -1479,7 +1479,7 @@
           ]
         },
         "path_prefix": {
-          "description": "Literal path prefix (no normalization: `/v1` also matches `/v10`).",
+          "description": "Literal path prefix, matched against the normalized path (H-01:\n`.`/`..` resolved, `//` collapsed, unreserved `%XX` decoded); `/v1`\nalso matches `/v10`.",
           "type": [
             "string",
             "null"

@@ -186,6 +186,10 @@ pub enum BodyFraming {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestHead {
     pub method: String,
+    /// Normalized request target (H-01) for origin-form requests: dot
+    /// segments resolved, duplicate slashes collapsed and unreserved `%XX`
+    /// decoded once by [`parse_request_head`]. CONNECT's authority-form
+    /// target and `*` are kept verbatim.
     pub target: String,
     /// HTTP version: 10 (HTTP/1.0) or 11 (HTTP/1.1).
     pub version: u8,
@@ -197,8 +201,9 @@ pub struct RequestHead {
     /// The client asked for a protocol upgrade (`Upgrade` +
     /// `Connection: upgrade`, A7); a backend `101` opens the tunnel.
     pub wants_upgrade: bool,
-    /// Host header value as received (may carry `:port`; empty when
-    /// absent). Kept for routing rules (B-H3).
+    /// Host header value normalized by [`parse_request_head`] (H-01):
+    /// lowercased, one trailing DNS dot removed, `:port` kept; empty when
+    /// absent. Kept for routing rules (B-H3).
     pub host: String,
     /// All request headers (names lowercased by [`parse_header_line`]).
     /// Kept for routing rules (B-H3).
@@ -402,6 +407,270 @@ fn request_framing(
     Ok((framing, wants_close, has_upgrade))
 }
 
+fn bad_request(reason: &'static str) -> Reject {
+    Reject {
+        status: 400,
+        reason,
+    }
+}
+
+fn bad_host() -> Reject {
+    bad_request("invalid host header")
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+const UPPER_HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+/// RFC 3986 syntax-based normalization of an origin-form target (H-01).
+///
+/// Percent-escapes of unreserved characters are decoded, duplicate slashes
+/// collapsed and dot segments resolved once, before rules and forwarding.
+/// An encoded slash, an invalid escape, a NUL, a fragment or a `..` above
+/// the root is refused instead of guessed: the backend must never resolve a
+/// different resource than the one the rules saw.
+pub(crate) fn normalize_target(raw: &str) -> Result<String, Reject> {
+    if raw.contains('#') {
+        return Err(bad_request("fragment in request target"));
+    }
+    let (path, query) = raw
+        .split_once('?')
+        .map_or((raw, None), |(path, query)| (path, Some(query)));
+    if !path.starts_with('/') {
+        return Err(bad_request("invalid request target"));
+    }
+    let decoded = decode_unreserved(path)?;
+    let normalized = remove_dot_segments(&decoded)?;
+    Ok(match query {
+        Some(query) => format!("{normalized}?{query}"),
+        None => normalized,
+    })
+}
+
+fn decode_unreserved(path: &str) -> Result<String, Reject> {
+    let bytes = path.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'%' {
+            out.push(bytes[index]);
+            index += 1;
+            continue;
+        }
+        let (Some(high), Some(low)) = (
+            bytes.get(index + 1).and_then(|byte| hex_value(*byte)),
+            bytes.get(index + 2).and_then(|byte| hex_value(*byte)),
+        ) else {
+            return Err(bad_request("invalid percent-escape in request target"));
+        };
+        let byte = (high << 4) | low;
+        match byte {
+            b'/' => return Err(bad_request("percent-encoded slash is ambiguous")),
+            0 => return Err(bad_request("nul byte in request target")),
+            byte if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') => {
+                out.push(byte);
+            }
+            byte => {
+                out.push(b'%');
+                out.push(UPPER_HEX[usize::from(byte >> 4)]);
+                out.push(UPPER_HEX[usize::from(byte & 0x0f)]);
+            }
+        }
+        index += 3;
+    }
+    String::from_utf8(out).map_err(|_| bad_request("invalid utf-8 in request target"))
+}
+
+fn remove_dot_segments(path: &str) -> Result<String, Reject> {
+    let trailing = path.ends_with('/') || path.ends_with("/.") || path.ends_with("/..");
+    let mut stack: Vec<&str> = Vec::new();
+    for (index, segment) in path.split('/').enumerate() {
+        if index == 0 {
+            continue;
+        }
+        match segment {
+            "" | "." => {}
+            ".." => {
+                if stack.pop().is_none() {
+                    return Err(bad_request("path traversal above root"));
+                }
+            }
+            other => stack.push(other),
+        }
+    }
+    let mut out = String::from("/");
+    out.push_str(&stack.join("/"));
+    if trailing && !stack.is_empty() {
+        out.push('/');
+    }
+    Ok(out)
+}
+
+fn validate_port(port: &str) -> Result<(), Reject> {
+    if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(bad_host());
+    }
+    match port.parse::<u16>() {
+        Ok(0) | Err(_) => Err(bad_host()),
+        Ok(_) => Ok(()),
+    }
+}
+
+fn split_host_port(value: &str) -> Result<(&str, Option<&str>), Reject> {
+    if value.starts_with('[') {
+        let close = value.find(']').ok_or_else(bad_host)?;
+        let host = &value[..=close];
+        let rest = &value[close + 1..];
+        if rest.is_empty() {
+            return Ok((host, None));
+        }
+        let port = rest.strip_prefix(':').ok_or_else(bad_host)?;
+        validate_port(port)?;
+        return Ok((host, Some(port)));
+    }
+    match value.rsplit_once(':') {
+        Some((host, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => {
+            validate_port(port)?;
+            Ok((host, Some(port)))
+        }
+        Some(_) => Err(bad_host()),
+        None => Ok((value, None)),
+    }
+}
+
+/// Lowercases the Host, removes one trailing DNS dot and validates it
+/// (H-01). The port is kept: it is part of the forwarded `Host` even
+/// though the rule comparison ignores it. An empty value means "absent"
+/// and is only accepted from an HTTP/1.0 request.
+pub(crate) fn normalize_host(raw: &str) -> Result<String, Reject> {
+    if raw.is_empty() {
+        return Ok(String::new());
+    }
+    let (host, port) = split_host_port(raw.trim())?;
+    let host = if let Some(inner) = host.strip_prefix('[') {
+        let inner = inner.strip_suffix(']').ok_or_else(bad_host)?;
+        if inner.is_empty()
+            || !inner
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() || byte == b':' || byte == b'.')
+        {
+            return Err(bad_host());
+        }
+        format!("[{}]", inner.to_ascii_lowercase())
+    } else {
+        let lower = host.to_ascii_lowercase();
+        let trimmed = lower.strip_suffix('.').unwrap_or(&lower);
+        if trimmed.is_empty() || trimmed.ends_with('.') || trimmed.contains("..") {
+            return Err(bad_host());
+        }
+        if !trimmed
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_'))
+        {
+            return Err(bad_host());
+        }
+        trimmed.to_owned()
+    };
+    Ok(match port {
+        Some(port) => format!("{host}:{port}"),
+        None => host,
+    })
+}
+
+#[cfg(test)]
+mod normalization_tests {
+    use super::*;
+
+    fn reject_reason(raw: &str) -> &'static str {
+        normalize_target(raw).expect_err("must reject").reason
+    }
+
+    #[test]
+    fn target_normalization_resolves_dot_segments_and_slashes() {
+        assert_eq!(normalize_target("/admin").unwrap(), "/admin");
+        assert_eq!(normalize_target("//admin/x").unwrap(), "/admin/x");
+        assert_eq!(normalize_target("/public/../admin").unwrap(), "/admin");
+        assert_eq!(normalize_target("/a/./b//c").unwrap(), "/a/b/c");
+        assert_eq!(normalize_target("/a/..").unwrap(), "/");
+        assert_eq!(normalize_target("/a/").unwrap(), "/a/");
+        assert_eq!(normalize_target("/a?x=//../y").unwrap(), "/a?x=//../y");
+    }
+
+    #[test]
+    fn target_normalization_decodes_unreserved_escapes() {
+        assert_eq!(normalize_target("/public/%2e%2e/admin").unwrap(), "/admin");
+        assert_eq!(normalize_target("/public/%2E%2E/admin").unwrap(), "/admin");
+        assert_eq!(normalize_target("/%41%2d%5f%7e").unwrap(), "/A-_~");
+        assert_eq!(normalize_target("/a%20b").unwrap(), "/a%20b");
+        assert_eq!(normalize_target("/a%3a").unwrap(), "/a%3A");
+    }
+
+    #[test]
+    fn target_normalization_rejects_ambiguous_or_escaping_paths() {
+        assert_eq!(reject_reason("/../etc"), "path traversal above root");
+        assert_eq!(
+            reject_reason("/a/%2f/b"),
+            "percent-encoded slash is ambiguous"
+        );
+        assert_eq!(
+            reject_reason("/a/%2F/b"),
+            "percent-encoded slash is ambiguous"
+        );
+        assert_eq!(
+            reject_reason("/%zz"),
+            "invalid percent-escape in request target"
+        );
+        assert_eq!(reject_reason("/%00"), "nul byte in request target");
+        assert_eq!(reject_reason("/a#frag"), "fragment in request target");
+    }
+
+    #[test]
+    fn host_normalization_lowercases_and_strips_one_trailing_dot() {
+        assert_eq!(
+            normalize_host("Admin.Example.COM.").unwrap(),
+            "admin.example.com"
+        );
+        assert_eq!(
+            normalize_host("Admin.Example.COM.:8443").unwrap(),
+            "admin.example.com:8443"
+        );
+        assert_eq!(normalize_host("[::1]:443").unwrap(), "[::1]:443");
+        assert_eq!(normalize_host("").unwrap(), "");
+        assert!(normalize_host("admin..example").is_err());
+        assert!(normalize_host("user@host").is_err());
+    }
+
+    #[test]
+    fn parsed_request_carries_normalized_target_and_host() {
+        let head = b"GET //public/%2e%2e/admin/secret?x=1 HTTP/1.1\r\nHost: Admin.Example.COM.";
+        let request = parse_request_head(
+            head,
+            HeadLimits {
+                max_head_bytes: 8 * 1024,
+                max_headers: 64,
+            },
+        )
+        .expect("parse");
+        assert_eq!(request.target, "/admin/secret?x=1");
+        assert_eq!(request.host, "admin.example.com");
+        assert!(
+            request
+                .headers
+                .iter()
+                .any(|(name, value)| name == "host" && value == "admin.example.com"),
+            "headers: {:?}",
+            request.headers
+        );
+    }
+}
+
 /// Parses the request head with strict rules (T01–T03).
 pub fn parse_request_head(head: &[u8], limits: HeadLimits) -> Result<RequestHead, Reject> {
     let lines = parse_lines(head)?;
@@ -493,20 +762,31 @@ pub fn parse_request_head(head: &[u8], limits: HeadLimits) -> Result<RequestHead
     }
     let expect_continue = expect_continue && version >= 11;
 
-    let host = headers
-        .iter()
-        .find(|(name, _)| name == "host")
-        .map_or_else(String::new, |(_, value)| value.clone());
+    let raw_target = String::from_utf8_lossy(target);
+    let target = if is_connect || target == b"*" {
+        raw_target.into_owned()
+    } else {
+        normalize_target(&raw_target)?
+    };
+    let host_header = headers.iter().find(|(name, _)| name == "host");
+    if host_header.is_some_and(|(_, value)| value.trim().is_empty()) {
+        return Err(bad_request("empty host header"));
+    }
+    let host = host_header.map_or_else(String::new, |(_, value)| value.clone());
     // CONNECT (A8): with no Host header the authority-form target is the
     // routing host of the tunnel.
     let host = if is_connect && host.is_empty() {
-        String::from_utf8_lossy(target).into_owned()
+        target.clone()
     } else {
         host
     };
+    let host = normalize_host(&host)?;
+    if let Some((_, value)) = headers.iter_mut().find(|(name, _)| name == "host") {
+        *value = host.clone();
+    }
     Ok(RequestHead {
         method: String::from_utf8_lossy(method).into_owned(),
-        target: String::from_utf8_lossy(target).into_owned(),
+        target,
         version,
         framing,
         wants_close,
@@ -1421,6 +1701,51 @@ fn rewrite_target(target: &str, rewrite: &ResolvedRewrite) -> String {
         }
         None => target.to_owned(),
     }
+}
+
+/// Rebuilds the client head with the parsed (normalized) request line and
+/// `Host` value (H-01). Rules and the origin must see the same normalized
+/// bytes, so this runs before any rule action, forwarded-headers policy,
+/// rewrite or plugin; the client's own bytes are never mutated.
+pub(crate) fn apply_normalized_head(head: &[u8], request: &RequestHead) -> Vec<u8> {
+    let mut lines: Vec<&[u8]> = Vec::new();
+    let mut rest = head;
+    while let Some(pos) = rest.windows(2).position(|window| window == b"\r\n") {
+        lines.push(&rest[..pos]);
+        rest = &rest[pos + 2..];
+    }
+    lines.push(rest);
+    let version = match request.version {
+        10 => "HTTP/1.0",
+        _ => "HTTP/1.1",
+    };
+    let mut rebuilt: Vec<Vec<u8>> = Vec::with_capacity(lines.len());
+    for (index, line) in lines.iter().enumerate() {
+        if index == 0 {
+            rebuilt.push(format!("{} {} {}", request.method, request.target, version).into_bytes());
+            continue;
+        }
+        let name_end = line.iter().position(|&b| b == b':').unwrap_or(line.len());
+        if line[..name_end].eq_ignore_ascii_case(b"host") && !request.host.is_empty() {
+            // Only the value is normalized: the client's header-name casing
+            // is not H-01's business and stays byte-identical.
+            let mut replaced = Vec::with_capacity(name_end + 2 + request.host.len());
+            replaced.extend_from_slice(&line[..name_end]);
+            replaced.extend_from_slice(b": ");
+            replaced.extend_from_slice(request.host.as_bytes());
+            rebuilt.push(replaced);
+            continue;
+        }
+        rebuilt.push(line.to_vec());
+    }
+    let mut out = Vec::new();
+    for (index, line) in rebuilt.iter().enumerate() {
+        if index > 0 {
+            out.extend_from_slice(b"\r\n");
+        }
+        out.extend_from_slice(line);
+    }
+    out
 }
 
 /// Rule rewrite applied to the forwarded copy of the head (v0.6 slice
@@ -3133,9 +3458,14 @@ impl RequestPrepPhase<'_, '_> {
         // Rule header actions run first; the forwarded-headers policy is
         // applied last, so `replace` cannot be undone by a rule. The plugin
         // runs after both, per ADR-0031.
-        let acted = rule_headers
-            .map(|actions| apply_header_actions(head_bytes, actions, peer, &request.host, scheme));
-        let base: &[u8] = acted.as_deref().unwrap_or(head_bytes);
+        // H-01: the client, the rules and the origin must see the same
+        // normalized bytes. Rebuilding the request line and Host first also
+        // keeps a later rule rewrite and the cache key on that same form.
+        let normalized_head = apply_normalized_head(head_bytes, request);
+        let acted = rule_headers.map(|actions| {
+            apply_header_actions(&normalized_head, actions, peer, &request.host, scheme)
+        });
+        let base: &[u8] = acted.as_deref().unwrap_or(&normalized_head);
         let forwarded_base = apply_forwarded(
             base,
             peer,
@@ -3651,6 +3981,20 @@ pub async fn serve_http<CR, CW>(
         let Some(request) = parse_client_request(&h1, &mut client_write, &head_bytes).await else {
             return;
         };
+        // H-01: an HTTP/1.0 request without Host cannot match a host rule,
+        // and the fallback backend would serve what that rule protects.
+        if request.host.is_empty() && cfg.requires_host() {
+            write_local(
+                &mut client_write,
+                cfg,
+                &metrics,
+                400,
+                "host header required by a host rule",
+                false,
+            )
+            .await;
+            return;
+        }
         // A HEAD request gets the page's head (status, type, length) and no
         // payload, exactly like a forwarded HEAD. Known from here on.
         let head_only = request.method == "HEAD";

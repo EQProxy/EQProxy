@@ -17,6 +17,16 @@ results are recorded in §2.1 and §2.2.
   `## [v0.9.1] — 2026-11-01`, extracted automatically by the `release` job.
 - Pipeline: [.github/workflows/release.yml](../.github/workflows/release.yml).
 
+> **Registry archive (2026-11-07).** All 28 tags of the old
+> `ghcr.io/exyonq/eqproxy` package, including the `-candidate` tags, were
+> copied unchanged to `ghcr.io/eqproxy/eqproxy` with `crane copy`; the
+> `--all-tags` pass used `--no-clobber`. The 28 tag digests were compared
+> between both registries and all matched. In particular, `0.9.1` remains
+> `sha256:95170d9a19dc089ccf876a6ae91322e826b64086d7d07763a5462685e2ad775f`
+> in both namespaces. The old package remains public as a backup; the
+> `ghcr.io/exyonq/...` commands below are the publication-time record. See
+> [package-transfer-eqproxy.md](package-transfer-eqproxy.md).
+
 ## 1. The release commit
 
 The release commit contains the complete 0.9.1 tree, not only the version

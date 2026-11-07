@@ -24,6 +24,17 @@ what the release ships.
   `## [v0.9.2] — 2026-11-06` (68 extracted lines).
 - Pipeline: [.github/workflows/release.yml](../.github/workflows/release.yml).
 
+> **Registry archive (2026-11-07).** All 28 tags of the old
+> `ghcr.io/exyonq/eqproxy` package, including the `-candidate` tags, were
+> copied unchanged to `ghcr.io/eqproxy/eqproxy` with `crane copy`; the
+> `--all-tags` pass used `--no-clobber`. The 28 tag digests were compared
+> between both registries and all matched. In particular, `0.9.2` and
+> `latest` remain
+> `sha256:6392aa3018c71a1bc87b3df22ec9e3d13a5b306e15fa66cbe4f819a49e77ea3f`
+> in both namespaces. The old package remains public as a backup; the
+> `ghcr.io/exyonq/...` commands below are the publication-time record. See
+> [package-transfer-eqproxy.md](package-transfer-eqproxy.md).
+
 `README.md` is version-agnostic: install commands use the moving `latest` tag
 and `releases/latest`, so it needs no per-release edit.
 

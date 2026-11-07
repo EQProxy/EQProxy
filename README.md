@@ -105,7 +105,9 @@ docker run --rm exyonq/eqproxy:latest --version
 ```
 
 The examples use the moving `latest` tag; pin a release tag when you need a
-reproducible pull.
+reproducible pull. `docker run` reuses a tag already present locally, so it does
+not prove what a registry serves: run `docker pull` first, or pass
+`--pull=always` to `docker run`, before checking a tag.
 
 ## Docs
 

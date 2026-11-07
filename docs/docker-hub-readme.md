@@ -84,7 +84,7 @@ docker pull exyonq/eqproxy:{{version}}
 ```
 
 The same images are published on GitHub Container Registry as
-`ghcr.io/exyonq/eqproxy` with identical digests.
+`ghcr.io/eqproxy/eqproxy` with identical digests.
 
 ## How to use this image
 

@@ -104,7 +104,7 @@ digests:
 
 ```bash
 docker pull exyonq/eqproxy:latest           # Docker Hub
-docker pull ghcr.io/exyonq/eqproxy:latest   # GitHub Container Registry
+docker pull ghcr.io/eqproxy/eqproxy:latest  # GitHub Container Registry
 docker run --rm exyonq/eqproxy:latest --version
 ```
 

@@ -2,7 +2,7 @@
 
 EQProxy — the reverse proxy and load balancer that imports your HAProxy and nginx config, and proves the translation routes the same.
 
-[![Latest release](https://img.shields.io/github/v/release/EQProxy/EQProxy)](https://github.com/EQProxy/EQProxy/releases)
+[![Releases](https://img.shields.io/badge/releases-all-blue)](https://github.com/EQProxy/EQProxy/releases)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](LICENSE-MIT)
 ![Status](https://img.shields.io/badge/status-pre--1.0-orange)
 
@@ -50,9 +50,9 @@ cover the operational path.
 
 ## Status
 
-**Pre-1.0 · not production-ready.** 738 tests green across 36 targets,
-real HTTP/1.1, HTTP/2 and HTTP/3 dataplanes — but no users outside the author
-yet. Try it on a staging config and tell me what breaks:
+**v0.9.2 · pre-1.0 · not production-ready.** The test suite is green across 36
+targets, real HTTP/1.1, HTTP/2 and HTTP/3 dataplanes — but no users outside the
+author yet. Try it on a staging config and tell me what breaks:
 [KNOWN_GAPS.md](KNOWN_GAPS.md) · [open an issue](https://github.com/EQProxy/EQProxy/issues).
 
 ## What's in it
@@ -100,12 +100,14 @@ Docker (linux/amd64 + linux/arm64, Wolfi base), same digests on both registries:
 
 ```bash
 docker pull exyonq/eqproxy:latest           # Docker Hub
-docker pull ghcr.io/exyonq/eqproxy:latest   # GitHub Container Registry
+docker pull ghcr.io/eqproxy/eqproxy:latest  # GitHub Container Registry
 docker run --rm exyonq/eqproxy:latest --version
 ```
 
 The examples use the moving `latest` tag; pin a release tag when you need a
-reproducible pull.
+reproducible pull. `docker run` reuses a tag already present locally, so it does
+not prove what a registry serves: run `docker pull` first, or pass
+`--pull=always` to `docker run`, before checking a tag.
 
 ## Docs
 
@@ -115,7 +117,7 @@ reproducible pull.
 | [Differential corpus](docs/differential-corpus.md) | 31/31 against HAProxy, nginx, ingress-nginx, Envoy |
 | [SPEC.md](SPEC.md) · [THREAT_MODEL.md](THREAT_MODEL.md) | Goals, architecture, non-protections |
 | [docs/semantics.md](docs/semantics.md) | Per-feature semantics, limits and what EQProxy does **not** do |
-| [ADRs](docs/adr/) | 47 design decisions, one file each |
+| [ADRs](docs/adr/) | One file per design decision |
 | [Benchmarks & raw evidence](docs/evidence/) | Every number in this README ships its log |
 
 Documentation is published in English only.

@@ -83,8 +83,8 @@ asset inside a Debian image; that comparison is withdrawn.
 docker pull exyonq/eqproxy:{{version}}
 ```
 
-The same images are published on GitHub Container Registry as
-`ghcr.io/exyonq/eqproxy` with identical digests.
+The same images are published on GitHub Container Registry in the `EQProxy`
+account as `ghcr.io/eqproxy/eqproxy`, with identical digests.
 
 ## How to use this image
 

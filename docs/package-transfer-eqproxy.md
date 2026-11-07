@@ -2,11 +2,63 @@
 
 Language: **English** (public documentation).
 
-Status: **planned, not executed** (2026-11-07). This page is the runbook. It
-does not claim that the migration has happened. The current published docs and
-release workflow remain on `ghcr.io/exyonq`; the new-namespace change is
-deferred until the copy and link are verified, and must not be merged before the
-new package exists.
+Status: **package copy executed and verified; release workflow and remaining
+current documentation pending** (2026-11-07). The new package exists, is public
+and is linked to `EQProxy/EQProxy`. This page is no longer plan-only. The
+migration is **not complete for future releases**: the release workflow still
+publishes to the old namespace.
+
+## 0. Execution record (2026-11-07)
+
+The package copy is executed; the package is linked and public. This section
+records what ran; the remaining work is listed after the evidence.
+
+- `ghcr.io/eqproxy/eqproxy` is public, reports
+  `repository.full_name = EQProxy/EQProxy` and has 13 versions. Its owner is
+  the **user** `EQProxy`.
+- These tags were copied without rebuilding:
+
+  | Tag | Index digest |
+  |---|---|
+  | `0.9.1` | `sha256:95170d9a19dc089ccf876a6ae91322e826b64086d7d07763a5462685e2ad775f` |
+  | `0.9.2` | `sha256:6392aa3018c71a1bc87b3df22ec9e3d13a5b306e15fa66cbe4f819a49e77ea3f` |
+  | `latest` | `sha256:6392aa3018c71a1bc87b3df22ec9e3d13a5b306e15fa66cbe4f819a49e77ea3f` |
+
+- Anonymous pull and execution: after `docker logout ghcr.io`,
+  `docker pull ghcr.io/eqproxy/eqproxy:0.9.2` succeeded and
+  `docker run --rm ghcr.io/eqproxy/eqproxy:0.9.2 --version` returned
+  `eqproxy 0.9.2`. The index lists `linux/amd64`, `linux/arm64` and two
+  attestations.
+- Reproducible check: `.github/scripts/check-ghcr-manifest.py` (commit
+  `24e1a10` on `harden`; not in this review branch) fetches an anonymous
+  token, hashes the exact index bytes, compares the expected digest, checks
+  `Docker-Content-Digest`, and requires both platforms plus two attestations.
+  Live passes exist for all three tags.
+- Temporary migration workflow: run
+  [42372923471](https://github.com/EQProxy/EQProxy/actions/runs/42372923471)
+  on `migrate/ghcr-eqproxy`. The copy and digest-verification steps succeeded;
+  the later **Make the package public** step returned HTTP 404. The package is
+  already public, so that step was unnecessary; the workflow is red and must
+  not be cited as a green run. The temporary branch and workflow file were
+  deleted.
+- The old package remains public with 130 versions and no repository link. It
+  is still the archive for every tag not copied.
+
+Remaining work, in order:
+
+1. **Current release blocker:** `.github/workflows/release.yml` still logs in
+   with `GHCR_TOKEN` and pushes `ghcr.io/exyonq/eqproxy`. Change it to
+   `GITHUB_TOKEN` with `packages: write` on `ghcr.io/eqproxy/eqproxy`, and
+   delete the `GHCR_TOKEN` guard. Not executed.
+2. Apply the current documentation change and finish `CONTRIBUTING.md`,
+   `CHANGELOG.md`, `repo.md`, `docs/docker-hub-readme.md` and
+   `docker/Dockerfile`. The README change is local commit `89bc0a3`; it is not
+   merged in this review branch. Not executed.
+3. Decide whether to copy the remaining historical tags. Do not delete the old
+   package until every tag that must remain available is copied; GHCR has no
+   redirects. Not executed.
+4. Cut a real `v*` release on the new namespace and verify GHCR, Docker Hub and
+   Scout before calling the migration complete. Not executed.
 
 ## 1. The target is a user account, not an organization
 
@@ -51,52 +103,60 @@ value" (checked with `crane copy --help` on 2026-11-07,
 four manifests (amd64, arm64 and the two attestations) without pushing. That
 dry run is a pre-check, not evidence that the copy happened.
 
-## 3. Verified starting point
+## 3. Verified state
 
-| Item | State on 2026-11-07 |
+State on 2026-11-07 after the copy:
+
+| Item | State |
 |---|---|
-| Old package | `ghcr.io/exyonq/eqproxy`, owner `ExyonQ` (user), public, 130 versions |
-| Old package link | `repository.full_name = null` (not linked to a repository) |
+| New package | `ghcr.io/eqproxy/eqproxy`, owner `EQProxy` (user), public, 13 versions; linked to `EQProxy/EQProxy` |
+| Old package | `ghcr.io/exyonq/eqproxy`, owner `ExyonQ` (user), public, 130 versions; no repository link |
+| 0.9.1 index | `sha256:95170d9a19dc089ccf876a6ae91322e826b64086d7d07763a5462685e2ad775f` |
 | 0.9.2 index | `sha256:6392aa3018c71a1bc87b3df22ec9e3d13a5b306e15fa66cbe4f819a49e77ea3f` |
 | 0.9.2 manifests | `linux/amd64` + `linux/arm64` + two attestation manifests |
 | Repository | `EQProxy/EQProxy`, owner `EQProxy` (user) |
-| Repository access | the `ExyonQ` token has `push`, not `admin` (`permissions.admin = false`) |
-| Current workflow | pushes GHCR with `GHCR_TOKEN` (classic PAT of `ExyonQ`, `write:packages`); Docker Hub mirror `exyonq/eqproxy` with `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` |
-| Browser session | only `Doken-Tokuyama`; it is not a package admin and its repo settings request returns 404 |
-| Current docs | README, CONTRIBUTING, CHANGELOG, repo.md, Dockerfile and the Docker Hub page keep `ghcr.io/exyonq`; the new-namespace change is deferred until the copy is verified. Historical release/evidence pages keep their publication-time refs |
+| Current workflow | **pending**: still pushes GHCR with `GHCR_TOKEN` (classic PAT of `ExyonQ`, `write:packages`); Docker Hub mirror `exyonq/eqproxy` with `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` |
+| Current docs | README update is local commit `89bc0a3` on `harden`, not in this review branch; CONTRIBUTING, CHANGELOG, repo.md, Dockerfile and the Docker Hub page still use `ghcr.io/exyonq`. Historical release/evidence pages keep their publication-time refs |
+| Browser session | only `Doken-Tokuyama`; it was not used for the copy |
 
 The package owner (`ExyonQ`), the target account (`EQProxy`), the repository
-owner (`EQProxy`) and the browser session (`Doken-Tokuyama`) are four
-different identities. The UI steps require the **EQProxy** session; the old
-package's retirement requires the **ExyonQ** session.
+owner (`EQProxy`) and the browser session (`Doken-Tokuyama`) are different
+identities. The copy and link were executed by a temporary workflow with
+`GITHUB_TOKEN`; the **EQProxy** session was not needed. Retiring the old
+package still requires **ExyonQ**.
 
 ## 4. Target state
 
-| Item | Target |
+| Item | State on 2026-11-07 |
 |---|---|
-| Package | `ghcr.io/eqproxy/eqproxy`, owner `EQProxy`, **public** |
-| Link | package connected to `EQProxy/EQProxy` |
-| Actions access | repository `EQProxy/EQProxy` with role **Write** |
-| Workflow | `GITHUB_TOKEN` + `packages: write`, no `GHCR_TOKEN` |
+| Package | **reached**: `ghcr.io/eqproxy/eqproxy`, owner `EQProxy`, **public** |
+| Link | **reached**: package connected to `EQProxy/EQProxy` |
+| Actions access | **effective**: the temporary workflow copied with `GITHUB_TOKEN`; the UI role **Write** was not separately inspected |
+| Workflow | **pending**: `release.yml` still uses `GHCR_TOKEN` and the old namespace |
 | Docker Hub | unchanged: `exyonq/eqproxy`, same digests |
-| Old package | frozen as an archive during the deprecation window, then deleted (no redirect) |
-| Digests | unchanged; the 0.9.2 index stays `sha256:6392aa30…ea3f` |
+| Old package | retained as an archive during the deprecation window; not deleted |
+| Digests | unchanged; `0.9.2`/`latest` stay `sha256:6392aa30…ea3f`, `0.9.1` stays `sha256:95170d9a…775f` |
 
-The new package is **private by default** when the first copy creates it.
-Setting it public is an explicit step and is irreversible. Do it only after
-the digest check passes and after confirming the image has no secrets.
+The executed copy produced a public package, so no visibility change was
+needed. Do not rely on that for a future copy: an explicit `PATCH` with
+`GITHUB_TOKEN` returned 404, and a package can be private. Check `visibility`
+and an anonymous pull after any copy; if it is private, use the EQProxy
+package settings UI.
 
 ## 5. Decisions
 
 1. **Copy by digest, do not rebuild.** Rebuilding would change the digests and
    invalidate the Scout reports and the release record. `crane copy` copies
    the index and its manifests without rebuilding them.
-2. **Copy `0.9.2` and `latest` first.** They are the current pull targets.
-   Copying all 130 tags is optional while the old package is kept; if it will
-   be deleted, copy every tag that must remain available first.
-3. **Use `GITHUB_TOKEN`, not a PAT.** Once the package belongs to the same
-   account as the repository and is linked, the image job can push with
-   `packages: write`. This removes the long-lived `GHCR_TOKEN`.
+2. **Copy `0.9.1`, `0.9.2` and `latest` first.** They cover the current release
+   records and pull target. Copying all 130 tags is optional while the old
+   package is kept; if it will be deleted, copy every tag that must remain
+   available first.
+3. **Use `GITHUB_TOKEN`, not a PAT.** The executed copy did this from a
+   temporary workflow. Once the package belongs to the same account as the
+   repository and is linked, the image job can push with `packages: write`.
+   This removes the long-lived `GHCR_TOKEN`; the release workflow still has to
+   be changed.
 4. **Keep Docker Hub as `exyonq/eqproxy`.** The Hub mirror is a separate
    registry and does not move with GHCR.
 5. **Do not rewrite historical evidence.** `docs/release-0.9.1.md`,
@@ -106,23 +166,32 @@ the digest check passes and after confirming the image has no secrets.
 
 ## 6. Access and preconditions
 
-- Freeze `v*` tags for the cutover window.
-- An **EQProxy** classic PAT with `write:packages` (`GHCR_MIGRATION_TOKEN`),
-  kept in the environment or a secret store, never in the repository.
-  The old package is public, so reading it needs no scope; if that ever
-  changes, add `read:packages`.
-- `crane` installed and `docker buildx` available.
-- A browser session for **EQProxy** to link the package, grant Actions
-  access and set visibility. The current BrowserOS session is
-  `Doken-Tokuyama`; it cannot do these steps.
-- The workflow/documentation change prepared but **not merged**.
-- Docker Hub secrets unchanged.
-- A maintenance window; copying the two release tags is quick, copying all
-  130 versions is longer.
+The copy is already executed; this list records what was needed and what is
+still needed for the remaining steps.
+
+- The executed copy used a temporary workflow with `GITHUB_TOKEN` and
+  `packages: write`. It did **not** use `GHCR_MIGRATION_TOKEN`, `crane auth
+  login` or the EQProxy browser session.
+- The package is now linked and public; effective write access is proven by
+  the successful copy. The UI role **Write** was not separately inspected.
+- `crane` and `docker buildx` remain useful for independent checks; the
+  reproducible check is `.github/scripts/check-ghcr-manifest.py`.
+- An EQProxy session is still required for manual package settings if
+  visibility or access ever needs changing, and an ExyonQ session is required
+  to retire the old package. Neither was needed for the copy.
+- The release workflow/docs change is **not merged**; this is the current
+  blocker for the next release.
+- `v*` tags are not frozen and no cutover was announced for future releases.
+- Docker Hub secrets are unchanged.
+- A maintenance window is still required for a full historical-tag copy.
 
 ## 7. Cutover
 
-### 7.1 Record the source digest
+> Executed on 2026-11-07: 7.1–7.4, plus the package link and public state
+> described in 7.5–7.6. The 7.5 UI steps were not run; 7.6's PATCH returned
+> 404. 7.7–7.9 remain pending; 7.7 is the current release blocker.
+
+### 7.1 Record the source digest (executed)
 
 ```console
 $ docker buildx imagetools inspect --raw ghcr.io/exyonq/eqproxy:0.9.2 | sha256sum
@@ -133,32 +202,36 @@ sha256:6392aa3018c71a1bc87b3df22ec9e3d13a5b306e15fa66cbe4f819a49e77ea3f
 
 Stop if either value differs from the release record.
 
-### 7.2 Authenticate as EQProxy
+### 7.2 Authentication actually used (executed)
+
+The copy ran in the temporary workflow `migrate/ghcr-eqproxy` in
+`EQProxy/EQProxy` and logged in with the repository `GITHUB_TOKEN` carrying
+`packages: write`. No `GHCR_MIGRATION_TOKEN`, PAT, `crane auth login` or
+EQProxy browser session was used.
+
+Run 42372923471 copied and verified the manifests. Its visibility step then
+failed with HTTP 404; the package was already public, so no retry is needed.
+
+### 7.3 Copy the current release tags (executed)
 
 ```console
-$ echo "$GHCR_MIGRATION_TOKEN" | crane auth login ghcr.io -u eqproxy --password-stdin
-```
-
-The token is not printed and is not written to the repository.
-
-### 7.3 Copy the current release tags
-
-```console
-$ for tag in 0.9.2 latest; do
+$ for tag in 0.9.1 0.9.2 latest; do
     crane copy "ghcr.io/exyonq/eqproxy:$tag" "ghcr.io/eqproxy/eqproxy:$tag"
   done
 ```
 
-Optional full archive (all 130 tags, including `-candidate` tags):
+Optional full archive (all 130 tags, including `-candidate` tags); not executed:
 
 ```console
 $ crane copy --all-tags ghcr.io/exyonq/eqproxy ghcr.io/eqproxy/eqproxy
 ```
 
-`crane copy` creates the new package on the first push. It does not link it
-to a repository and does not make it public.
+The executed workflow copied `0.9.1`, `0.9.2` and `latest` without a rebuild;
+the package is linked to `EQProxy/EQProxy` and public. For a future empty
+target, do not assume the first push links or publishes the package: verify
+both.
 
-### 7.4 Verify the copy before touching the UI
+### 7.4 Verify the copy before touching the UI (executed)
 
 ```console
 $ docker buildx imagetools inspect --raw ghcr.io/eqproxy/eqproxy:0.9.2 | sha256sum
@@ -170,10 +243,26 @@ $ docker run --rm ghcr.io/eqproxy/eqproxy:0.9.2 --version
 eqproxy 0.9.2
 ```
 
+The reproducible check now repeats the index, platform and attestation checks
+without Docker. The checker is in the `harden` branch (`24e1a10`); this review
+branch does not include it yet, so run the command from `harden` until the
+branches are merged:
+
+```console
+$ python3 .github/scripts/check-ghcr-manifest.py \
+    --tag 0.9.2 --tag latest \
+    --expected-digest sha256:6392aa3018c71a1bc87b3df22ec9e3d13a5b306e15fa66cbe4f819a49e77ea3f
+```
+
 If the index digest differs, **stop**: do not link, do not merge the
 workflow, do not delete the old package. Investigate the copy first.
 
-### 7.5 Link the package and grant Actions access
+### 7.5 Link and Actions access (reached)
+
+The package reports `repository.full_name = EQProxy/EQProxy`. The temporary
+workflow copied with `GITHUB_TOKEN`, so effective write access is proven. The
+package-settings role **Write** was not separately inspected; the UI steps
+below remain the way to confirm it.
 
 As **EQProxy**:
 
@@ -185,17 +274,22 @@ As **EQProxy**:
    repository, confirm the effective role is Write; the explicit entry is the
    requested state.
 
-### 7.6 Make the new package public
+### 7.6 Visibility (public; API caveat)
 
-As **EQProxy**, package settings → **Change visibility** → **Public**, after
-re-checking the digest and that the image carries no secrets. This is
-irreversible; the old package is public, and users must be able to pull the
-new one without credentials.
+`gh api /users/EQProxy/packages/container/eqproxy` reports
+`visibility: public`, and an anonymous pull works. The temporary workflow's
+`PATCH` with `GITHUB_TOKEN` returned 404; the package was already public, so
+that failure did not block the copy. Do not use that PATCH as a post-copy
+check. If a future package is private, change it in the EQProxy UI after the
+digest and secret checks.
 
-### 7.7 Apply and merge the workflow and documentation change
+### 7.7 Apply and merge the workflow and documentation change (pending; current blocker)
 
-Apply and merge only after 7.4–7.6 pass; the current tree still uses the old
-namespace. The image job then:
+This is the current blocker for future releases. `release.yml` in this branch
+still logs in with `GHCR_TOKEN` and pushes `ghcr.io/exyonq/eqproxy`; the
+README change is local commit `89bc0a3` on `harden` and is not in this branch.
+The rest of the current docs also still use the old namespace. The image job
+then:
 
 - logs in to `ghcr.io` as `eqproxy` with `GITHUB_TOKEN`;
 - pushes `ghcr.io/eqproxy/eqproxy` with `packages: write`;
@@ -206,7 +300,7 @@ Do not tag a release between the start of the copy and this merge; the old
 workflow cannot publish to the transferred name, and the new one must not
 run before the new package exists.
 
-### 7.8 First release is the end-to-end gate
+### 7.8 First release is the end-to-end gate (pending)
 
 Cut the next version (a real `v*` tag, not a reused 0.9.2 tag) and verify the
 whole pipeline on the new namespace. The migration is not "done" until this
@@ -224,8 +318,10 @@ $ docker pull exyonq/eqproxy:<version>
 The release workflow's own promotion check compares the scanned candidate
 digest with every published tag; a mismatch fails the tag.
 
-### 7.9 Retire the old package
+### 7.9 Retire the old package (pending)
 
+- The old package is still public with 130 versions and no linked repository;
+  it still serves every tag, including the 127 versions not copied.
 - Keep `ghcr.io/exyonq/eqproxy` frozen for a deprecation window. Its `latest`
   stays at 0.9.2 and does not receive new releases.
 - Add a dated note to `docs/release-0.9.1.md` and `docs/release-0.9.2.md`
@@ -240,21 +336,29 @@ digest with every published tag; a mismatch fails the tag.
 
 ## 8. Verification checklist
 
-| Check | Evidence |
-|---|---|
-| New index digest equals the recorded 0.9.2 digest | `buildx imagetools inspect --raw` + `sha256sum` |
-| Both platforms and both attestations copied | `buildx imagetools inspect` lists four manifests |
-| New image runs | `docker run --rm ghcr.io/eqproxy/eqproxy:0.9.2 --version` → `eqproxy 0.9.2` |
-| Package linked to the repository | API `repository.full_name = EQProxy/EQProxy`; package page shows the repo |
-| Actions access is Write | package settings UI |
-| Visibility is Public | package settings UI; anonymous `docker pull` works |
-| Workflow uses `GITHUB_TOKEN` | run log: `Log in to GHCR (EQProxy package namespace)`, no `GHCR_TOKEN` |
-| Scout digest == published tag == Hub mirror | release run's promotion/verification steps |
-| `GHCR_TOKEN` gone | `gh secret list` has no `GHCR_TOKEN` |
-| After applying the change, current docs point at the new namespace | `grep -rn 'ghcr.io/exyonq/eqproxy' README.md CONTRIBUTING.md CHANGELOG.md repo.md docs/docker-hub-readme.md docker/Dockerfile` is empty; historical pages keep their refs |
-| Old refs behave as documented | before deletion they still serve the old package; after deletion they fail (no redirect) |
+State on 2026-11-07:
+
+| Check | State | Evidence |
+|---|---|---|
+| New 0.9.2 index digest equals the recorded digest | **Done** | checker and release record: `sha256:6392aa30…ea3f` |
+| 0.9.1 index digest | **Done** | `sha256:95170d9a…775f` |
+| Both platforms and both attestations copied | **Done** | 2 attestations; `b984b522…` amd64, `d8b681d5…` arm64 |
+| New image runs | **Done** | anonymous `docker run ghcr.io/eqproxy/eqproxy:0.9.2 --version` → `eqproxy 0.9.2` |
+| Package linked to the repository | **Done** | API `repository.full_name = EQProxy/EQProxy` |
+| Actions effective write | **Done** | temporary copy with `GITHUB_TOKEN`; UI role not inspected |
+| Visibility is Public | **Done** | API `visibility: public`; anonymous pull passes |
+| Workflow uses `GITHUB_TOKEN` | **Pending** | temporary copy did; `release.yml` still uses `GHCR_TOKEN` |
+| Scout digest == published tag == Hub mirror | **Pending** | first release on the new namespace not cut |
+| `GHCR_TOKEN` gone | **Pending** | still used by `release.yml`; secret rotation pending |
+| Current docs point at the new namespace | **Partial** | README `89bc0a3`; CONTRIBUTING, CHANGELOG, repo.md, Dockerfile and the Hub page pending |
+| Old refs behave as documented | **Pending decision** | old package still serves 130 versions; no redirects |
+| Migration run is green | **No** | run `42372923471` failed at the visibility PATCH; copy/digest steps passed |
 
 ## 9. Rollback and abort
+
+Current position: the copy is verified, the old package still serves every
+tag, and the workflow/docs are not merged. The "after the copy, before the
+merge" rollback path applies.
 
 - **Before the copy:** abort; nothing changed.
 - **After the copy, before the merge:** the old package still serves every
@@ -278,36 +382,42 @@ Deleting the old package is the only irreversible step; it happens last.
   an organization, but GitHub reports the account as a user. An organization
   with that login cannot be created while the user exists.
 - **Multiple identities.** The package owner (`ExyonQ`), target account
-  (`EQProxy`) and browser session (`Doken-Tokuyama`) are different. The UI
-  steps need the EQProxy session, which is not currently in the browser.
-- **`GITHUB_TOKEN` needs the link and Actions access.** Pushing before the
-  package is linked/authorised fails; the workflow fails loudly rather than
-  falling back to a PAT.
-- **Visibility is private by default.** The copy creates a private package;
-  it must be made public explicitly.
-- **Copying all versions is slow.** The old package is the archive for any
-  tag not copied; copying every tag is optional but should be decided before
-  deleting the old package.
+  (`EQProxy`) and browser session (`Doken-Tokuyama`) are different. The copy
+  did not need EQProxy; the remaining UI checks and the retirement do.
+- **The visibility API is not a reliable post-copy check.** The explicit
+  `PATCH` with `GITHUB_TOKEN` returned 404. The package was already public;
+  use the API `visibility` field and an anonymous pull, not that PATCH.
+- **The migration run is red.** Run `42372923471` copied and verified the
+  manifests, then failed at the visibility step. Do not cite it as a green
+  end-to-end run; the current package state is verified separately.
+- **The release workflow is still old.** This is the current blocker: future
+  tags still publish to `ghcr.io/exyonq` until `release.yml` is changed and
+  merged. The temporary copy is not the release pipeline.
+- **Only three tags were copied.** The old package is the archive for the other
+  127 versions. Copy every tag that must remain before deletion.
+- **The full archive copy is slow.** Copying all 130 versions needs more time
+  than the three current tags and should be a deliberate maintenance step.
 - **Docker Hub page timing.** `docs/docker-hub-readme.md` renders on the next
   stable release; until then the Hub page still describes the old GHCR name.
 - **Historical evidence stays historical.** The old refs in release records
-  and evidence are intentionally not rewritten; the dated note explains them.
-- **This page is a plan.** No copy, link, visibility change, merge, deletion
-  or secret rotation has been executed.
+  and evidence are intentionally not rewritten; a dated note explains them.
+- **The migration is not complete.** The package is migrated; the release
+  workflow, remaining current docs, historical-tag decision and retirement are
+  not.
 
 ## 11. Checklist
 
-- [ ] `EQProxy` session and `GHCR_MIGRATION_TOKEN` available
+- [x] Temporary workflow with `GITHUB_TOKEN` and `packages: write` executed
 - [ ] `v*` tags frozen; cutover announced
-- [ ] Source index digest recorded and matches `sha256:6392aa30…ea3f`
-- [ ] `0.9.2` and `latest` copied (and any additional tags chosen)
+- [x] `0.9.1`, `0.9.2` and `latest` copied
 - [ ] If the old package will be deleted, every tag to keep was copied
-- [ ] New index digest and four manifests verified
-- [ ] New package linked to `EQProxy/EQProxy`
-- [ ] Actions access `EQProxy/EQProxy` = Write
-- [ ] New package visibility = Public
-- [ ] Workflow/docs change merged; no `GHCR_TOKEN`
+- [x] New index digests and four manifests verified
+- [x] New package linked to `EQProxy/EQProxy`
+- [x] Effective Actions write proven; UI role Write not separately inspected
+- [x] New package visibility = Public; anonymous pull passed
+- [ ] Release workflow uses `GITHUB_TOKEN` and the new namespace
+- [ ] Current docs updated; no `GHCR_TOKEN`
 - [ ] First release on the new namespace verified (GHCR + Hub + Scout)
 - [ ] `GHCR_TOKEN` secret deleted and PAT revoked
-- [ ] Old package frozen; dated notes added to the release records
+- [ ] Historical-tag decision recorded; old package frozen; dated notes added
 - [ ] Old package deleted only after the deprecation window and the tag check

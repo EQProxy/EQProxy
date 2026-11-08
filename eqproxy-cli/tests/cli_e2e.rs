@@ -1008,7 +1008,7 @@ fn run_http_mode_strips_hop_by_hop_before_the_backend_and_rejects_nomination() {
 
     let response = proxied(
         &proxy_addr,
-        b"GET /hop HTTP/1.1\r\nHost: t\r\nConnection: keep-alive, x-remove, close\r\nX-Remove: secret\r\nKeep-Alive: timeout=5\r\nProxy-Connection: keep-alive\r\nTE: trailers\r\nTrailer: x-trailer\r\nX-Keep: yes\r\n\r\n",
+        b"GET /hop HTTP/1.1\r\nHost: t\r\nConnection: keep-alive, x-remove, close\r\nX-Remove: secret\r\nKeep-Alive: timeout=5\r\nProxy-Connection: keep-alive\r\nProxy-Authorization: Basic c2VjcmV0\r\nProxy-Authenticate: Basic\r\nTE: trailers\r\nTrailer: x-trailer\r\nX-Keep: yes\r\n\r\n",
     );
     assert!(response.starts_with("HTTP/1.1 200 OK"), "{response:?}");
 
@@ -1020,6 +1020,8 @@ fn run_http_mode_strips_hop_by_hop_before_the_backend_and_rejects_nomination() {
         "\r\nx-remove:",
         "\r\nkeep-alive:",
         "\r\nproxy-connection:",
+        "\r\nproxy-authorization:",
+        "\r\nproxy-authenticate:",
         "\r\nte:",
         "\r\ntrailer:",
     ] {
@@ -1198,6 +1200,18 @@ fn run_http_mode_normalizes_target_and_host_before_rules_and_forwarding() {
             &b"GET /%zz HTTP/1.1\r\nHost: admin.example.com\r\nConnection: close\r\n\r\n"[..],
             "an invalid escape",
         ),
+        (
+            &b"GET /admin%5csecret HTTP/1.1\r\nHost: admin.example.com\r\nConnection: close\r\n\r\n"[..],
+            "an encoded backslash",
+        ),
+        (
+            &b"GET /admin;jsessionid=1 HTTP/1.1\r\nHost: admin.example.com\r\nConnection: close\r\n\r\n"[..],
+            "a path parameter",
+        ),
+        (
+            &b"GET /admin%3bjsessionid=1 HTTP/1.1\r\nHost: admin.example.com\r\nConnection: close\r\n\r\n"[..],
+            "an encoded path parameter",
+        ),
     ] {
         let response = proxied(&proxy_addr, request);
         assert!(
@@ -1224,6 +1238,133 @@ fn run_http_mode_normalizes_target_and_host_before_rules_and_forwarding() {
         fallback_seen.lock().expect("fallback heads").len(),
         1,
         "a rejected request reached the fallback backend"
+    );
+
+    let pid = child.id();
+    let kill = Command::new("kill")
+        .args(["-INT", &pid.to_string()])
+        .status()
+        .expect("run kill");
+    assert!(kill.success(), "kill -INT must be accepted");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("try_wait") {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("eqproxy did not finish after SIGINT");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    remove_temp(&config);
+    assert_eq!(status.code(), Some(0), "clean shutdown must exit with 0");
+}
+
+/// H-01 through the **real** binary for CONNECT: the authority-form target
+/// is lowercased, its trailing DNS dot removed and its port validated before
+/// routing and forwarding, and the origin sees the same canonical target and
+/// Host. A missing port or a non-authority form is refused with 400 and never
+/// reaches the backend.
+#[cfg_attr(
+    miri,
+    ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
+)]
+#[test]
+fn run_connect_normalizes_authority_before_rules_and_forwarding() {
+    let (backend, seen) = start_head_recording_backend("tunnel");
+    let config = temp_config(
+        "http-connect-normalize",
+        &format!(
+            "schema_version = 1\n\
+             [listener.web]\n\
+             listen = \"127.0.0.1:0\"\n\
+             backend = \"tunnel\"\n\
+             mode = \"http\"\n\
+             \n\
+             [[listener.web.rules]]\n\
+             name = \"tunnel-host\"\n\
+             host = \"admin.example.com\"\n\
+             use_backend = \"tunnel\"\n\
+             \n\
+             [backend.tunnel]\n\
+             server = \"{backend}\"\n"
+        ),
+    );
+    let mut child = bin()
+        .args(["run", "--config"])
+        .arg(&config)
+        .args(["--metrics-interval", "1h"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn eqproxy run (connect normalize)");
+    let mut stderr = BufReader::new(child.stderr.take().expect("stderr piped"));
+    let mut proxy_addr = String::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut line = String::new();
+    while Instant::now() < deadline {
+        line.clear();
+        let read = stderr.read_line(&mut line).expect("leer stderr");
+        assert!(read > 0, "eqproxy closed stderr without announcing bind");
+        if let Some(addr) = line.split("listening on ").nth(1) {
+            proxy_addr = addr.trim().to_owned();
+            break;
+        }
+    }
+    assert!(!proxy_addr.is_empty(), "the address was not announced");
+
+    let response = proxied(
+        &proxy_addr,
+        b"CONNECT Admin.Example.COM.:443 HTTP/1.1\r\nHost: Admin.Example.COM.:443\r\nConnection: close\r\n\r\n",
+    );
+    assert!(
+        response.starts_with("HTTP/1.1 200 OK"),
+        "the tunnel handshake must be accepted: {response:?}"
+    );
+    let recorded = seen.lock().expect("connect heads").clone();
+    assert_eq!(recorded.len(), 1, "CONNECT heads: {recorded:?}");
+    assert!(
+        recorded[0].starts_with("CONNECT admin.example.com:443 HTTP/1.1\r\n"),
+        "the origin must see the normalized authority: {:?}",
+        recorded[0]
+    );
+    assert!(
+        recorded[0]
+            .to_ascii_lowercase()
+            .contains("\r\nhost: admin.example.com:443\r\n"),
+        "the origin must see the normalized Host: {:?}",
+        recorded[0]
+    );
+
+    for (request, why) in [
+        (
+            &b"CONNECT Admin.Example.COM HTTP/1.1\r\nHost: Admin.Example.COM:443\r\nConnection: close\r\n\r\n"[..],
+            "a CONNECT without a port",
+        ),
+        (
+            &b"CONNECT Admin.Example.COM:443/path HTTP/1.1\r\nHost: Admin.Example.COM:443\r\nConnection: close\r\n\r\n"[..],
+            "a CONNECT with a path",
+        ),
+        (
+            &b"CONNECT user@Admin.Example.COM:443 HTTP/1.1\r\nHost: Admin.Example.COM:443\r\nConnection: close\r\n\r\n"[..],
+            "a CONNECT with userinfo",
+        ),
+        (
+            &b"CONNECT Admin.Example.COM:443 HTTP/1.1\r\nHost: other.example.com:443\r\nConnection: close\r\n\r\n"[..],
+            "a CONNECT whose Host disagrees with the authority",
+        ),
+    ] {
+        let response = proxied(&proxy_addr, request);
+        assert!(
+            response.starts_with("HTTP/1.1 400"),
+            "{why} must be rejected: {response:?}"
+        );
+    }
+    assert_eq!(
+        seen.lock().expect("connect heads").len(),
+        1,
+        "a rejected CONNECT reached the backend"
     );
 
     let pid = child.id();

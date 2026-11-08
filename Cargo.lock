@@ -614,7 +614,7 @@ checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
 name = "eqproxy-cli"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "brotli",
  "clap",
@@ -632,7 +632,7 @@ dependencies = [
 
 [[package]]
 name = "eqproxy-config"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "eqproxy-core",
  "schemars",
@@ -644,7 +644,7 @@ dependencies = [
 
 [[package]]
 name = "eqproxy-core"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "base64",
  "md-5",
@@ -655,7 +655,7 @@ dependencies = [
 
 [[package]]
 name = "eqproxy-net"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "aws-lc-rs",
  "base64",

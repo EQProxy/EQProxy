@@ -33,9 +33,9 @@ inferno = { version = "0.12.8", default-features = false, features = [
 ], optional = true }
 rlimit = { workspace = true }
 tokio = { workspace = true }
-eqproxy-core = { path = "../eqproxy-core", version = "0.9.3" }
-eqproxy-config = { path = "../eqproxy-config", version = "0.9.3" }
-eqproxy-net = { path = "../eqproxy-net", version = "0.9.3" }
+eqproxy-core = { path = "../eqproxy-core", version = "0.9.4" }
+eqproxy-config = { path = "../eqproxy-config", version = "0.9.4" }
+eqproxy-net = { path = "../eqproxy-net", version = "0.9.4" }
 
 [lints]
 workspace = true

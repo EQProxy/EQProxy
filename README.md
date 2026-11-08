@@ -50,7 +50,7 @@ cover the operational path.
 
 ## Status
 
-**v0.9.3 · pre-1.0 · not production-ready.** The test suite is green across 36
+**v0.9.4 · pre-1.0 · not production-ready.** The test suite is green across 36
 targets, real HTTP/1.1, HTTP/2 and HTTP/3 dataplanes — but no users outside the
 author yet. Try it on a staging config and tell me what breaks:
 [KNOWN_GAPS.md](KNOWN_GAPS.md) · [open an issue](https://github.com/EQProxy/EQProxy/issues).

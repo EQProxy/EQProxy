@@ -5,6 +5,8 @@ Fixed); versions are `vMAJOR.MINOR.PATCH` git tags.
 
 ## [Unreleased]
 
+## [v0.9.4] — 2026-11-08
+
 ### Fixed
 
 - **H-01: one URI and Host normalization before rules and forwarding.**
@@ -14,10 +16,28 @@ Fixed); versions are `vMAJOR.MINOR.PATCH` git tags.
   Rules, cache keys, rewrites and the origin now see
   that same normalized request line and Host, so `//admin`,
   `/public/../admin`, `%2e%2e` and `Host: admin.example.com.` no longer
-  bypass a rule. Encoded slashes, invalid escapes, NUL bytes, fragments and
-  `..` above the root are refused with 400, and an HTTP/1.0 request without
-  Host is refused when a rule constrains the Host. h2/h3 and gRPC inherit
-  the normalization through the same parser and head builder.
+  bypass a rule. Encoded slashes, backslashes (`\` or `%5c`), path
+  parameters (`;` or `%3b`), invalid escapes, NUL bytes, fragments and `..`
+  above the root are refused with 400; a CONNECT authority must carry a
+  valid host and numeric port and is normalized before routing. An HTTP/1.0
+  request without Host is refused when a rule constrains the Host. h2/h3 and
+  gRPC inherit the normalization through the same parser and head builder.
+- **M-01: HTTP/1.0 framing.** An HTTP/1.0 request that carries
+  `Transfer-Encoding: chunked` is refused with 400 before the backend is
+  dialed. A chunked origin response to an HTTP/1.0 client is dechunked: the
+  status line is downgraded to HTTP/1.0, `Transfer-Encoding` and `Trailer`
+  are removed, the body is close-delimited and the connection closes after
+  it. This also covers a bodyless HEAD, 204 or 304 response whose origin
+  still advertises `Transfer-Encoding`: the header is removed and the
+  connection closes even though there is no body. Trailers are validated
+  and discarded, never forwarded to a client that cannot represent them.
+- **H-01 residuals: CONNECT authority, upgrade negotiation and proxy
+  credentials.** A CONNECT whose `Host` disagrees with the authority-form
+  target is refused with 400 before routing, so the two values cannot select
+  different backends. An upgrade requires both `Upgrade` and
+  `Connection: upgrade` (RFC 9110 §7.8). `Proxy-Authorization` and
+  `Proxy-Authenticate` are stripped as hop-by-hop in the h1 and h2
+  translators, so client proxy credentials never reach an origin.
 
 ## [v0.9.3] — 2026-11-07
 

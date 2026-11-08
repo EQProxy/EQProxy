@@ -186,10 +186,11 @@ pub enum BodyFraming {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestHead {
     pub method: String,
-    /// Normalized request target (H-01) for origin-form requests: dot
-    /// segments resolved, duplicate slashes collapsed and unreserved `%XX`
-    /// decoded once by [`parse_request_head`]. CONNECT's authority-form
-    /// target and `*` are kept verbatim.
+    /// Normalized request target (H-01): for origin-form requests dot
+    /// segments are resolved, duplicate slashes collapsed and unreserved
+    /// `%XX` decoded once by [`parse_request_head`]; CONNECT's authority-form
+    /// is lowercased and validated (host and port required); `*` is kept
+    /// verbatim.
     pub target: String,
     /// HTTP version: 10 (HTTP/1.0) or 11 (HTTP/1.1).
     pub version: u8,
@@ -327,7 +328,8 @@ fn request_framing(
     let mut host_count = 0usize;
     let mut connection_close = false;
     let mut connection_keep_alive = false;
-    let mut has_upgrade = false;
+    let mut connection_upgrade = false;
+    let mut upgrade_header = false;
 
     for (name, value) in headers {
         match name.as_str() {
@@ -367,16 +369,22 @@ fn request_framing(
                         }
                         "close" => connection_close = true,
                         "keep-alive" => connection_keep_alive = true,
-                        "upgrade" => has_upgrade = true,
+                        "upgrade" => connection_upgrade = true,
                         _ => {}
                     }
                 }
             }
-            "upgrade" => has_upgrade = true,
+            "upgrade" => upgrade_header = true,
             _ => {}
         }
     }
 
+    if te_chunked && version == 10 {
+        return Err(Reject {
+            status: 400,
+            reason: "transfer-encoding is not valid in HTTP/1.0",
+        });
+    }
     if te_chunked && content_length.is_some() {
         return Err(Reject {
             status: 400,
@@ -404,7 +412,10 @@ fn request_framing(
         BodyFraming::None
     };
     let wants_close = connection_close || (version == 10 && !connection_keep_alive);
-    Ok((framing, wants_close, has_upgrade))
+    // RFC 9110 §7.8: the upgrade is negotiated only when both the
+    // `Upgrade` field and the `upgrade` connection option are present.
+    let wants_upgrade = connection_upgrade && upgrade_header;
+    Ok((framing, wants_close, wants_upgrade))
 }
 
 fn bad_request(reason: &'static str) -> Reject {
@@ -416,6 +427,10 @@ fn bad_request(reason: &'static str) -> Reject {
 
 fn bad_host() -> Reject {
     bad_request("invalid host header")
+}
+
+fn bad_connect_authority() -> Reject {
+    bad_request("invalid CONNECT authority")
 }
 
 fn hex_value(byte: u8) -> Option<u8> {
@@ -433,9 +448,11 @@ const UPPER_HEX: &[u8; 16] = b"0123456789ABCDEF";
 ///
 /// Percent-escapes of unreserved characters are decoded, duplicate slashes
 /// collapsed and dot segments resolved once, before rules and forwarding.
-/// An encoded slash, an invalid escape, a NUL, a fragment or a `..` above
+/// A raw or encoded backslash, a raw or encoded semicolon (path parameter),
+/// an encoded slash, an invalid escape, a NUL, a fragment or a `..` above
 /// the root is refused instead of guessed: the backend must never resolve a
-/// different resource than the one the rules saw.
+/// different resource than the one the rules saw. The query is opaque and
+/// these checks never apply to it.
 pub(crate) fn normalize_target(raw: &str) -> Result<String, Reject> {
     if raw.contains('#') {
         return Err(bad_request("fragment in request target"));
@@ -445,6 +462,12 @@ pub(crate) fn normalize_target(raw: &str) -> Result<String, Reject> {
         .map_or((raw, None), |(path, query)| (path, Some(query)));
     if !path.starts_with('/') {
         return Err(bad_request("invalid request target"));
+    }
+    if path.contains(';') {
+        return Err(bad_request("path parameter is ambiguous"));
+    }
+    if path.contains('\\') {
+        return Err(bad_request("backslash in request target is ambiguous"));
     }
     let decoded = decode_unreserved(path)?;
     let normalized = remove_dot_segments(&decoded)?;
@@ -473,6 +496,12 @@ fn decode_unreserved(path: &str) -> Result<String, Reject> {
         let byte = (high << 4) | low;
         match byte {
             b'/' => return Err(bad_request("percent-encoded slash is ambiguous")),
+            b';' => {
+                return Err(bad_request("percent-encoded path parameter is ambiguous"));
+            }
+            b'\\' => {
+                return Err(bad_request("percent-encoded backslash is ambiguous"));
+            }
             0 => return Err(bad_request("nul byte in request target")),
             byte if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') => {
                 out.push(byte);
@@ -584,6 +613,19 @@ pub(crate) fn normalize_host(raw: &str) -> Result<String, Reject> {
     })
 }
 
+/// Normalizes and validates the authority-form target of `CONNECT` (H-01).
+/// The authority must carry a host and a numeric port; a missing port,
+/// userinfo, path, query, fragment, backslash or path parameter is refused
+/// instead of guessed. The host follows the same lowercase/trailing-dot
+/// canonicalization as the `Host` header.
+fn normalize_connect_authority(raw: &str) -> Result<String, Reject> {
+    let (_, port) = split_host_port(raw).map_err(|_| bad_connect_authority())?;
+    if port.is_none() {
+        return Err(bad_connect_authority());
+    }
+    normalize_host(raw).map_err(|_| bad_connect_authority())
+}
+
 #[cfg(test)]
 mod normalization_tests {
     use super::*;
@@ -629,6 +671,125 @@ mod normalization_tests {
         );
         assert_eq!(reject_reason("/%00"), "nul byte in request target");
         assert_eq!(reject_reason("/a#frag"), "fragment in request target");
+    }
+
+    #[test]
+    fn target_normalization_refuses_ambiguous_separators_and_path_parameters() {
+        assert_eq!(
+            reject_reason("/admin;jsessionid=1"),
+            "path parameter is ambiguous"
+        );
+        assert_eq!(reject_reason("/;"), "path parameter is ambiguous");
+        assert_eq!(
+            reject_reason("/admin%3bjsessionid=1"),
+            "percent-encoded path parameter is ambiguous"
+        );
+        assert_eq!(
+            reject_reason("/%3B"),
+            "percent-encoded path parameter is ambiguous"
+        );
+        assert_eq!(
+            reject_reason("/admin\\secret"),
+            "backslash in request target is ambiguous"
+        );
+        assert_eq!(
+            reject_reason("/a%5c/b"),
+            "percent-encoded backslash is ambiguous"
+        );
+        assert_eq!(
+            reject_reason("/a%5C/b"),
+            "percent-encoded backslash is ambiguous"
+        );
+        // The query is opaque: a semicolon or backslash there cannot change
+        // which path a rule (or the origin) resolves.
+        assert_eq!(normalize_target("/a?x=;%5c\\").unwrap(), "/a?x=;%5c\\");
+    }
+
+    #[test]
+    fn connect_authority_is_normalized_before_routing_and_forwarding() {
+        let head = b"CONNECT Admin.Example.COM.:443 HTTP/1.1\r\nHost: Admin.Example.COM.:443";
+        let request = parse_request_head(
+            head,
+            HeadLimits {
+                max_head_bytes: 8 * 1024,
+                max_headers: 64,
+            },
+        )
+        .expect("parse CONNECT");
+        assert_eq!(request.target, "admin.example.com:443");
+        assert_eq!(request.host, "admin.example.com:443");
+        assert_eq!(
+            String::from_utf8(apply_normalized_head(head, &request)).unwrap(),
+            "CONNECT admin.example.com:443 HTTP/1.1\r\nHost: admin.example.com:443"
+        );
+    }
+
+    #[test]
+    fn connect_host_must_match_the_authority() {
+        for host in ["other.example.com:443", "admin.example.com:444"] {
+            let head = format!("CONNECT admin.example.com:443 HTTP/1.1\r\nHost: {host}");
+            let error = parse_request_head(head.as_bytes(), HeadLimits::default())
+                .expect_err("a CONNECT Host that disagrees with the authority must be rejected");
+            assert_eq!(error.status, 400, "{host}");
+            assert_eq!(
+                error.reason, "CONNECT host does not match authority",
+                "{host}"
+            );
+        }
+        assert!(
+            parse_request_head(
+                b"CONNECT admin.example.com:443 HTTP/1.1\r\nHost: admin.example.com:443",
+                HeadLimits::default()
+            )
+            .is_ok(),
+            "the matching authority must still parse"
+        );
+    }
+
+    #[test]
+    fn connect_without_host_uses_the_normalized_authority_for_http10() {
+        let head = b"CONNECT [::1]:8443 HTTP/1.0";
+        let request = parse_request_head(
+            head,
+            HeadLimits {
+                max_head_bytes: 8 * 1024,
+                max_headers: 64,
+            },
+        )
+        .expect("parse CONNECT without Host");
+        assert_eq!(request.target, "[::1]:8443");
+        assert_eq!(request.host, "[::1]:8443");
+    }
+
+    #[test]
+    fn connect_authority_rejects_missing_port_and_non_authority_forms() {
+        for target in [
+            "example.com",
+            "example.com:",
+            "example.com:0",
+            "example.com:65536",
+            "example.com:abc",
+            "example.com:443/path",
+            "example.com:443?x=1",
+            "example.com:443#frag",
+            "user@example.com:443",
+            "example.com:443;jsessionid=1",
+            "example.com:443\\secret",
+            "[::1]",
+            "*",
+        ] {
+            let head = format!("CONNECT {target} HTTP/1.1\r\nHost: example.com:443");
+            let error = parse_request_head(
+                head.as_bytes(),
+                HeadLimits {
+                    max_head_bytes: 8 * 1024,
+                    max_headers: 64,
+                },
+            )
+            .expect_err("CONNECT authority must be rejected");
+            assert_eq!(error.status, 400, "{target}: {error:?}");
+            assert_eq!(error.reason, "invalid CONNECT authority", "{target}");
+        }
     }
 
     #[test]
@@ -702,8 +863,9 @@ pub fn parse_request_head(head: &[u8], limits: HeadLimits) -> Result<RequestHead
         });
     }
     // CONNECT (A8) uses authority-form ("host:port"): the tunnel's
-    // routing host. Everything else is origin-form (absolute-form is
-    // rejected: this proxy is an origin, not a client).
+    // routing host. It is normalized (lowercase host, one trailing dot
+    // removed) and must carry a valid port; everything else is origin-form
+    // (absolute-form is rejected: this proxy is an origin, not a client).
     let is_connect = method == b"CONNECT";
     if target.is_empty()
         || target.iter().any(|b| *b <= 0x20 || *b == 0x7f)
@@ -763,7 +925,9 @@ pub fn parse_request_head(head: &[u8], limits: HeadLimits) -> Result<RequestHead
     let expect_continue = expect_continue && version >= 11;
 
     let raw_target = String::from_utf8_lossy(target);
-    let target = if is_connect || target == b"*" {
+    let target = if is_connect {
+        normalize_connect_authority(&raw_target)?
+    } else if target == b"*" {
         raw_target.into_owned()
     } else {
         normalize_target(&raw_target)?
@@ -781,6 +945,12 @@ pub fn parse_request_head(head: &[u8], limits: HeadLimits) -> Result<RequestHead
         host
     };
     let host = normalize_host(&host)?;
+    // RFC 9112 §3.2.3: a CONNECT whose Host disagrees with the
+    // authority-form target would let the two values route differently;
+    // the request is refused instead of guessing which one wins.
+    if is_connect && host_header.is_some() && host != target {
+        return Err(bad_request("CONNECT host does not match authority"));
+    }
     if let Some((_, value)) = headers.iter_mut().find(|(name, _)| name == "host") {
         *value = host.clone();
     }
@@ -1114,6 +1284,57 @@ async fn copy_chunked_capped<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             }));
         }
         write_with_timeout(writer, CRLF, idle).await?;
+    }
+}
+
+/// Reads a `chunked` body and writes only its payload (M-01): an HTTP/1.0
+/// client cannot read chunked framing, so the validated chunks become a
+/// close-delimited body. Trailers are validated and discarded because
+/// HTTP/1.0 has no trailer section; the caller removes their advertised
+/// header and closes the client connection.
+async fn copy_chunked_dechunked<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
+    reader: &mut R,
+    writer: &mut W,
+    idle: Duration,
+    counter: &AtomicU64,
+    idle_counter: &AtomicU64,
+) -> Result<(), CopyError> {
+    loop {
+        let line = read_crlf_line(reader, idle, MAX_LINE_BYTES).await?;
+        let size = parse_chunk_size(&line)?;
+        if size == 0 {
+            // Consume the trailer section through its empty line. The
+            // headers are still validated: a forbidden trailer must fail
+            // the exchange even though HTTP/1.0 will not receive it.
+            loop {
+                let trailer = read_crlf_line(reader, idle, MAX_LINE_BYTES).await?;
+                if trailer == CRLF {
+                    return Ok(());
+                }
+                let (name, _) = parse_header_line(&trailer[..trailer.len() - CRLF.len()])
+                    .map_err(CopyError::Framing)?;
+                if FORBIDDEN_TRAILERS.contains(&name.as_str()) {
+                    return Err(CopyError::Framing(Reject {
+                        status: 400,
+                        reason: "forbidden trailer header",
+                    }));
+                }
+            }
+        }
+        copy_exact(reader, writer, size, idle, counter, idle_counter).await?;
+        // The CRLF belongs to the chunk framing, not to the payload.
+        let mut crlf = [0u8; 2];
+        match tokio::time::timeout(idle, reader.read_exact(&mut crlf)).await {
+            Err(_) => return Err(idle_copy_error(idle_counter)),
+            Ok(Err(_)) => return Err(CopyError::Io),
+            Ok(Ok(_)) => {}
+        }
+        if crlf[..] != *CRLF {
+            return Err(CopyError::Framing(Reject {
+                status: 400,
+                reason: "chunk data without CRLF terminator",
+            }));
+        }
     }
 }
 
@@ -1808,6 +2029,21 @@ pub(crate) fn apply_rewrite(head: &[u8], rewrite: &ResolvedRewrite, target: &str
     joined
 }
 
+/// True when the response head carries a `Transfer-Encoding` field. The
+/// parser has already validated its value as exactly `chunked`; this scan is
+/// needed because bodyless responses (HEAD, 204, 304) keep the field in the
+/// head while their body framing is `None` (M-01).
+fn head_has_transfer_encoding(head: &[u8]) -> bool {
+    head.split(|&byte| byte == b'\n').skip(1).any(|line| {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let name_end = line
+            .iter()
+            .position(|&byte| byte == b':')
+            .unwrap_or(line.len());
+        line[..name_end].eq_ignore_ascii_case(b"transfer-encoding")
+    })
+}
+
 /// Has the peer already closed this connection? One non-blocking poll:
 /// `Pending` (no data, no EOF) = alive; empty `Ready` = EOF; error or
 /// pending bytes = unusable. Used before pooling (A16): a connection the
@@ -1850,7 +2086,14 @@ fn join_head_lines(lines: &[Vec<u8>], capacity: usize) -> Vec<u8> {
 fn is_hop_by_hop_header(name: &[u8]) -> bool {
     matches!(
         name,
-        b"connection" | b"proxy-connection" | b"keep-alive" | b"te" | b"trailer" | b"upgrade"
+        b"connection"
+            | b"proxy-connection"
+            | b"proxy-authenticate"
+            | b"proxy-authorization"
+            | b"keep-alive"
+            | b"te"
+            | b"trailer"
+            | b"upgrade"
     )
 }
 
@@ -2187,6 +2430,48 @@ fn append_response_headers(head: &[u8], lines: &[String]) -> Vec<u8> {
         split.push(line.as_bytes().to_vec());
     }
     join_head_lines(&split, head.len() + lines.len() * 32)
+}
+
+/// Rewrites a chunked origin response head for an HTTP/1.0 client (M-01).
+/// It is applied whenever the head advertises `Transfer-Encoding`, including
+/// bodyless responses (HEAD, 204, 304) where the parser records no body
+/// framing. When a body exists it is dechunked into a close-delimited stream,
+/// so the head must not advertise chunked framing or trailers and the
+/// connection must close after the response. The status line is downgraded to
+/// 1.0 as well: a 1.0 client must not receive a 1.1 status line for a body
+/// that is not 1.1-framed.
+fn dechunk_head_for_http10(head: &[u8]) -> Vec<u8> {
+    let mut lines: Vec<&[u8]> = Vec::new();
+    let mut rest = head;
+    while let Some(pos) = rest.windows(2).position(|window| window == CRLF) {
+        lines.push(&rest[..pos]);
+        rest = &rest[pos + 2..];
+    }
+    lines.push(rest);
+
+    let mut out: Vec<Vec<u8>> = Vec::with_capacity(lines.len() + 1);
+    if let Some(status) = lines.first() {
+        if let Some(rest) = status.strip_prefix(b"HTTP/1.1") {
+            let mut downgraded = b"HTTP/1.0".to_vec();
+            downgraded.extend_from_slice(rest);
+            out.push(downgraded);
+        } else {
+            out.push((*status).to_vec());
+        }
+    }
+    for line in &lines[1..] {
+        let name_end = line.iter().position(|&b| b == b':').unwrap_or(line.len());
+        let name = &line[..name_end];
+        if name.eq_ignore_ascii_case(b"transfer-encoding")
+            || name.eq_ignore_ascii_case(b"trailer")
+            || name.eq_ignore_ascii_case(b"connection")
+        {
+            continue;
+        }
+        out.push((*line).to_vec());
+    }
+    out.push(b"connection: close".to_vec());
+    join_head_lines(&out, head.len() + 24)
 }
 
 /// Replaces the `Server` header of an assembled head with [`SERVER_HEADER`],
@@ -2913,6 +3198,8 @@ struct ResponseStream<'a> {
     framing: BodyFraming,
     encoding: Option<compression::Encoding>,
     settings: Option<&'a crate::compression::ResolvedCompression>,
+    /// M-01: dechunk a backend chunked body for an HTTP/1.0 client.
+    dechunk: bool,
 }
 
 /// Response-body phase: forwards the head and streams the body (compressed
@@ -2975,14 +3262,25 @@ where
                     .await
                 }
                 BodyFraming::Chunked => {
-                    copy_chunked(
-                        &mut from_backend,
-                        client_write,
-                        h1.cfg.idle_timeout,
-                        &h1.metrics.bytes_backend_to_client,
-                        &h1.metrics.idle_timeouts,
-                    )
-                    .await
+                    if stream.dechunk {
+                        copy_chunked_dechunked(
+                            &mut from_backend,
+                            client_write,
+                            h1.cfg.idle_timeout,
+                            &h1.metrics.bytes_backend_to_client,
+                            &h1.metrics.idle_timeouts,
+                        )
+                        .await
+                    } else {
+                        copy_chunked(
+                            &mut from_backend,
+                            client_write,
+                            h1.cfg.idle_timeout,
+                            &h1.metrics.bytes_backend_to_client,
+                            &h1.metrics.idle_timeouts,
+                        )
+                        .await
+                    }
                 }
                 BodyFraming::UntilEof => {
                     copy_to_eof(
@@ -4658,6 +4956,15 @@ pub async fn serve_http<CR, CW>(
         // sticky cookie, CORS): exactly one `Server: EQProxy`, never the
         // origin's value and never a version.
         response_head_bytes = with_server_header(&response_head_bytes);
+        // M-01: an HTTP/1.0 client cannot read chunked framing. The head is
+        // rewritten whenever it advertises Transfer-Encoding, including a
+        // bodyless HEAD/204/304 where the parser recorded no body framing.
+        // When a body exists it is dechunked below; the connection closes
+        // because there is no Content-Length to delimit that body.
+        let http10_te = request.version == 10 && head_has_transfer_encoding(&response_head_bytes);
+        if http10_te {
+            response_head_bytes = dechunk_head_for_http10(&response_head_bytes);
+        }
         // Response compression (B-N6/H6): the decision happens once, before a
         // byte of the head is sent, so nothing has to be unwound later. The
         // backend framing is untouched; only the client's view is rewritten.
@@ -4667,23 +4974,27 @@ pub async fn serve_http<CR, CW>(
             .find(|(name, _)| name == "accept-encoding")
             .map(|(_, value)| value.as_str());
         let compression_settings = cfg.compression.as_ref();
-        let encoding = compression_settings.and_then(|settings| {
-            compression::eligible(
-                &request.method,
-                request.version,
-                accept_encoding,
-                &compression::ResponseFacts {
-                    status: response.status,
-                    no_body: response.framing == BodyFraming::None,
-                    declared_len: match response.framing {
-                        BodyFraming::ContentLength(len) => Some(len),
-                        _ => None,
+        let encoding = if http10_te {
+            None
+        } else {
+            compression_settings.and_then(|settings| {
+                compression::eligible(
+                    &request.method,
+                    request.version,
+                    accept_encoding,
+                    &compression::ResponseFacts {
+                        status: response.status,
+                        no_body: response.framing == BodyFraming::None,
+                        declared_len: match response.framing {
+                            BodyFraming::ContentLength(len) => Some(len),
+                            _ => None,
+                        },
+                        head: &response_head_bytes,
                     },
-                    head: &response_head_bytes,
-                },
-                settings,
-            )
-        });
+                    settings,
+                )
+            })
+        };
         if let Some(encoding) = encoding {
             response_head_bytes = compression::rewrite_head(&response_head_bytes, encoding);
             match encoding {
@@ -4777,6 +5088,7 @@ pub async fn serve_http<CR, CW>(
                 framing: response.framing,
                 encoding,
                 settings: compression_settings,
+                dechunk: http10_te && response.framing == BodyFraming::Chunked,
             },
             stream_deadline,
         )
@@ -4836,7 +5148,11 @@ pub async fn serve_http<CR, CW>(
             response.status,
             poolable,
             request.wants_close,
-            response.wants_close,
+            // A rewritten HTTP/1.0 Transfer-Encoding head must close: a
+            // dechunked body has no Content-Length (M-01), and the header
+            // rewrite also covers bodyless responses so they cannot keep a
+            // chunked advertisement open.
+            response.wants_close || http10_te,
             clean_boundary,
             backend_alive,
             &conn.addr,
@@ -4982,9 +5298,17 @@ mod tests {
     }
 
     #[test]
+    fn chunked_transfer_encoding_is_rejected_in_http10() {
+        let error = req("POST /a HTTP/1.0\r\nHost: x\r\nTransfer-Encoding: chunked\r\n")
+            .expect_err("HTTP/1.0 must not accept chunked framing");
+        assert_eq!(error.status, 400);
+        assert_eq!(error.reason, "transfer-encoding is not valid in HTTP/1.0");
+    }
+
+    #[test]
     fn forwarding_strips_hop_by_hop_and_nominated_headers_in_every_mode() {
         let peer: SocketAddr = "127.0.0.1:4567".parse().expect("peer");
-        let head = b"GET / HTTP/1.1\r\nHost: x\r\nConnection: keep-alive, x-remove, close\r\nX-Remove: secret\r\nKeep-Alive: timeout=5\r\nProxy-Connection: keep-alive\r\nTE: trailers\r\nTrailer: x-trailer\r\nX-Keep: yes";
+        let head = b"GET / HTTP/1.1\r\nHost: x\r\nConnection: keep-alive, x-remove, close\r\nX-Remove: secret\r\nKeep-Alive: timeout=5\r\nProxy-Connection: keep-alive\r\nProxy-Authorization: Basic c2VjcmV0\r\nProxy-Authenticate: Basic\r\nTE: trailers\r\nTrailer: x-trailer\r\nX-Keep: yes";
         let text = String::from_utf8(apply_forwarded(
             head,
             peer,
@@ -4999,6 +5323,8 @@ mod tests {
             "\r\nx-remove:",
             "\r\nkeep-alive:",
             "\r\nproxy-connection:",
+            "\r\nproxy-authorization:",
+            "\r\nproxy-authenticate:",
             "\r\nte:",
             "\r\ntrailer:",
         ] {
@@ -5009,6 +5335,20 @@ mod tests {
         }
         assert!(text.contains("\r\nHost: x"), "{text:?}");
         assert!(text.contains("\r\nX-Keep: yes"), "{text:?}");
+    }
+
+    #[test]
+    fn upgrade_requires_the_header_and_the_connection_token() {
+        let only_header = req("GET /a HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n")
+            .expect("parse only Upgrade");
+        assert!(!only_header.wants_upgrade);
+        let only_token = req("GET /a HTTP/1.1\r\nHost: x\r\nConnection: upgrade\r\n")
+            .expect("parse only Connection: upgrade");
+        assert!(!only_token.wants_upgrade);
+        let both =
+            req("GET /a HTTP/1.1\r\nHost: x\r\nConnection: upgrade\r\nUpgrade: websocket\r\n")
+                .expect("parse a negotiated upgrade");
+        assert!(both.wants_upgrade);
     }
 
     #[test]

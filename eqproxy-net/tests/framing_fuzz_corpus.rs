@@ -254,14 +254,14 @@ fn known_attack_seeds_are_rejected_with_documented_status() {
     // A7/A8 (v0.6): CONNECT and Upgrade parse and route — the tunnel
     // opens only on backend acceptance, never at parse time.
     let connect = parse_request_head(
-        b"CONNECT x:443 HTTP/1.1\r\nHost: x\r\n",
+        b"CONNECT x:443 HTTP/1.1\r\nHost: x:443\r\n",
         HeadLimits::default(),
     )
     .expect("connect parses and routes (A8)");
     assert_eq!(connect.method, "CONNECT");
-    assert_eq!(connect.host, "x");
+    assert_eq!(connect.host, "x:443");
     let upgrade = parse_request_head(
-        b"GET /a HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n",
+        b"GET /a HTTP/1.1\r\nHost: x\r\nConnection: upgrade\r\nUpgrade: websocket\r\n",
         HeadLimits::default(),
     )
     .expect("upgrade parses and routes (A7)");

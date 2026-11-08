@@ -648,6 +648,141 @@ async fn http1_chunked_body_streams_end_to_end() {
     ignore = "needs TCP sockets: miri does not support networking (rust-lang/miri#3449)"
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn http10_client_gets_dechunked_close_delimited_response() {
+    let backend = start_scripted_backend(
+        vec![
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTrailer: x-checksum\r\nX-Origin: yes\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\nx-checksum: abc123\r\n\r\n"
+                .to_vec(),
+        ],
+        false,
+    )
+    .await;
+    let metrics = Arc::new(Metrics::default());
+    let cfg = http_listener_cfg(
+        "127.0.0.1:0".parse().expect("addr"),
+        backend,
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    );
+    let (proxy_addr, handle, serve) = start_proxy(cfg, Arc::clone(&metrics)).await;
+
+    let mut client = TcpStream::connect(proxy_addr).await.expect("connect");
+    // Keep-alive on purpose: the forced close must come from the dechunked
+    // response, not from the request's version default.
+    client
+        .write_all(b"GET /chunked HTTP/1.0\r\nHost: t\r\nConnection: keep-alive\r\n\r\n")
+        .await
+        .expect("write request");
+    let mut response = Vec::new();
+    tokio::time::timeout(WAIT, client.read_to_end(&mut response))
+        .await
+        .expect("the response must close the HTTP/1.0 connection")
+        .expect("read response");
+    let response = String::from_utf8_lossy(&response);
+    let (head, body) = response.split_once("\r\n\r\n").expect("head terminator");
+    assert!(
+        head.starts_with("HTTP/1.0 200 OK"),
+        "the client must see a 1.0 status line: {head:?}"
+    );
+    assert_eq!(body, "hello world", "body framing leaked: {response:?}");
+    assert!(
+        !body.contains("x-checksum"),
+        "trailers must not leak into a HTTP/1.0 body: {body:?}"
+    );
+    assert_eq!(
+        header_value(head, "connection").as_deref(),
+        Some("close"),
+        "dechunked bodies are delimited by connection close: {head:?}"
+    );
+    assert!(
+        header_value(head, "transfer-encoding").is_none(),
+        "HTTP/1.0 must not receive Transfer-Encoding: {head:?}"
+    );
+    assert!(
+        header_value(head, "trailer").is_none(),
+        "HTTP/1.0 must not receive a trailer section: {head:?}"
+    );
+    assert_eq!(
+        header_value(head, "x-origin").as_deref(),
+        Some("yes"),
+        "end-to-end headers stay intact: {head:?}"
+    );
+
+    handle.trigger();
+    tokio::time::timeout(WAIT, serve)
+        .await
+        .expect("serve finishes")
+        .expect("serve task without panic");
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs TCP sockets: miri does not support networking (rust-lang/miri#3449)"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn http10_head_response_never_advertises_chunked_framing() {
+    let backend = start_scripted_backend(
+        vec![b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nX-Origin: yes\r\n\r\n".to_vec()],
+        false,
+    )
+    .await;
+    let metrics = Arc::new(Metrics::default());
+    let cfg = http_listener_cfg(
+        "127.0.0.1:0".parse().expect("addr"),
+        backend,
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    );
+    let (proxy_addr, handle, serve) = start_proxy(cfg, Arc::clone(&metrics)).await;
+
+    let mut client = TcpStream::connect(proxy_addr).await.expect("connect");
+    client
+        .write_all(b"HEAD /head HTTP/1.0\r\nHost: t\r\nConnection: keep-alive\r\n\r\n")
+        .await
+        .expect("write request");
+    let mut response = Vec::new();
+    tokio::time::timeout(WAIT, client.read_to_end(&mut response))
+        .await
+        .expect("a 1.0 HEAD response must not keep a chunked head open")
+        .expect("read response");
+    let response = String::from_utf8_lossy(&response);
+    let (head, body) = response.split_once("\r\n\r\n").expect("head terminator");
+    assert!(
+        head.starts_with("HTTP/1.0 200 OK"),
+        "the client must see a 1.0 status line: {head:?}"
+    );
+    assert!(body.is_empty(), "HEAD must not carry a body: {body:?}");
+    assert_eq!(
+        header_value(head, "connection").as_deref(),
+        Some("close"),
+        "the rewritten bodyless response must close: {head:?}"
+    );
+    assert!(
+        header_value(head, "transfer-encoding").is_none(),
+        "HTTP/1.0 HEAD must not receive Transfer-Encoding: {head:?}"
+    );
+    assert!(
+        header_value(head, "trailer").is_none(),
+        "HTTP/1.0 HEAD must not receive a trailer section: {head:?}"
+    );
+    assert_eq!(
+        header_value(head, "x-origin").as_deref(),
+        Some("yes"),
+        "end-to-end headers stay intact: {head:?}"
+    );
+
+    handle.trigger();
+    tokio::time::timeout(WAIT, serve)
+        .await
+        .expect("serve finishes")
+        .expect("serve task without panic");
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs TCP sockets: miri does not support networking (rust-lang/miri#3449)"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn http1_smuggling_corpus_is_rejected_before_backend() {
     let backend = start_http_backend().await;
     let metrics = Arc::new(Metrics::default());
@@ -665,6 +800,7 @@ async fn http1_smuggling_corpus_is_rejected_before_backend() {
         b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\nTransfer-Encoding: chunked\r\n\r\n",
         b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\nContent-Length: 4\r\n\r\n",
         b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip, chunked\r\n\r\n",
+        b"POST / HTTP/1.0\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n",
         b"GET / HTTP/1.1\r\nHost: x\r\nHost: y\r\n\r\n",
         b"GET / HTTP/1.1\r\nFoo : x\r\nHost: y\r\n\r\n",
         b"GET / HTTP/1.1\r\n Host: x\r\n\r\n",

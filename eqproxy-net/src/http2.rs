@@ -67,10 +67,12 @@ const PIPE_BUFFER: usize = 16 * 1024;
 
 /// h1 headers that must not cross into h2 (RFC 9113 §8.2.2), plus the h1
 /// framing headers the translation replaces with DATA frames.
-const HOP_BY_HOP: [&str; 7] = [
+const HOP_BY_HOP: [&str; 9] = [
     "connection",
     "keep-alive",
     "proxy-connection",
+    "proxy-authenticate",
+    "proxy-authorization",
     "transfer-encoding",
     "upgrade",
     "te",
@@ -811,13 +813,25 @@ mod tests {
         let uri: http::Uri = "https://api.example.com/".parse().unwrap();
         let mut headers = HeaderMap::new();
         headers.insert("connection", HeaderValue::from_static("keep-alive"));
+        headers.insert("proxy-authenticate", HeaderValue::from_static("Basic"));
+        headers.insert(
+            "proxy-authorization",
+            HeaderValue::from_static("Basic c2VjcmV0"),
+        );
         headers.insert("transfer-encoding", HeaderValue::from_static("chunked"));
         headers.insert("te", HeaderValue::from_static("trailers"));
         headers.insert("upgrade", HeaderValue::from_static("websocket"));
         headers.insert("x-request-id", HeaderValue::from_static("abc"));
         let translated = build_request_head(&Method::GET, &uri, &headers, true).unwrap();
         let head = head_of(&translated);
-        for gone in ["connection:", "transfer-encoding:", "te:", "upgrade:"] {
+        for gone in [
+            "connection:",
+            "proxy-authenticate:",
+            "proxy-authorization:",
+            "transfer-encoding:",
+            "te:",
+            "upgrade:",
+        ] {
             assert!(!head.contains(gone), "{gone} leaked: {head}");
         }
         assert!(head.contains("x-request-id: abc\r\n"), "{head}");
@@ -845,12 +859,13 @@ mod tests {
 
     #[test]
     fn response_headers_lowercase_and_drop_hop_by_hop() {
-        let head = b"HTTP/1.1 200 OK\r\nServer: nginx\r\nTransfer-Encoding: chunked\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n";
+        let head = b"HTTP/1.1 200 OK\r\nServer: nginx\r\nTransfer-Encoding: chunked\r\nConnection: close\r\nProxy-Authenticate: Basic\r\nContent-Type: text/plain\r\n\r\n";
         let headers = response_headers(head);
         assert_eq!(headers.get("server").unwrap(), "nginx");
         assert_eq!(headers.get("content-type").unwrap(), "text/plain");
         assert!(headers.get("transfer-encoding").is_none());
         assert!(headers.get("connection").is_none());
+        assert!(headers.get("proxy-authenticate").is_none());
     }
 
     #[test]

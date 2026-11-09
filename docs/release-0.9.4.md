@@ -212,7 +212,39 @@ HTTP/2 gate, config-apply and live-traffic journeys; all four combinations
 reported success. The tag is **not** moved by this record, and the evidence
 above belongs to the published `v0.9.4` artifacts.
 
-## 5. Limitations
+## 5. Closing recheck (2026-11-09)
+
+The final check was run from a detached worktree at `refs/tags/v0.9.4`, not
+from the branch:
+
+- annotated tag object `da14ee23d6faa1d9f16ec72a0853bf99afd1154a`, target
+  `24e6dc6b29728b8ce16c197642a58268a27d89bd`;
+- `Cargo.toml` and `Cargo.lock` report `0.9.4`;
+- `CHANGELOG.md` contains `## [v0.9.4] — 2026-11-08` at line 8;
+- M-01 focused tests passed: **1 unit + 2 E2E**;
+- `cargo test --workspace --locked` passed: **760 passed, 0 failed, 2 ignored**,
+  exit `0`;
+- the release still has the exact 10-asset set listed in section 1, all
+  `uploaded`;
+- `v$VER == $GITHUB_REF_NAME` holds for `v0.9.4` and workspace `0.9.4`.
+
+The two `0.9.4` registry references were inspected without pulling:
+
+```console
+$ docker buildx imagetools inspect --raw ghcr.io/eqproxy/eqproxy:0.9.4
+$ docker buildx imagetools inspect --raw exyonq/eqproxy:0.9.4
+```
+
+| Reference | Index digest | `linux/amd64` | `linux/arm64` |
+|---|---|---|---|
+| `ghcr.io/eqproxy/eqproxy:0.9.4` | `sha256:d139f07b49f6829e354971ade4076512eae469cf40540c4e34add61fd0574ba8` | `sha256:265b3cd3734c1230e5b370b50d3e33127bfb32b002807df91c9831d56ba00b4d` | `sha256:234fe266bc45fe2e140b36154914176e7f1e0a04ade6e71eb8a5d523c42377e8` |
+| `exyonq/eqproxy:0.9.4` (Docker Hub) | `sha256:d139f07b49f6829e354971ade4076512eae469cf40540c4e34add61fd0574ba8` | `sha256:265b3cd3734c1230e5b370b50d3e33127bfb32b002807df91c9831d56ba00b4d` | `sha256:234fe266bc45fe2e140b36154914176e7f1e0a04ade6e71eb8a5d523c42377e8` |
+
+Both registries resolve to the same index and the same two platform manifests.
+No `:latest` tag was pulled or rechecked for this record. The tag and release
+were not modified; this section records the recheck, not a new publication.
+
+## 6. Limitations
 
 - The source tarball was extracted, checksum-verified and tested, but the
   published Linux binaries were not rebuilt from that export; they are the

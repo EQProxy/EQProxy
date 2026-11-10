@@ -2566,8 +2566,9 @@ struct CacheFetch {
     /// the backend-visible values the `Vary` key and the conditional
     /// headers come from.
     headers: Vec<(String, String)>,
-    /// The client sent `Cache-Control: no-cache`.
-    force_revalidate: bool,
+    /// Client `Cache-Control` policy for this request, kept out of the
+    /// shared entry so one client cannot shorten another's freshness.
+    policy: cache::RequestCachePolicy,
     /// Stale entry being revalidated (`None` = cold miss).
     stale: Option<Arc<cache::StoredEntry>>,
 }
@@ -2620,22 +2621,22 @@ fn plan_cache(
         Err(_) => return bypass(),
     };
     let framing_none = matches!(request.framing, BodyFraming::None);
-    let decision = match cache::decide(
+    let policy = match cache::decide_policy(
         &request.method,
         framing_none,
         &forwarded.headers,
         backend_affinity_cookie,
     ) {
-        Ok(decision) => decision,
+        Ok(policy) => policy,
         Err(_) => return bypass(),
     };
     let fetch = CacheFetch {
         key: cache::base_key(&request.method, scheme, &forwarded.host, &forwarded.target),
         headers: forwarded.headers,
-        force_revalidate: decision.force_revalidate,
+        policy,
         stale: None,
     };
-    match cache.lookup(&fetch.key, &fetch.headers, fetch.force_revalidate) {
+    match cache.lookup_with_policy(&fetch.key, &fetch.headers, &fetch.policy) {
         cache::Lookup::Hit(entry) => CacheAction::Serve(entry),
         cache::Lookup::Fetch => {
             metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
@@ -2662,7 +2663,7 @@ async fn resolve_cache_wait(
 ) -> CacheAction {
     match cache.wait(shared).await {
         Some(cache::FetchResult::Ready) => {
-            match cache.lookup(&fetch.key, &fetch.headers, fetch.force_revalidate) {
+            match cache.lookup_with_policy(&fetch.key, &fetch.headers, &fetch.policy) {
                 cache::Lookup::Hit(entry) => CacheAction::Serve(entry),
                 cache::Lookup::Fetch => {
                     metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
@@ -3429,6 +3430,9 @@ struct OriginHead {
     response: ResponseHead,
     carry: Vec<u8>,
     refreshed: Option<(bool, Arc<cache::StoredEntry>)>,
+    /// The `304` revoked shared storability (AUD-01): the caller must
+    /// re-fetch in full.
+    invalidated: bool,
 }
 
 impl<BR, CW> OriginHeadPhase<'_, BR, CW>
@@ -3449,6 +3453,9 @@ where
         // Set when a `304` refreshed the stored entry: the tail below is
         // skipped and the entry serves instead.
         let mut refreshed: Option<(bool, Arc<cache::StoredEntry>)> = None;
+        // Set when the `304` revoked shared storability: the caller must
+        // re-fetch in full instead of serving the stored body.
+        let mut invalidated = false;
         let (head_bytes, response) = loop {
             let mut source = Prefixed {
                 prefix: std::mem::take(&mut carry),
@@ -3554,29 +3561,25 @@ where
                         guard.disarm();
                     }
                     // Planned from `Some`; `None` serves the stale bytes
-                    // without a refresh instead of panicking.
-                    let entry = match self.h1.cfg.cache.as_ref() {
+                    // without a refresh instead of panicking. `refresh`
+                    // returns the stored entry, or a transient one when the
+                    // 304 revokes shared storability.
+                    match self.h1.cfg.cache.as_ref() {
                         Some(cache) => {
                             let ttl =
                                 cache::effective_ttl(cache.default_ttl(), &facts_304.cache_control);
-                            cache
-                                .refresh(fetch.key.clone(), stale, &facts_304.headers, ttl)
-                                .await;
-                            // No backend stream is moved here: the check-in
-                            // (or drop) happens in the `refreshed` block
-                            // below, whose `continue`/`return` keeps the tail
-                            // from touching the moved connection.
-                            match cache.lookup(&fetch.key, &fetch.headers, false) {
-                                cache::Lookup::Hit(entry) => entry,
-                                // Evicted between lookup and refresh: the
-                                // stale bytes are still correct, only the
-                                // headers aged.
-                                _ => Arc::clone(stale),
+                            match cache
+                                .refresh(fetch.key.clone(), stale, &facts_304, ttl)
+                                .await
+                            {
+                                cache::RefreshOutcome::Refreshed(entry) => {
+                                    refreshed = Some((carry.is_empty(), entry));
+                                }
+                                cache::RefreshOutcome::Invalidated => invalidated = true,
                             }
                         }
-                        None => Arc::clone(stale),
-                    };
-                    refreshed = Some((carry.is_empty(), entry));
+                        None => refreshed = Some((carry.is_empty(), Arc::clone(stale))),
+                    }
                     break (head_bytes, response);
                 }
                 break (head_bytes, response);
@@ -3646,6 +3649,7 @@ where
             response,
             carry,
             refreshed,
+            invalidated,
         })
     }
 }
@@ -4261,7 +4265,7 @@ pub async fn serve_http<CR, CW>(
     // the exchange scope, so a queued request is never lost.
     let mut client_carry: Vec<u8> = Vec::new();
 
-    loop {
+    'connection: loop {
         // --- Client phase: request head ---
         let Some((head_bytes, carry)) = read_client_head(
             &h1,
@@ -4501,117 +4505,166 @@ pub async fn serve_http<CR, CW>(
         // --- Response-cache phase: plan the lookup, resolve a concurrent
         // fetch, serve a hit, and add the conditional headers a stale entry
         // earns — all before any backend byte is dialed. ---
-        let mut cache_action = CacheAction::Off;
-        let mut cache_guard: Option<CacheGuard> = None;
-        let cached = CachePhase {
-            h1: &h1,
-            request: &request,
-            rule_headers,
-            backend,
-            scheme,
-            peer,
-        }
-        .run(
-            &mut client_write,
-            &mut from_client,
-            &mut forwarded_head,
-            &mut access,
-            &mut cache_action,
-            &mut cache_guard,
-        )
-        .await;
-        match cached {
-            CachePhaseOutcome::Served { carry, close } => {
-                client_carry = carry;
-                if close {
-                    let _ =
-                        tokio::time::timeout(Duration::from_secs(5), client_write.shutdown()).await;
+        let forwarded_head_base = forwarded_head.clone();
+        let mut retried_full_fetch = false;
+        'exchange: loop {
+            // A revalidation that revoked storability re-enters this loop:
+            // the conditional headers from the first attempt must not be
+            // sent again on the full fetch.
+            forwarded_head.clone_from(&forwarded_head_base);
+            let mut cache_action = CacheAction::Off;
+            let mut cache_guard: Option<CacheGuard> = None;
+            let cached = CachePhase {
+                h1: &h1,
+                request: &request,
+                rule_headers,
+                backend,
+                scheme,
+                peer,
+            }
+            .run(
+                &mut client_write,
+                &mut from_client,
+                &mut forwarded_head,
+                &mut access,
+                &mut cache_action,
+                &mut cache_guard,
+            )
+            .await;
+            match cached {
+                CachePhaseOutcome::Served { carry, close } => {
+                    // A retry already carved the pipelined bytes out on its
+                    // first attempt; the empty remainder must not overwrite them.
+                    if !retried_full_fetch {
+                        client_carry = carry;
+                    }
+                    if close {
+                        let _ =
+                            tokio::time::timeout(Duration::from_secs(5), client_write.shutdown())
+                                .await;
+                        return;
+                    }
+                    continue 'connection;
+                }
+                CachePhaseOutcome::Proceed => {}
+            }
+
+            // B-H11/B-E12 (`max_stream_duration`, Q5): one total cap for the
+            // forwarded exchange — request body, response head and response
+            // body — on top of the per-phase timeouts. `ZERO` disables it.
+            let stream_deadline = (cfg.max_stream_duration > Duration::ZERO)
+                .then(|| tokio::time::Instant::now() + cfg.max_stream_duration);
+
+            // --- Backend: reuse from the pool (A16) or dial again ---
+            // Retry safety (B-H7): only idempotent requests are replayed
+            // unless the backend opts in explicitly.
+            let ctx = if method_is_idempotent(&request.method) {
+                RetryContext::idempotent()
+            } else {
+                RetryContext::non_idempotent()
+            };
+            // Affinity (B-H8/B-N13/B-I8): pin from the request's sticky
+            // cookie (cookie mode); source mode hashes the IP in the balancer.
+            let affinity_cookie = backend.affinity.as_ref().and_then(|affinity| {
+                (affinity.mode == AffinityMode::Cookie)
+                    .then(|| cookie_value(&request.headers, &affinity.cookie))
+                    .flatten()
+            });
+            // `active` (B-H5 leastconn) holds the in-flight slot from the pick
+            // to the end of this exchange (released on drop). Its mode tells the
+            // completion path whether the slot may still pool a connection
+            // (ADR-0028: after a `maintenance` declaration the pool must hold
+            // nothing for the server).
+            let (conn, active) = match checkout_or_connect(
+                cfg,
+                backend,
+                peer,
+                local,
+                &metrics,
+                ctx,
+                affinity_cookie.as_deref(),
+            )
+            .await
+            {
+                Ok(picked) => picked,
+                Err(OutboundError::NoServer) => {
+                    // All servers down/drained (B11): explicit 503 (C9 custom).
+                    if let Some(record) = access.as_mut() {
+                        record.status(
+                            cfg.local_response
+                                .as_ref()
+                                .map_or(503, |local| local.status),
+                        );
+                    }
+                    write_no_server(
+                        &mut client_write,
+                        cfg,
+                        &metrics,
+                        503,
+                        "service unavailable",
+                        head_only,
+                    )
+                    .await;
                     return;
                 }
-                continue;
-            }
-            CachePhaseOutcome::Proceed => {}
-        }
-
-        // B-H11/B-E12 (`max_stream_duration`, Q5): one total cap for the
-        // forwarded exchange — request body, response head and response
-        // body — on top of the per-phase timeouts. `ZERO` disables it.
-        let stream_deadline = (cfg.max_stream_duration > Duration::ZERO)
-            .then(|| tokio::time::Instant::now() + cfg.max_stream_duration);
-
-        // --- Backend: reuse from the pool (A16) or dial again ---
-        // Retry safety (B-H7): only idempotent requests are replayed
-        // unless the backend opts in explicitly.
-        let ctx = if method_is_idempotent(&request.method) {
-            RetryContext::idempotent()
-        } else {
-            RetryContext::non_idempotent()
-        };
-        // Affinity (B-H8/B-N13/B-I8): pin from the request's sticky
-        // cookie (cookie mode); source mode hashes the IP in the balancer.
-        let affinity_cookie = backend.affinity.as_ref().and_then(|affinity| {
-            (affinity.mode == AffinityMode::Cookie)
-                .then(|| cookie_value(&request.headers, &affinity.cookie))
-                .flatten()
-        });
-        // `active` (B-H5 leastconn) holds the in-flight slot from the pick
-        // to the end of this exchange (released on drop). Its mode tells the
-        // completion path whether the slot may still pool a connection
-        // (ADR-0028: after a `maintenance` declaration the pool must hold
-        // nothing for the server).
-        let (conn, active) = match checkout_or_connect(
-            cfg,
-            backend,
-            peer,
-            local,
-            &metrics,
-            ctx,
-            affinity_cookie.as_deref(),
-        )
-        .await
-        {
-            Ok(picked) => picked,
-            Err(OutboundError::NoServer) => {
-                // All servers down/drained (B11): explicit 503 (C9 custom).
-                if let Some(record) = access.as_mut() {
-                    record.status(
-                        cfg.local_response
-                            .as_ref()
-                            .map_or(503, |local| local.status),
-                    );
+                Err(OutboundError::QueueFull) | Err(OutboundError::QueueTimeout) => {
+                    // B-H7: bounded queue rejected explicitly (never silent).
+                    if let Some(record) = access.as_mut() {
+                        record.status(
+                            cfg.local_response
+                                .as_ref()
+                                .map_or(503, |local| local.status),
+                        );
+                    }
+                    write_no_server(
+                        &mut client_write,
+                        cfg,
+                        &metrics,
+                        503,
+                        "service unavailable",
+                        head_only,
+                    )
+                    .await;
+                    return;
                 }
-                write_no_server(
-                    &mut client_write,
-                    cfg,
-                    &metrics,
-                    503,
-                    "service unavailable",
-                    head_only,
-                )
-                .await;
-                return;
-            }
-            Err(OutboundError::QueueFull) | Err(OutboundError::QueueTimeout) => {
-                // B-H7: bounded queue rejected explicitly (never silent).
-                if let Some(record) = access.as_mut() {
-                    record.status(
-                        cfg.local_response
-                            .as_ref()
-                            .map_or(503, |local| local.status),
-                    );
+                Err(OutboundError::Connect) => {
+                    if let Some(record) = access.as_mut() {
+                        record.status(502);
+                    }
+                    write_local(
+                        &mut client_write,
+                        cfg,
+                        &metrics,
+                        502,
+                        "bad gateway",
+                        head_only,
+                    )
+                    .await;
+                    return;
                 }
-                write_no_server(
-                    &mut client_write,
-                    cfg,
-                    &metrics,
-                    503,
-                    "service unavailable",
-                    head_only,
-                )
-                .await;
-                return;
+            };
+            let served_addr = conn.addr.clone();
+            if let Some(record) = access.as_mut() {
+                record.backend(&backend.name, &served_addr);
             }
-            Err(OutboundError::Connect) => {
+            // An HTTP/2 exchange owns one stream: its pipe is single-use and is
+            // dropped here, never checked back in (the h2 session is shared
+            // underneath instead).
+            let poolable = conn.poolable;
+            let mut backend_read = conn.read;
+            let mut backend_write = conn.write;
+
+            // --- Head + request body forwarding ---
+            // `forwarded_head` was built before the dial (rules, forwarded
+            // headers, rewrite and plugin, in that order): a plugin rejection or
+            // failure never opens a backend connection.
+            if write_with_timeout(&mut backend_write, &forwarded_head, cfg.idle_timeout)
+                .await
+                .is_err()
+                || write_with_timeout(&mut backend_write, HEAD_END, cfg.idle_timeout)
+                    .await
+                    .is_err()
+            {
                 if let Some(record) = access.as_mut() {
                     record.status(502);
                 }
@@ -4626,479 +4679,38 @@ pub async fn serve_http<CR, CW>(
                 .await;
                 return;
             }
-        };
-        let served_addr = conn.addr.clone();
-        if let Some(record) = access.as_mut() {
-            record.backend(&backend.name, &served_addr);
-        }
-        // An HTTP/2 exchange owns one stream: its pipe is single-use and is
-        // dropped here, never checked back in (the h2 session is shared
-        // underneath instead).
-        let poolable = conn.poolable;
-        let mut backend_read = conn.read;
-        let mut backend_write = conn.write;
 
-        // --- Head + request body forwarding ---
-        // `forwarded_head` was built before the dial (rules, forwarded
-        // headers, rewrite and plugin, in that order): a plugin rejection or
-        // failure never opens a backend connection.
-        if write_with_timeout(&mut backend_write, &forwarded_head, cfg.idle_timeout)
-            .await
-            .is_err()
-            || write_with_timeout(&mut backend_write, HEAD_END, cfg.idle_timeout)
-                .await
-                .is_err()
-        {
-            if let Some(record) = access.as_mut() {
-                record.status(502);
-            }
-            write_local(
-                &mut client_write,
-                cfg,
-                &metrics,
-                502,
-                "bad gateway",
-                head_only,
-            )
-            .await;
-            return;
-        }
-
-        // `Expect: 100-continue` (RFC 9112 §10.1.2): the client waits for an
-        // interim response before sending the body. Now that the request
-        // head reached the backend, release it with a real `100 Continue`
-        // (never simulated: the client sees the actual interim message).
-        // Only when a body is actually expected: a request without one is
-        // not waiting for anything.
-        let sent_continue =
-            request.expect_continue && !matches!(request.framing, BodyFraming::None);
-        if sent_continue
-            && write_with_timeout(&mut client_write, CONTINUE, cfg.idle_timeout)
-                .await
-                .is_err()
-        {
-            return;
-        }
-
-        // Request body forwarding, teeing the bytes for the mirror copy when
-        // the matched rule has one (B-H3). `None` after the copy = the body
-        // exceeded the mirror budget (counted, never truncated).
-        let request_body = match forward_request_body(
-            &h1,
-            &mut from_client,
-            &mut backend_write,
-            &request,
-            mirror.as_ref(),
-            stream_deadline,
-        )
-        .await
-        {
-            BodyForward::Done(body) => Ok(body),
-            BodyForward::Deadline => {
-                if let Some(record) = access.as_mut() {
-                    record.status(504);
-                }
-                write_local(
-                    &mut client_write,
-                    cfg,
-                    &metrics,
-                    504,
-                    "gateway timeout",
-                    head_only,
-                )
-                .await;
-                return;
-            }
-            BodyForward::Copy(error) => Err(error),
-        };
-        let mirror_body = match request_body {
-            Ok(body) => body,
-            Err(CopyError::Framing(reject)) => {
-                metrics
-                    .http_requests_rejected
-                    .fetch_add(1, Ordering::Relaxed);
-                if let Some(record) = access.as_mut() {
-                    record.status(reject.status);
-                }
-                write_local(
-                    &mut client_write,
-                    cfg,
-                    &metrics,
-                    reject.status,
-                    reject.reason,
-                    head_only,
-                )
-                .await;
-                return;
-            }
-            Err(CopyError::Truncated) => {
-                metrics
-                    .http_requests_rejected
-                    .fetch_add(1, Ordering::Relaxed);
-                if let Some(record) = access.as_mut() {
-                    record.status(400);
-                }
-                write_local(
-                    &mut client_write,
-                    cfg,
-                    &metrics,
-                    400,
-                    "truncated request body",
-                    head_only,
-                )
-                .await;
-                return;
-            }
-            Err(CopyError::TooLarge) => {
-                // The exchange is abandoned: earlier chunks already reached
-                // the backend, so the connection is not pooled (dropped on
-                // return) and the client gets the explicit refusal.
-                metrics
-                    .http_requests_rejected
-                    .fetch_add(1, Ordering::Relaxed);
-                if let Some(record) = access.as_mut() {
-                    record.status(413);
-                }
-                write_local(
-                    &mut client_write,
-                    cfg,
-                    &metrics,
-                    413,
-                    "request body too large",
-                    head_only,
-                )
-                .await;
-                return;
-            }
-            Err(CopyError::Idle) => return,
-            // A19: client abort → the backend is dropped on exit.
-            Err(CopyError::Io) => return,
-        };
-        // Bytes past the request body belong to the next pipelined
-        // exchange on this client connection.
-        client_carry = from_client.prefix.split_off(from_client.pos);
-
-        // Request mirror (B-H3): the copy goes out on a detached task now
-        // that the client's body is complete, so it adds no latency to the
-        // exchange and its outcome (success or failure) never reaches the
-        // client — only the counters and the log see it.
-        match (mirror, mirror_body) {
-            (Some(policy), Some(body)) => mirror::spawn(mirror::MirrorCopy {
-                name: cfg.name.clone(),
-                connect_timeout: cfg.connect_timeout,
-                idle_timeout: cfg.idle_timeout,
-                policy,
-                peer,
-                local,
-                head: forwarded_head.clone(),
-                body,
-                metrics: Arc::clone(&metrics),
-            }),
-            (Some(_policy), None) => {
-                metrics.mirror_skipped.fetch_add(1, Ordering::Relaxed);
-            }
-            (None, _) => {}
-        }
-
-        let Some(OriginHead {
-            head_bytes: response_head_bytes,
-            response,
-            mut carry,
-            mut refreshed,
-        }) = (OriginHeadPhase {
-            h1: &h1,
-            backend_read: &mut backend_read,
-            client_write: &mut client_write,
-            request: &request,
-            access: &mut access,
-            cache_action: &cache_action,
-            cache_guard: &mut cache_guard,
-            addr: &conn.addr,
-            head_only,
-            sent_continue,
-            deadline: stream_deadline,
-        })
-        .read()
-        .await
-        else {
-            return;
-        };
-
-        // Custom error pages (ADR-0045): with `intercept`, a matching origin
-        // status is replaced by the configured page. The origin body is
-        // deliberately not read: the connection is dropped (never pooled), so
-        // a half-read response cannot desync a later exchange on it.
-        if let Some(page) = cfg.error_pages.intercept_for(response.status) {
-            metrics.error_pages_served.fetch_add(1, Ordering::Relaxed);
-            if let Some(record) = access.as_mut() {
-                record.status(page.status.unwrap_or(response.status));
-            }
-            drop((backend_read, backend_write));
-            write_page(&mut client_write, page, response.status, !head_only).await;
-            return;
-        }
-
-        // A revalidated entry serves from the store: the 304 connection
-        // returns to the pool under the same contract as a clean origin
-        // exchange. This block diverges (`continue`/`return`), so the
-        // tail below never touches the moved connection.
-        if let Some((clean, entry)) = refreshed.take() {
-            let backend_alive = !peer_gone(&mut backend_read).await;
-            if poolable
-                && !request.wants_close
-                && !response.wants_close
-                && clean
-                && backend_alive
-                && active.mode() != ServerMode::Maintenance
-            {
-                backend
-                    .pool
-                    .checkin(&conn.addr, backend_read, backend_write, Instant::now());
-            } else {
-                drop((backend_read, backend_write));
-            }
-            metrics.cache_hits.fetch_add(1, Ordering::Relaxed);
-            entry.hits.fetch_add(1, Ordering::Relaxed);
-            serve_cached(
-                &mut client_write,
-                cfg,
-                rule_headers,
-                peer,
-                &request.host,
-                scheme,
-                &request,
-                &entry,
-                &mut access,
-                &metrics,
-                true,
-            )
-            .await;
-            client_carry = from_client.prefix.split_off(from_client.pos);
-            if request.wants_close {
-                let _ = tokio::time::timeout(Duration::from_secs(5), client_write.shutdown()).await;
-                return;
-            }
-            continue;
-        }
-
-        if let Some(record) = access.as_mut() {
-            record.status(response.status);
-        }
-
-        // A7/A8 upgrade tunnel: the client asked (Upgrade or CONNECT) and
-        // the backend accepted (101 / 2xx). The switch head is forwarded
-        // verbatim (no proxy additions on a protocol switch) and the
-        // exchange becomes a raw bidirectional tunnel until either side
-        // closes or goes idle (`idle_timeout` is the inactivity cap). The
-        // connection is consumed: it never returns to the pool.
-        if (response.status == 101 && request.wants_upgrade)
-            || (request.method == "CONNECT" && (200..300).contains(&response.status))
-        {
-            // The switch head is forwarded byte for byte except for the
-            // product banner: an upgrade must not leak the origin's either.
-            let switch_head = with_server_header(&response_head_bytes);
-            if write_with_timeout(&mut client_write, &switch_head, cfg.idle_timeout)
-                .await
-                .is_err()
-                || write_with_timeout(&mut client_write, HEAD_END, cfg.idle_timeout)
+            // `Expect: 100-continue` (RFC 9112 §10.1.2): the client waits for an
+            // interim response before sending the body. Now that the request
+            // head reached the backend, release it with a real `100 Continue`
+            // (never simulated: the client sees the actual interim message).
+            // Only when a body is actually expected: a request without one is
+            // not waiting for anything.
+            let sent_continue =
+                request.expect_continue && !matches!(request.framing, BodyFraming::None);
+            if sent_continue
+                && write_with_timeout(&mut client_write, CONTINUE, cfg.idle_timeout)
                     .await
                     .is_err()
             {
                 return;
             }
-            let mut from_backend = Prefixed {
-                prefix: carry,
-                pos: 0,
-                inner: &mut backend_read,
-            };
-            run_tunnel(
+
+            // Request body forwarding, teeing the bytes for the mirror copy when
+            // the matched rule has one (B-H3). `None` after the copy = the body
+            // exceeded the mirror budget (counted, never truncated).
+            let request_body = match forward_request_body(
+                &h1,
                 &mut from_client,
-                &mut client_write,
-                &mut from_backend,
                 &mut backend_write,
-                cfg.idle_timeout,
+                &request,
+                mirror.as_ref(),
+                stream_deadline,
             )
-            .await;
-            return;
-        }
-
-        // Response header actions (B-N4/B-I4/B-E17) on the proxied
-        // response the client sees.
-        let mut response_lines = rule_headers
-            .map(|actions| render_header_lines(&actions.response, peer, &request.host, scheme))
-            .unwrap_or_default();
-        // Sticky cookie (B-H8): re-issued only when the request had none
-        // or it did not pin to the server that served.
-        if let Some(affinity) = backend.affinity.as_ref()
-            && affinity.mode == AffinityMode::Cookie
-            && let Some(token) = backend
-                .balancer
-                // Stable slot index (B-H13): a re-resolution must not
-                // change the cookie's meaning.
-                .slot_of(&served_addr)
-                .map(|idx| idx.to_string())
-            && Some(&token) != affinity_cookie.as_ref()
-        {
-            response_lines.push(format!(
-                "set-cookie: {}={token}; Path=/; HttpOnly",
-                affinity.cookie
-            ));
-        }
-        if let Some(cors) = rule_headers.and_then(|actions| actions.cors.as_ref()) {
-            response_lines.extend(cors_response_lines(cors, false));
-        }
-        let mut response_head_bytes = if response_lines.is_empty() {
-            response_head_bytes
-        } else {
-            append_response_headers(&response_head_bytes, &response_lines)
-        };
-        // Product banner, after every header source (origin, rule actions,
-        // sticky cookie, CORS): exactly one `Server: EQProxy`, never the
-        // origin's value and never a version.
-        response_head_bytes = with_server_header(&response_head_bytes);
-        // M-01: an HTTP/1.0 client cannot read chunked framing. The head is
-        // rewritten whenever it advertises Transfer-Encoding, including a
-        // bodyless HEAD/204/304 where the parser recorded no body framing.
-        // When a body exists it is dechunked below; the connection closes
-        // because there is no Content-Length to delimit that body.
-        let http10_te = request.version == 10 && head_has_transfer_encoding(&response_head_bytes);
-        if http10_te {
-            response_head_bytes = dechunk_head_for_http10(&response_head_bytes);
-        }
-        // Response compression (B-N6/H6): the decision happens once, before a
-        // byte of the head is sent, so nothing has to be unwound later. The
-        // backend framing is untouched; only the client's view is rewritten.
-        let accept_encoding = request
-            .headers
-            .iter()
-            .find(|(name, _)| name == "accept-encoding")
-            .map(|(_, value)| value.as_str());
-        let compression_settings = cfg.compression.as_ref();
-        let encoding = if http10_te {
-            None
-        } else {
-            compression_settings.and_then(|settings| {
-                compression::eligible(
-                    &request.method,
-                    request.version,
-                    accept_encoding,
-                    &compression::ResponseFacts {
-                        status: response.status,
-                        no_body: response.framing == BodyFraming::None,
-                        declared_len: match response.framing {
-                            BodyFraming::ContentLength(len) => Some(len),
-                            _ => None,
-                        },
-                        head: &response_head_bytes,
-                    },
-                    settings,
-                )
-            })
-        };
-        if let Some(encoding) = encoding {
-            response_head_bytes = compression::rewrite_head(&response_head_bytes, encoding);
-            match encoding {
-                compression::Encoding::Gzip => metrics
-                    .compression_gzip_responses
-                    .fetch_add(1, Ordering::Relaxed),
-                compression::Encoding::Brotli => metrics
-                    .compression_brotli_responses
-                    .fetch_add(1, Ordering::Relaxed),
-            };
-        }
-        if let Some(record) = access.as_mut() {
-            // Only an uncompressed, declared length is the client's byte
-            // count; chunked, until-EOF and compressed bodies are unknown and
-            // stay absent rather than lying.
-            let bytes = match (encoding, response.framing) {
-                (None, BodyFraming::None) => Some(0),
-                (None, BodyFraming::ContentLength(len)) => Some(len),
-                _ => None,
-            };
-            if let Some(bytes) = bytes {
-                record.bytes(bytes);
-            }
-        }
-        // B-N7/H1: a cacheable miss is marked like a hit (visibility for
-        // operators and tests), on both the assembled and the streamed
-        // path. Never stored: `end_to_end` strips it.
-        if matches!(
-            cache_action,
-            CacheAction::Origin(_) | CacheAction::Direct(_)
-        ) {
-            response_head_bytes.extend_from_slice(b"\r\nx-cache: MISS");
-        }
-        // --- Storable-response phase: assemble a bounded declared-length
-        // body, forward it and publish the entry; anything else streams. ---
-        let assembled = ResponseAssembly {
-            h1: &h1,
-            request: &request,
-            response: &response,
-            head_bytes: &response_head_bytes,
-            cache_action: &cache_action,
-            encoding,
-            settings: compression_settings,
-            deadline: stream_deadline,
-            head_only,
-        }
-        .run(
-            &mut backend_read,
-            &mut client_write,
-            &mut carry,
-            &mut access,
-            &mut cache_guard,
-        )
-        .await;
-        match assembled {
-            AssemblyOutcome::Sent { clean_boundary } => {
-                let backend_alive = !peer_gone(&mut backend_read).await;
-                if finish_exchange(
-                    &metrics,
-                    &cfg.name,
-                    backend,
-                    &served_addr,
-                    route_name,
-                    active.mode() == ServerMode::Maintenance,
-                    response.status,
-                    poolable,
-                    request.wants_close,
-                    response.wants_close,
-                    clean_boundary,
-                    backend_alive,
-                    &conn.addr,
-                    backend_read,
-                    backend_write,
-                ) {
-                    let _ = client_write.shutdown().await;
-                    return;
-                }
-                continue;
-            }
-            AssemblyOutcome::Stop => return,
-            AssemblyOutcome::NotStorable => {}
-        }
-
-        let (clean_boundary, head_forwarded, outcome) = stream_response(
-            &h1,
-            &mut backend_read,
-            &mut client_write,
-            carry,
-            ResponseStream {
-                head: &response_head_bytes,
-                framing: response.framing,
-                encoding,
-                settings: compression_settings,
-                dechunk: http10_te && response.framing == BodyFraming::Chunked,
-            },
-            stream_deadline,
-        )
-        .await;
-        match outcome {
-            ResponseForward::Done => {}
-            // max_stream_duration fired mid-response: the stream is cut
-            // (504 before the head; a truncated stream after it).
-            ResponseForward::Deadline => {
-                if !head_forwarded {
+            .await
+            {
+                BodyForward::Done(body) => Ok(body),
+                BodyForward::Deadline => {
                     if let Some(record) = access.as_mut() {
                         record.status(504);
                     }
@@ -5111,56 +4723,518 @@ pub async fn serve_http<CR, CW>(
                         head_only,
                     )
                     .await;
+                    return;
                 }
-                return;
+                BodyForward::Copy(error) => Err(error),
+            };
+            let mirror_body = match request_body {
+                Ok(body) => body,
+                Err(CopyError::Framing(reject)) => {
+                    metrics
+                        .http_requests_rejected
+                        .fetch_add(1, Ordering::Relaxed);
+                    if let Some(record) = access.as_mut() {
+                        record.status(reject.status);
+                    }
+                    write_local(
+                        &mut client_write,
+                        cfg,
+                        &metrics,
+                        reject.status,
+                        reject.reason,
+                        head_only,
+                    )
+                    .await;
+                    return;
+                }
+                Err(CopyError::Truncated) => {
+                    metrics
+                        .http_requests_rejected
+                        .fetch_add(1, Ordering::Relaxed);
+                    if let Some(record) = access.as_mut() {
+                        record.status(400);
+                    }
+                    write_local(
+                        &mut client_write,
+                        cfg,
+                        &metrics,
+                        400,
+                        "truncated request body",
+                        head_only,
+                    )
+                    .await;
+                    return;
+                }
+                Err(CopyError::TooLarge) => {
+                    // The exchange is abandoned: earlier chunks already reached
+                    // the backend, so the connection is not pooled (dropped on
+                    // return) and the client gets the explicit refusal.
+                    metrics
+                        .http_requests_rejected
+                        .fetch_add(1, Ordering::Relaxed);
+                    if let Some(record) = access.as_mut() {
+                        record.status(413);
+                    }
+                    write_local(
+                        &mut client_write,
+                        cfg,
+                        &metrics,
+                        413,
+                        "request body too large",
+                        head_only,
+                    )
+                    .await;
+                    return;
+                }
+                Err(CopyError::Idle) => return,
+                // A19: client abort → the backend is dropped on exit.
+                Err(CopyError::Io) => return,
+            };
+            // Bytes past the request body belong to the next pipelined
+            // exchange on this client connection. A full-fetch retry already
+            // carved them out on its first attempt; keep that remainder.
+            if !retried_full_fetch {
+                client_carry = from_client.prefix.split_off(from_client.pos);
             }
-            // Before the response head a clean 502/500 still fits.
-            ResponseForward::Copy(CopyError::Framing(reject)) if !head_forwarded => {
+
+            // Request mirror (B-H3): the copy goes out on a detached task now
+            // that the client's body is complete, so it adds no latency to the
+            // exchange and its outcome (success or failure) never reaches the
+            // client — only the counters and the log see it.
+            if !retried_full_fetch {
+                match (mirror.clone(), mirror_body) {
+                    (Some(policy), Some(body)) => mirror::spawn(mirror::MirrorCopy {
+                        name: cfg.name.clone(),
+                        connect_timeout: cfg.connect_timeout,
+                        idle_timeout: cfg.idle_timeout,
+                        policy,
+                        peer,
+                        local,
+                        head: forwarded_head.clone(),
+                        body,
+                        metrics: Arc::clone(&metrics),
+                    }),
+                    (Some(_policy), None) => {
+                        metrics.mirror_skipped.fetch_add(1, Ordering::Relaxed);
+                    }
+                    (None, _) => {}
+                }
+            }
+
+            let Some(OriginHead {
+                head_bytes: response_head_bytes,
+                response,
+                mut carry,
+                mut refreshed,
+                invalidated,
+            }) = (OriginHeadPhase {
+                h1: &h1,
+                backend_read: &mut backend_read,
+                client_write: &mut client_write,
+                request: &request,
+                access: &mut access,
+                cache_action: &cache_action,
+                cache_guard: &mut cache_guard,
+                addr: &conn.addr,
+                head_only,
+                sent_continue,
+                deadline: stream_deadline,
+            })
+            .read()
+            .await
+            else {
+                return;
+            };
+
+            // AUD-01: the origin revoked shared storability on the `304`. The
+            // entry is already gone; send an unconditional request instead of
+            // serving the old body under the new policy. A second `304` to an
+            // unconditional request is a misbehaving origin: fail explicitly
+            // rather than loop.
+            if invalidated {
+                if let Some(guard) = cache_guard.as_mut() {
+                    guard.disarm();
+                }
+                drop((backend_read, backend_write));
+                if retried_full_fetch {
+                    if let Some(record) = access.as_mut() {
+                        record.status(502);
+                    }
+                    write_local(
+                        &mut client_write,
+                        cfg,
+                        &metrics,
+                        502,
+                        "bad gateway",
+                        head_only,
+                    )
+                    .await;
+                    return;
+                }
+                retried_full_fetch = true;
+                continue 'exchange;
+            }
+
+            // The retry was unconditional, so a `304` here is a protocol
+            // violation. Fail explicitly instead of forwarding it to a client
+            // that never sent a conditional request.
+            if retried_full_fetch && response.status == 304 {
                 if let Some(record) = access.as_mut() {
-                    record.status(reject.status);
+                    record.status(502);
                 }
                 write_local(
                     &mut client_write,
                     cfg,
                     &metrics,
-                    reject.status,
-                    reject.reason,
+                    502,
+                    "bad gateway",
                     head_only,
                 )
                 .await;
                 return;
             }
-            ResponseForward::Copy(_) => return,
-        }
 
-        // A16 reuse contract, extended: never pool a connection whose
-        // forwarded request carried `Connection: close` (or lacked
-        // keep-alive in HTTP/1.0), nor one to a server taken out for a
-        // patch window (ADR-0028). See `finish_exchange`.
-        let backend_alive = !peer_gone(&mut backend_read).await;
-        if finish_exchange(
-            &metrics,
-            &cfg.name,
-            backend,
-            &served_addr,
-            route_name,
-            active.mode() == ServerMode::Maintenance,
-            response.status,
-            poolable,
-            request.wants_close,
-            // A rewritten HTTP/1.0 Transfer-Encoding head must close: a
-            // dechunked body has no Content-Length (M-01), and the header
-            // rewrite also covers bodyless responses so they cannot keep a
-            // chunked advertisement open.
-            response.wants_close || http10_te,
-            clean_boundary,
-            backend_alive,
-            &conn.addr,
-            backend_read,
-            backend_write,
-        ) {
-            let _ = client_write.shutdown().await;
-            return;
+            // Custom error pages (ADR-0045): with `intercept`, a matching origin
+            // status is replaced by the configured page. The origin body is
+            // deliberately not read: the connection is dropped (never pooled), so
+            // a half-read response cannot desync a later exchange on it.
+            if let Some(page) = cfg.error_pages.intercept_for(response.status) {
+                metrics.error_pages_served.fetch_add(1, Ordering::Relaxed);
+                if let Some(record) = access.as_mut() {
+                    record.status(page.status.unwrap_or(response.status));
+                }
+                drop((backend_read, backend_write));
+                write_page(&mut client_write, page, response.status, !head_only).await;
+                return;
+            }
+
+            // A revalidated entry serves from the store: the 304 connection
+            // returns to the pool under the same contract as a clean origin
+            // exchange. This block diverges (`continue`/`return`), so the
+            // tail below never touches the moved connection.
+            if let Some((clean, entry)) = refreshed.take() {
+                let backend_alive = !peer_gone(&mut backend_read).await;
+                if poolable
+                    && !request.wants_close
+                    && !response.wants_close
+                    && clean
+                    && backend_alive
+                    && active.mode() != ServerMode::Maintenance
+                {
+                    backend
+                        .pool
+                        .checkin(&conn.addr, backend_read, backend_write, Instant::now());
+                } else {
+                    drop((backend_read, backend_write));
+                }
+                metrics.cache_hits.fetch_add(1, Ordering::Relaxed);
+                entry.hits.fetch_add(1, Ordering::Relaxed);
+                serve_cached(
+                    &mut client_write,
+                    cfg,
+                    rule_headers,
+                    peer,
+                    &request.host,
+                    scheme,
+                    &request,
+                    &entry,
+                    &mut access,
+                    &metrics,
+                    true,
+                )
+                .await;
+                client_carry = from_client.prefix.split_off(from_client.pos);
+                if request.wants_close {
+                    let _ =
+                        tokio::time::timeout(Duration::from_secs(5), client_write.shutdown()).await;
+                    return;
+                }
+                continue 'connection;
+            }
+
+            if let Some(record) = access.as_mut() {
+                record.status(response.status);
+            }
+
+            // A7/A8 upgrade tunnel: the client asked (Upgrade or CONNECT) and
+            // the backend accepted (101 / 2xx). The switch head is forwarded
+            // verbatim (no proxy additions on a protocol switch) and the
+            // exchange becomes a raw bidirectional tunnel until either side
+            // closes or goes idle (`idle_timeout` is the inactivity cap). The
+            // connection is consumed: it never returns to the pool.
+            if (response.status == 101 && request.wants_upgrade)
+                || (request.method == "CONNECT" && (200..300).contains(&response.status))
+            {
+                // The switch head is forwarded byte for byte except for the
+                // product banner: an upgrade must not leak the origin's either.
+                let switch_head = with_server_header(&response_head_bytes);
+                if write_with_timeout(&mut client_write, &switch_head, cfg.idle_timeout)
+                    .await
+                    .is_err()
+                    || write_with_timeout(&mut client_write, HEAD_END, cfg.idle_timeout)
+                        .await
+                        .is_err()
+                {
+                    return;
+                }
+                let mut from_backend = Prefixed {
+                    prefix: carry,
+                    pos: 0,
+                    inner: &mut backend_read,
+                };
+                run_tunnel(
+                    &mut from_client,
+                    &mut client_write,
+                    &mut from_backend,
+                    &mut backend_write,
+                    cfg.idle_timeout,
+                )
+                .await;
+                return;
+            }
+
+            // Response header actions (B-N4/B-I4/B-E17) on the proxied
+            // response the client sees.
+            let mut response_lines = rule_headers
+                .map(|actions| render_header_lines(&actions.response, peer, &request.host, scheme))
+                .unwrap_or_default();
+            // Sticky cookie (B-H8): re-issued only when the request had none
+            // or it did not pin to the server that served.
+            if let Some(affinity) = backend.affinity.as_ref()
+                && affinity.mode == AffinityMode::Cookie
+                && let Some(token) = backend
+                    .balancer
+                    // Stable slot index (B-H13): a re-resolution must not
+                    // change the cookie's meaning.
+                    .slot_of(&served_addr)
+                    .map(|idx| idx.to_string())
+                && Some(&token) != affinity_cookie.as_ref()
+            {
+                response_lines.push(format!(
+                    "set-cookie: {}={token}; Path=/; HttpOnly",
+                    affinity.cookie
+                ));
+            }
+            if let Some(cors) = rule_headers.and_then(|actions| actions.cors.as_ref()) {
+                response_lines.extend(cors_response_lines(cors, false));
+            }
+            let mut response_head_bytes = if response_lines.is_empty() {
+                response_head_bytes
+            } else {
+                append_response_headers(&response_head_bytes, &response_lines)
+            };
+            // Product banner, after every header source (origin, rule actions,
+            // sticky cookie, CORS): exactly one `Server: EQProxy`, never the
+            // origin's value and never a version.
+            response_head_bytes = with_server_header(&response_head_bytes);
+            // M-01: an HTTP/1.0 client cannot read chunked framing. The head is
+            // rewritten whenever it advertises Transfer-Encoding, including a
+            // bodyless HEAD/204/304 where the parser recorded no body framing.
+            // When a body exists it is dechunked below; the connection closes
+            // because there is no Content-Length to delimit that body.
+            let http10_te =
+                request.version == 10 && head_has_transfer_encoding(&response_head_bytes);
+            if http10_te {
+                response_head_bytes = dechunk_head_for_http10(&response_head_bytes);
+            }
+            // Response compression (B-N6/H6): the decision happens once, before a
+            // byte of the head is sent, so nothing has to be unwound later. The
+            // backend framing is untouched; only the client's view is rewritten.
+            let accept_encoding = request
+                .headers
+                .iter()
+                .find(|(name, _)| name == "accept-encoding")
+                .map(|(_, value)| value.as_str());
+            let compression_settings = cfg.compression.as_ref();
+            let encoding = if http10_te {
+                None
+            } else {
+                compression_settings.and_then(|settings| {
+                    compression::eligible(
+                        &request.method,
+                        request.version,
+                        accept_encoding,
+                        &compression::ResponseFacts {
+                            status: response.status,
+                            no_body: response.framing == BodyFraming::None,
+                            declared_len: match response.framing {
+                                BodyFraming::ContentLength(len) => Some(len),
+                                _ => None,
+                            },
+                            head: &response_head_bytes,
+                        },
+                        settings,
+                    )
+                })
+            };
+            if let Some(encoding) = encoding {
+                response_head_bytes = compression::rewrite_head(&response_head_bytes, encoding);
+                match encoding {
+                    compression::Encoding::Gzip => metrics
+                        .compression_gzip_responses
+                        .fetch_add(1, Ordering::Relaxed),
+                    compression::Encoding::Brotli => metrics
+                        .compression_brotli_responses
+                        .fetch_add(1, Ordering::Relaxed),
+                };
+            }
+            if let Some(record) = access.as_mut() {
+                // Only an uncompressed, declared length is the client's byte
+                // count; chunked, until-EOF and compressed bodies are unknown and
+                // stay absent rather than lying.
+                let bytes = match (encoding, response.framing) {
+                    (None, BodyFraming::None) => Some(0),
+                    (None, BodyFraming::ContentLength(len)) => Some(len),
+                    _ => None,
+                };
+                if let Some(bytes) = bytes {
+                    record.bytes(bytes);
+                }
+            }
+            // B-N7/H1: a cacheable miss is marked like a hit (visibility for
+            // operators and tests), on both the assembled and the streamed
+            // path. Never stored: `end_to_end` strips it.
+            if matches!(
+                cache_action,
+                CacheAction::Origin(_) | CacheAction::Direct(_)
+            ) {
+                response_head_bytes.extend_from_slice(b"\r\nx-cache: MISS");
+            }
+            // --- Storable-response phase: assemble a bounded declared-length
+            // body, forward it and publish the entry; anything else streams. ---
+            let assembled = ResponseAssembly {
+                h1: &h1,
+                request: &request,
+                response: &response,
+                head_bytes: &response_head_bytes,
+                cache_action: &cache_action,
+                encoding,
+                settings: compression_settings,
+                deadline: stream_deadline,
+                head_only,
+            }
+            .run(
+                &mut backend_read,
+                &mut client_write,
+                &mut carry,
+                &mut access,
+                &mut cache_guard,
+            )
+            .await;
+            match assembled {
+                AssemblyOutcome::Sent { clean_boundary } => {
+                    let backend_alive = !peer_gone(&mut backend_read).await;
+                    if finish_exchange(
+                        &metrics,
+                        &cfg.name,
+                        backend,
+                        &served_addr,
+                        route_name,
+                        active.mode() == ServerMode::Maintenance,
+                        response.status,
+                        poolable,
+                        request.wants_close,
+                        response.wants_close,
+                        clean_boundary,
+                        backend_alive,
+                        &conn.addr,
+                        backend_read,
+                        backend_write,
+                    ) {
+                        let _ = client_write.shutdown().await;
+                        return;
+                    }
+                    continue 'connection;
+                }
+                AssemblyOutcome::Stop => return,
+                AssemblyOutcome::NotStorable => {}
+            }
+
+            let (clean_boundary, head_forwarded, outcome) = stream_response(
+                &h1,
+                &mut backend_read,
+                &mut client_write,
+                carry,
+                ResponseStream {
+                    head: &response_head_bytes,
+                    framing: response.framing,
+                    encoding,
+                    settings: compression_settings,
+                    dechunk: http10_te && response.framing == BodyFraming::Chunked,
+                },
+                stream_deadline,
+            )
+            .await;
+            match outcome {
+                ResponseForward::Done => {}
+                // max_stream_duration fired mid-response: the stream is cut
+                // (504 before the head; a truncated stream after it).
+                ResponseForward::Deadline => {
+                    if !head_forwarded {
+                        if let Some(record) = access.as_mut() {
+                            record.status(504);
+                        }
+                        write_local(
+                            &mut client_write,
+                            cfg,
+                            &metrics,
+                            504,
+                            "gateway timeout",
+                            head_only,
+                        )
+                        .await;
+                    }
+                    return;
+                }
+                // Before the response head a clean 502/500 still fits.
+                ResponseForward::Copy(CopyError::Framing(reject)) if !head_forwarded => {
+                    if let Some(record) = access.as_mut() {
+                        record.status(reject.status);
+                    }
+                    write_local(
+                        &mut client_write,
+                        cfg,
+                        &metrics,
+                        reject.status,
+                        reject.reason,
+                        head_only,
+                    )
+                    .await;
+                    return;
+                }
+                ResponseForward::Copy(_) => return,
+            }
+
+            // A16 reuse contract, extended: never pool a connection whose
+            // forwarded request carried `Connection: close` (or lacked
+            // keep-alive in HTTP/1.0), nor one to a server taken out for a
+            // patch window (ADR-0028). See `finish_exchange`.
+            let backend_alive = !peer_gone(&mut backend_read).await;
+            if finish_exchange(
+                &metrics,
+                &cfg.name,
+                backend,
+                &served_addr,
+                route_name,
+                active.mode() == ServerMode::Maintenance,
+                response.status,
+                poolable,
+                request.wants_close,
+                // A rewritten HTTP/1.0 Transfer-Encoding head must close: a
+                // dechunked body has no Content-Length (M-01), and the header
+                // rewrite also covers bodyless responses so they cannot keep a
+                // chunked advertisement open.
+                response.wants_close || http10_te,
+                clean_boundary,
+                backend_alive,
+                &conn.addr,
+                backend_read,
+                backend_write,
+            ) {
+                let _ = client_write.shutdown().await;
+                return;
+            }
+            continue 'connection;
         }
     }
 }

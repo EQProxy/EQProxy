@@ -48,9 +48,33 @@ Storage rules (each a named E2E journey, not a comment):
   chunked and close-delimited responses stream through uncached, never
   re-framed. Larger bodies stream through, never truncated.
 - Stale entries with validators revalidate with `If-None-Match` /
-  `If-Modified-Since`; an origin `304` refreshes the stored headers without
-  touching the body (replacement, never mutation: a concurrent serve holds
-  the old `Arc` byte-identical). Without validators the entry is refetched.
+  `If-Modified-Since`; an origin `304` refreshes only representation
+  metadata without touching the body (replacement, never mutation: a
+  concurrent serve holds the old `Arc` byte-identical). A `304` carrying
+  `Set-Cookie`, `private`, `no-store`, `Vary: *`, a session-identity `Vary`
+  or a different `Vary` revokes the shared entry: it is removed from memory
+  and disk and the request is re-fetched in full. Without validators the
+  entry is refetched.
+- Request `Cache-Control` is evaluated per lookup and never copied into
+  the shared entry. `max-age=N` accepts the entry only while its stored age
+  is at most `N` seconds; `max-age=0` always revalidates (or fetches when no
+  validator exists). `min-fresh=N` requires at least `N` seconds of server
+  freshness left, otherwise the request revalidates. `max-stale[=N]` accepts
+  a stale entry only within `N` seconds of staleness (bare `max-stale`
+  accepts any staleness); it never overrides `no-cache`, `max-age` or
+  `min-fresh`. Parsing is case-insensitive and tolerant: unknown directives
+  are ignored, malformed/negative/overflowing delta-seconds become zero, and
+  duplicate directives keep the strictest value. Age is measured since the
+  entry was stored; origin `Date`/`Age` correction remains out of scope.
+- Client directives are response-scoped. A client with `max-age=0` gets a
+  revalidation while another client can still get `HIT` from the same fresh
+  entry, including when the first request holds the cache lock and the
+  second waits on it. The entry's TTL and freshness never learn the client's
+  policy.
+- AUD-01 still wins over client directives: a revoking `304` invalidates the
+  entry and forces the unconditional full fetch even when the request sent
+  `max-age`, `min-fresh` or `max-stale`; a second `304` to that fetch is a
+  `502`.
 - Cache-lock: one origin fetch per key at a time; concurrent requests wait
   on the in-flight fetch (bounded `lock_wait`) instead of stampeding.
 - Disk persistence is write-through; expired or corrupt files are skipped
@@ -58,10 +82,13 @@ Storage rules (each a named E2E journey, not a comment):
 - Visibility: `GET /api/v1/cache` lists entries (age, TTL, hits, size,
   bounded to 128 objects) and every served response carries `X-Cache:
   HIT | MISS | REVALIDATED` (`Age` beside a `HIT`); `304` answers to a
-  client `If-None-Match` carry no `Age`. Counters `cache_hits`,
-  `cache_misses`, `cache_bypasses`, `cache_revalidations`,
-  `cache_stores`, `cache_evictions`, `cache_disk_loads`,
-  `cache_disk_skipped` — label-free.
+  client `If-None-Match` carry no `Age`. Metrics counters `cache_hits`,
+  `cache_misses`, `cache_bypasses`, `cache_revalidations`, `cache_stores`,
+  `cache_evictions`, `cache_disk_loads`, `cache_disk_skipped` — label-free.
+  The per-listener `304` invalidation count is exposed additively as
+  `Cache::cache_304_invalidations()`; it is not a new public field on
+  `Metrics`/`MetricsSnapshot`, which would break exhaustive construction in
+  the 0.9.x patch series.
 
 Deliberately out of v1 (documented in `cache.rs`, not silent):
 `stale-while-revalidate`, `stale-if-error`, `only-if-cached`, `Pragma`,

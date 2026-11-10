@@ -1,0 +1,240 @@
+# Reproducción — auditoría adversarial EQProxy 2026-11-09
+
+Esta carpeta contiene una copia byte a byte del laboratorio E2E usado en la
+auditoría:
+
+```
+bdfa1849c8a0b34d29c18dbad73e87e6bcbf0a45cd55c44461fc9e4573ede1a6  run_lab.py
+```
+
+La copia canónica (la que generó la evidencia) está en
+`report/adversarial-2026-11-09/lab/run_lab.py` y tiene el mismo hash.
+
+---
+
+## 1. Requisitos
+
+| Requisito | Versión usada | Notas |
+|---|---|---|
+| SO | macOS 26.5.1 arm64 | El laboratorio es Python + sockets; debería funcionar en Linux sin cambios. |
+| Rust/Cargo | 1.99.1 | Para compilar el binario. |
+| Python | 3.14.6 | Solo biblioteca estándar (sin `pip install`). |
+| curl | 8.7.1 con nghttp2 | Necesario para S10/S11/S12 (`--http2-prior-knowledge`). |
+| `target/release/eqproxy` | build de esta auditoría | SHA-256 `d68ec1dc…e1a44`. |
+
+El script **no usa mocks**: arranca el binario real y dos servidores TCP reales
+en `127.0.0.1`, y habla HTTP a nivel de socket. Los puertos son efímeros; no
+hay puertos fijos que liberar.
+
+Si `curl` no soporta h2c, S10/S11/S12 se marcan como `BLOCKED` y el resto
+sigue ejecutándose. En ese caso no se puede confirmar ADV-02 con este arnés.
+
+---
+
+## 2. Compilar el binario
+
+```bash
+cd /Volumes/Lexar/Cursor/EQProxy
+cargo build --release -p eqproxy-cli
+shasum -a 256 target/release/eqproxy
+```
+
+Debe existir `target/release/eqproxy`. El script falla con un mensaje claro si
+no está.
+
+---
+
+## 3. Ejecutar el laboratorio
+
+### Forma canónica (deja la evidencia en `report/`)
+
+```bash
+cd /Volumes/Lexar/Cursor/EQProxy
+python3 report/adversarial-2026-11-09/lab/run_lab.py
+echo "EXIT:$?"
+```
+
+Genera:
+
+- `report/adversarial-2026-11-09/lab/eqproxy.toml` (config temporal),
+- `report/adversarial-2026-11-09/lab/eqproxy.log` (stdout/stderr del proxy),
+- `report/adversarial-2026-11-09/lab/results.json` (resultado por escenario),
+- salida PASS/FAIL por consola.
+
+### Forma archivada (copia en esta carpeta)
+
+```bash
+cd /Volumes/Lexar/Cursor/EQProxy
+python3 docs/adversarial-audit-2026-11-09/reproduction/run_lab.py
+echo "EXIT:$?"
+```
+
+Al ser una copia idéntica, escribe `eqproxy.toml`, `eqproxy.log` y
+`results.json` **en esta misma carpeta**. Es útil para verificar el hash, pero
+la evidencia oficial es la de `report/`.
+
+---
+
+## 4. Resultado esperado (estado actual, bugs abiertos)
+
+Con el árbol auditado (`ecda55a…`, ADV-01/ADV-02 sin corregir):
+
+```
+10/13 scenarios passed
+CRITICAL S9_backend_204_with_transfer_encoding_does_not_desync: ...
+CRITICAL S10_h2_connection_nominated_header_stripped: ...
+CRITICAL S12_h2_request_connection_nominated_header: ...
+EXIT:1
+```
+
+Los tres fallos son **esperados y deseados** mientras los hallazgos sigan
+abiertos: el script es una puerta de regresión.
+
+| Escenario | Esperado hoy | Esperado tras el fix |
+|---|---|---|
+| `startup` | PASS | PASS |
+| `S1_aud01_revoking_304_invalidates` | PASS | PASS |
+| `S2_client_max_age_zero_scoped` | PASS | PASS |
+| `S3_request_smuggling_rejected` | PASS | PASS |
+| `S4_header_injection_and_obs_fold_rejected` | PASS | PASS |
+| `S5_path_normalization_and_traversal` | PASS | PASS |
+| `S6_host_header_enforcement` | PASS | PASS |
+| `S7_vary_variants_isolated` | PASS | PASS |
+| `S8_head_served_from_get_entry` | PASS | PASS |
+| `S9_backend_204_with_transfer_encoding_does_not_desync` | **FAIL** (`SMUGGLED-RESPONSE`) | PASS (`NORMAL2`) |
+| `S10_h2_connection_nominated_header_stripped` | **FAIL** (`x-secret: leaked`) | PASS (sin `x-secret`) |
+| `S11_h2c_basic_translation` | PASS | PASS |
+| `S12_h2_request_connection_nominated_header` | **FAIL** (`x-evil` en origen) | PASS (sin `x-evil`) |
+
+Cuando ADV-01 y ADV-02 estén corregidos, `EXIT:0` y 13/13 PASS. Ese es el
+criterio de cierre de la auditoría.
+
+---
+
+## 5. Qué hace cada escenario (resumen)
+
+- **S1 — AUD-01:** un `304` con `Set-Cookie`/`X-Injected` revoca la entrada;
+  el siguiente cliente recibe cuerpo fresco y no ve esas cabeceras.
+- **S2 — AUD-02:** `Cache-Control: max-age=0` de un cliente no contamina a
+  otro; solo fuerza la revalidación de su propia petición.
+- **S3 — request smuggling:** CL+TE, CL duplicado, TE no chunked y espacio
+  antes de `:` deben dar `400`; nada llega al origen.
+- **S4 — inyección de cabeceras:** CR/LF desnudo y obs-fold deben dar `400`.
+- **S5 — path traversal:** normalización correcta y rechazo de `..` por encima
+  de la raíz.
+- **S6 — Host:** ausente o duplicado en HTTP/1.1 debe dar `400`.
+- **S7 — Vary:** variantes `gzip`/`identity` no se cruzan.
+- **S8 — HEAD:** se sirve desde una entrada `GET`, sin cuerpo y con `CL`.
+- **S9 — ADV-01:** backend `204` + `TE: chunked` con respuesta forjada
+  retrasada; el segundo cliente no debe recibirla.
+- **S10 — ADV-02 respuesta:** upstream `Connection: X-Secret` + `X-Secret`;
+  el cliente h2 no debe ver `x-secret`.
+- **S11 — h2c básico:** control positivo de traducción h2↔h1.
+- **S12 — ADV-02 petición:** cliente h2 con `Connection: X-Evil` + `X-Evil`;
+  el origen no debe ver `x-evil`.
+
+Detalle de implementación: `run_lab.py`, clase `Origin` (método `respond`) y
+`main` (bloques `# --- S…`).
+
+---
+
+## 6. Reproducir las pruebas de propiedades
+
+```bash
+cd /Volumes/Lexar/Cursor/EQProxy
+cargo test -p eqproxy-net --test adversarial_properties
+```
+
+Esperado: `11 passed; 0 failed` (exit 0). No necesita red ni binario release.
+El fichero es `eqproxy-net/tests/adversarial_properties.rs`; usa un PRNG
+xorshift determinista, así que el resultado es reproducible.
+
+---
+
+## 7. Reproducir el fuzzing
+
+Requiere `cargo-fuzz` y toolchain nightly:
+
+```bash
+cd /Volumes/Lexar/Cursor/EQProxy
+cargo +nightly fuzz run framing fuzz/corpus/framing -- \
+  -max_total_time=120 -rss_limit_mb=2048 -print_final_stats=1
+cargo +nightly fuzz run config_import fuzz/corpus/config_import -- \
+  -max_total_time=120 -rss_limit_mb=2048 -print_final_stats=1
+cargo +nightly fuzz run rules fuzz/corpus/rules -- \
+  -max_total_time=120 -rss_limit_mb=2048 -print_final_stats=1
+```
+
+Esperado en el árbol auditado: exit 0, sin ficheros en `fuzz/artifacts/`.
+Los corpus crecen en cada ejecución; es normal. Para un corte limpio se puede
+usar un corpus temporal:
+
+```bash
+mkdir -p /tmp/eqproxy-corpus-framing
+cargo +nightly fuzz run framing /tmp/eqproxy-corpus-framing -- -max_total_time=60
+```
+
+No se deben borrar los corpus de `fuzz/corpus/` sin querer: son material de
+partida, no evidencia de un fallo.
+
+---
+
+## 8. Limpieza
+
+El script termina el proceso `eqproxy` en un bloque `finally` y los orígenes
+son hilos daemon; al salir no queda nada escuchando. Para limpiar artefactos
+generados por ejecuciones del laboratorio:
+
+```bash
+cd /Volumes/Lexar/Cursor/EQProxy
+
+# Solo artefactos regenerables del laboratorio:
+rm -f report/adversarial-2026-11-09/lab/eqproxy.toml \
+      report/adversarial-2026-11-09/lab/eqproxy.log \
+      report/adversarial-2026-11-09/lab/results.json
+rm -rf report/adversarial-2026-11-09/lab/__pycache__
+
+# Si se ejecutó la copia archivada:
+rm -f docs/adversarial-audit-2026-11-09/reproduction/eqproxy.toml \
+      docs/adversarial-audit-2026-11-09/reproduction/eqproxy.log \
+      docs/adversarial-audit-2026-11-09/reproduction/results.json
+rm -rf docs/adversarial-audit-2026-11-09/reproduction/__pycache__
+```
+
+**No borrar** `report/adversarial-2026-11-09/*.log` ni
+`lab/results.json`: son la evidencia primaria de la auditoría. Si se quiere
+conservar una ejecución nueva, copiarla antes de sobrescribir.
+
+Si un `eqproxy` quedara vivo por un corte abrupto (Ctrl-C durante el arranque):
+
+```bash
+pgrep -fl 'target/release/eqproxy'   # revisar antes de matar
+pkill -f 'target/release/eqproxy'    # solo si es el del laboratorio
+```
+
+Los puertos son efímeros; no hace falta liberar puertos concretos.
+
+---
+
+## 9. Solución de problemas
+
+| Síntoma | Causa probable | Acción |
+|---|---|---|
+| `eqproxy did not bind both listeners` | Binario ausente, config inválida o puerto ocupado | Ver `lab/eqproxy.log`; recompilar; reintentar (los puertos se reservan de nuevo). |
+| S10/S11/S12 `BLOCKED: curl h2c unavailable` | curl sin nghttp2 o demasiado antiguo | Usar un curl con HTTP/2 o instalar `nghttp2`; sin esto ADV-02 no se puede confirmar E2E. |
+| El laboratorio sale 0 inesperadamente | Se corrigieron ADV-01/ADV-02 | Verificar que S9/S10/S12 están en PASS y que no se relajó la aserción. |
+| `Address already in use` | Otra instancia del laboratorio o un proceso ajeno | Matar la instancia previa; el script elige puertos libres, pero hay una carrera mínima. |
+| Fuzz `rules` no compila | Regresión del harness (`RequestFacts`) | Comprobar que `fuzz/fuzz_targets/rules.rs` incluye `maps`. |
+
+---
+
+## 10. Evidencia de referencia
+
+- `report/adversarial-2026-11-09/lab-run.log` — salida PASS/FAIL.
+- `report/adversarial-2026-11-09/lab/results.json` — datos crudos por escenario.
+- `report/adversarial-2026-11-09/lab/eqproxy.toml` — configuración generada.
+- `report/adversarial-2026-11-09/workspace-test.log` — suite base.
+- `report/adversarial-2026-11-09/fuzz-*.log` — campañas.
+- `report/adversarial-2026-11-09/property-tests.log` — propiedades.
+- `report/adversarial-2026-11-09/build-release.log` — build y hash.
+- `docs/adversarial-audit-2026-11-09/findings/` — fichas de hallazgos.

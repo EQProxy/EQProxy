@@ -15,7 +15,11 @@
 //! - backends with cookie affinity bypass the cache at runtime (a cached
 //!   answer would steal the pinning cookie);
 //! - stale entries revalidate with `If-None-Match`/`If-Modified-Since`; a
-//!   `304` refreshes the headers without touching the body;
+//!   clean `304` refreshes representation metadata without touching the body,
+//!   while one that revokes shared storability removes the entry and forces
+//!   a full fetch (AUD-01);
+//! - request `Cache-Control: max-age`, `min-fresh` and `max-stale` are
+//!   evaluated per lookup and never stored in the shared entry (P0-2);
 //! - one origin fetch per key at a time (cache-lock): concurrent requests
 //!   for the same key wait on the in-flight fetch instead of stampeding;
 //! - optional write-through disk persistence; expired or corrupt files are
@@ -27,7 +31,9 @@
 //! (a stale entry never serves while another task revalidates; waiters block
 //! on the lock), `stale-if-error`, `only-if-cached`, `Pragma`, `Vary` value
 //! folding beyond exact trimmed match, and client `If-Modified-Since`
-//! evaluation (only `If-None-Match` earns a client-side `304`).
+//! evaluation (only `If-None-Match` earns a client-side `304`). Origin
+//! `Date`/`Age` correction is also out of scope: request age is measured
+//! since the entry was stored.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -65,6 +71,20 @@ const SET_COOKIE: &str = "set-cookie";
 /// not the stored response (a stored `MISS` marker must never leak into a
 /// later `HIT`).
 const MANAGED_HEADERS: [&str; 4] = ["content-length", "transfer-encoding", "x-cache", "age"];
+
+/// Headers a clean `304` may update in a stored entry. Representation
+/// metadata only: session, negotiation, caching-policy and arbitrary
+/// extension heads are not merged (AUD-01: a `304` is not a license to
+/// rewrite the shared representation's policy).
+const REFRESH_UPDATABLE_HEADERS: [&str; 7] = [
+    "etag",
+    "last-modified",
+    "date",
+    "content-type",
+    "content-language",
+    "content-location",
+    "expires",
+];
 
 /// Maximum objects the admin snapshot lists per listener (bounded output).
 const MAX_SNAPSHOT_OBJECTS: usize = 128;
@@ -291,6 +311,7 @@ pub struct Cache {
     settings: CacheSettings,
     metrics: Arc<Metrics>,
     inner: Mutex<Store>,
+    invalidations_304: AtomicU64,
 }
 
 impl fmt::Debug for Cache {
@@ -299,6 +320,15 @@ impl fmt::Debug for Cache {
             .field("listener", &self.settings.listener)
             .finish_non_exhaustive()
     }
+}
+
+/// Result of a conditional revalidation.
+pub enum RefreshOutcome {
+    /// The `304` refreshed the shared entry; serve it to this client.
+    Refreshed(Arc<StoredEntry>),
+    /// The `304` revoked shared storability. The entry was removed from
+    /// memory and disk; the caller must re-fetch in full.
+    Invalidated,
 }
 
 impl Cache {
@@ -313,6 +343,7 @@ impl Cache {
         let cache = Arc::new(Self {
             settings,
             metrics,
+            invalidations_304: AtomicU64::new(0),
             inner: Mutex::new(Store {
                 map: HashMap::new(),
                 inflight: HashMap::new(),
@@ -321,6 +352,14 @@ impl Cache {
         });
         cache.reload_disk();
         Ok(cache)
+    }
+
+    /// `304` revalidations that revoked shared storability (AUD-01).
+    /// Per-listener and additive: adding a field to `Metrics` would break
+    /// exhaustive construction of that public struct in a 0.9.x patch.
+    #[must_use]
+    pub fn cache_304_invalidations(&self) -> u64 {
+        self.invalidations_304.load(Ordering::Relaxed)
     }
 
     /// RAM budget for one stored body; larger bodies stream uncached.
@@ -338,12 +377,27 @@ impl Cache {
     /// `force_revalidate` (a client `no-cache`) turns a fresh hit into a
     /// revalidation when validators exist, or a fetch when they do not.
     /// The request headers select the `Vary` variant, so the caller never
-    /// needs to know the stored variant names.
+    /// needs to know the stored variant names. Client `Cache-Control`
+    /// directives are parsed per call and never written to the entry.
     pub fn lookup(
         &self,
         key: &CacheKey,
         req_headers: &[(String, String)],
         force_revalidate: bool,
+    ) -> Lookup {
+        let (mut policy, _) = request_cache_policy(req_headers);
+        policy.force_revalidate |= force_revalidate;
+        self.lookup_with_policy(key, req_headers, &policy)
+    }
+
+    /// Policy-aware lookup used by the h1 path: the same entry can be a
+    /// `HIT` for one client and a revalidation for another, because the
+    /// client directives live in this call, never in the shared entry.
+    pub(crate) fn lookup_with_policy(
+        &self,
+        key: &CacheKey,
+        req_headers: &[(String, String)],
+        policy: &RequestCachePolicy,
     ) -> Lookup {
         let now = Instant::now();
         let mut inner = self.lock();
@@ -355,7 +409,32 @@ impl Cache {
         });
         if let Some(entry) = matched {
             entry.note_use(now);
-            if entry.fresh(now) && !force_revalidate {
+            let age = entry.age(now);
+            let fresh = entry.fresh(now);
+            // `max-age=0` always revalidates: the client accepts no age at
+            // all, including the otherwise-fresh entry just stored.
+            let max_age_exceeded = policy
+                .max_age
+                .is_some_and(|max_age| max_age == 0 || age > Duration::from_secs(max_age));
+            // `min-fresh` needs at least that much server freshness left;
+            // a stale entry has none, so it cannot satisfy a positive value.
+            let min_fresh_missing = policy.min_fresh.is_some_and(|min_fresh| {
+                min_fresh > 0
+                    && (!fresh || entry.ttl.saturating_sub(age) < Duration::from_secs(min_fresh))
+            });
+            let must_revalidate = policy.force_revalidate || max_age_exceeded || min_fresh_missing;
+            // `max-stale` accepts a stale entry only within its margin; it
+            // never overrides `no-cache`, `max-age` or `min-fresh`, whose
+            // constraints are explicit requests for a fresh answer.
+            let acceptable_stale = !fresh
+                && !must_revalidate
+                && policy.max_stale.is_some_and(|max_stale| match max_stale {
+                    MaxStale::Any => true,
+                    MaxStale::Seconds(seconds) => {
+                        age.saturating_sub(entry.ttl) <= Duration::from_secs(seconds)
+                    }
+                });
+            if (fresh && !must_revalidate) || acceptable_stale {
                 return Lookup::Hit(entry);
             }
             if entry.etag.is_some() || entry.last_modified.is_some() {
@@ -428,32 +507,40 @@ impl Cache {
         self.insert(key, parts).await;
     }
 
-    /// Refreshes an entry after a `304`: the headers merge (`304` wins on
-    /// conflicts, the body stays), the clock restarts, the serve count is
-    /// kept. Replacement, not mutation: a concurrent serve holds the old
-    /// `Arc` and stays byte-identical.
+    /// Refreshes an entry after a clean `304`: only representation metadata
+    /// is merged, the body and the `Vary` key stay, and the clock restarts.
+    /// Replacement, not mutation: a concurrent serve holds the old `Arc` and
+    /// stays byte-identical.
+    ///
+    /// A `304` that revokes shared storability (`Set-Cookie`, `private`,
+    /// `no-store`, a different `Vary`, `Vary: *` or a session-identity
+    /// `Vary`) removes the entry from memory and disk and reports
+    /// [`RefreshOutcome::Invalidated`]: the caller must fetch in full rather
+    /// than serve the old body under a policy the origin just revoked.
     pub async fn refresh(
         &self,
         key: CacheKey,
         old: &StoredEntry,
-        head_304: &[(String, String)],
+        facts_304: &ResponseFacts,
         ttl: Duration,
-    ) {
+    ) -> RefreshOutcome {
+        if !Self::refresh_storable(facts_304, &old.vary) {
+            self.invalidations_304.fetch_add(1, Ordering::Relaxed);
+            self.complete(key, FetchOutcome::Gone).await;
+            return RefreshOutcome::Invalidated;
+        }
         let now = Instant::now();
+        let updates: Vec<(String, String)> = end_to_end(&facts_304.headers)
+            .into_iter()
+            .filter(|(name, _)| REFRESH_UPDATABLE_HEADERS.contains(&name.as_str()))
+            .collect();
+        let update_names: Vec<String> = updates.iter().map(|(name, _)| name.clone()).collect();
         let mut headers = old.headers.clone();
-        for (name, value) in head_304 {
-            if is_hop_by_hop(name)
-                || MANAGED_HEADERS.contains(&name.as_str())
-                || name == "content-length"
-                || name == "connection"
-            {
-                continue;
-            }
-            if let Some(slot) = headers.iter_mut().find(|(n, _)| n == name) {
-                slot.1.clone_from(value);
-            } else {
-                headers.push((name.clone(), value.clone()));
-            }
+        // A 304 replaces every stored instance of the headers it carries;
+        // headers it omits keep their stored value.
+        headers.retain(|(name, _)| !update_names.contains(name));
+        for (name, value) in updates {
+            headers.push((name, value));
         }
         let mut etag = None;
         let mut last_modified = None;
@@ -481,11 +568,19 @@ impl Cache {
             hits: AtomicU64::new(old.hits.load(Ordering::Relaxed)),
             last_used: Mutex::new(now),
         });
+        self.metrics
+            .cache_revalidations
+            .fetch_add(1, Ordering::Relaxed);
         let weight = entry.weight();
         let old_weight = old.weight();
         let path = self.disk_file(&key, &entry.vary_values);
-        let (evicted_files, stored) =
-            self.refresh_store(&key, entry, &old.vary_values, weight, old_weight);
+        let (evicted_files, stored) = self.refresh_store(
+            &key,
+            Arc::clone(&entry),
+            &old.vary_values,
+            weight,
+            old_weight,
+        );
         if !evicted_files.is_empty() {
             tokio::task::spawn_blocking(move || {
                 for stale in evicted_files {
@@ -495,20 +590,55 @@ impl Cache {
             .await
             .ok();
         }
-        self.metrics
-            .cache_revalidations
-            .fetch_add(1, Ordering::Relaxed);
-        if let Some(stored) = stored {
-            self.persist_variant(&key, &stored, &path).await;
-        }
+        let result = match &stored {
+            Some(stored) => {
+                self.persist_variant(&key, stored, &path).await;
+                FetchResult::Ready
+            }
+            None => FetchResult::Gone,
+        };
         // The owner revalidated: waiters get a fresh entry, like a store.
         if let Some(shared) = self.take_inflight(&key) {
             *shared
                 .result
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(FetchResult::Ready);
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
             shared.notify.notify_waiters();
         }
+        RefreshOutcome::Refreshed(stored.unwrap_or(entry))
+    }
+
+    /// Whether a `304` still permits keeping the entry in the shared store.
+    ///
+    /// A `304` that omits `Vary` keeps the stored key; one that carries a
+    /// different `Vary`, `Vary: *` or a session-identity `Vary` cannot be
+    /// re-keyed in place. `Set-Cookie`, `private` and `no-store` revoke the
+    /// shared representation even though the body is byte-identical.
+    fn refresh_storable(facts: &ResponseFacts, old_vary: &[String]) -> bool {
+        if facts.has_set_cookie {
+            return false;
+        }
+        for value in &facts.cache_control {
+            for directive in value.split(',') {
+                let name = directive.split('=').next().unwrap_or(directive).trim();
+                if name.eq_ignore_ascii_case("private") || name.eq_ignore_ascii_case("no-store") {
+                    return false;
+                }
+            }
+        }
+        if !facts.vary.is_empty() {
+            if facts
+                .vary
+                .iter()
+                .any(|name| name == "*" || UNKEYABLE_VARY.contains(&name.as_str()))
+            {
+                return false;
+            }
+            if facts.vary.as_slice() != old_vary {
+                return false;
+            }
+        }
+        true
     }
 
     /// Live view for `GET /api/v1/cache` (H1 visibility).
@@ -896,6 +1026,108 @@ fn evict_locked(
     }
 }
 
+/// Client-controlled cache policy for one request. It is carried alongside
+/// the lookup and dropped with it: no field of this type is persisted in a
+/// shared [`StoredEntry`], so one client's `max-age=0` cannot shorten the
+/// freshness of the entry another client receives.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct RequestCachePolicy {
+    /// `no-cache`: skip a fresh hit and revalidate/fetch from the origin.
+    pub(crate) force_revalidate: bool,
+    /// `max-age`: maximum response age the client accepts, in seconds.
+    pub(crate) max_age: Option<u64>,
+    /// `min-fresh`: minimum remaining server freshness the client wants.
+    pub(crate) min_fresh: Option<u64>,
+    /// `max-stale`: how much staleness the client accepts.
+    pub(crate) max_stale: Option<MaxStale>,
+}
+
+/// Value of the request `max-stale` directive. `Any` is the bare form
+/// (`max-stale`), which accepts an entry stale by any amount.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MaxStale {
+    Any,
+    Seconds(u64),
+}
+
+/// Parses one `Cache-Control` value into a policy and reports `no-store`.
+///
+/// Parsing is deliberately tolerant and conservative (RFC 9111 §5.2.1):
+/// unknown directives are ignored; a malformed, negative or overflowing
+/// delta-seconds value is treated as zero (the strictest interpretation);
+/// duplicate directives keep the most restrictive value (`min` for
+/// `max-age`/`min-fresh`/`max-stale`, and a finite `max-stale` beats the
+/// unlimited bare form). Directive names are ASCII case-insensitive.
+fn apply_cache_control(value: &str, policy: &mut RequestCachePolicy) -> bool {
+    let mut no_store = false;
+    for directive in value.split(',') {
+        let directive = directive.trim();
+        if directive.is_empty() {
+            continue;
+        }
+        let (name, argument) = match directive.split_once('=') {
+            Some((name, argument)) => (name.trim(), Some(argument.trim())),
+            None => (directive, None),
+        };
+        if name.eq_ignore_ascii_case("no-store") {
+            no_store = true;
+        } else if name.eq_ignore_ascii_case("no-cache") {
+            policy.force_revalidate = true;
+        } else if name.eq_ignore_ascii_case("max-age") {
+            let seconds = delta_seconds(argument).unwrap_or(0);
+            policy.max_age = Some(
+                policy
+                    .max_age
+                    .map_or(seconds, |current| current.min(seconds)),
+            );
+        } else if name.eq_ignore_ascii_case("min-fresh") {
+            let seconds = delta_seconds(argument).unwrap_or(0);
+            policy.min_fresh = Some(
+                policy
+                    .min_fresh
+                    .map_or(seconds, |current| current.min(seconds)),
+            );
+        } else if name.eq_ignore_ascii_case("max-stale") {
+            let next = match argument {
+                None => MaxStale::Any,
+                Some(value) => MaxStale::Seconds(delta_seconds(Some(value)).unwrap_or(0)),
+            };
+            policy.max_stale = Some(match policy.max_stale {
+                None => next,
+                Some(MaxStale::Seconds(current)) => MaxStale::Seconds(match next {
+                    MaxStale::Any => current,
+                    MaxStale::Seconds(next) => current.min(next),
+                }),
+                Some(MaxStale::Any) => next,
+            });
+        }
+    }
+    no_store
+}
+
+/// RFC 9111 delta-seconds: one or more ASCII digits, no sign, no quotes.
+/// `None` means malformed; callers turn it into the conservative zero.
+fn delta_seconds(value: Option<&str>) -> Option<u64> {
+    let value = value?;
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok()
+}
+
+/// Extracts the client policy from every `cache-control` header. The second
+/// value is `no-store`, which is a bypass rather than a freshness policy.
+fn request_cache_policy(headers: &[(String, String)]) -> (RequestCachePolicy, bool) {
+    let mut policy = RequestCachePolicy::default();
+    let mut no_store = false;
+    for (name, value) in headers {
+        if name.eq_ignore_ascii_case("cache-control") {
+            no_store |= apply_cache_control(value, &mut policy);
+        }
+    }
+    (policy, no_store)
+}
+
 /// Decides whether a parsed client request may touch the cache. Runs after
 /// routing and the plugin, before any backend byte: the key uses the
 /// forwarded head (rules, rewrites and plugin mutations applied), so two
@@ -906,6 +1138,21 @@ pub fn decide(
     headers: &[(String, String)],
     cookie_affinity: bool,
 ) -> Result<Decision, Bypass> {
+    let policy = decide_policy(method, framing_none, headers, cookie_affinity)?;
+    Ok(Decision {
+        force_revalidate: policy.force_revalidate || policy.max_age == Some(0),
+    })
+}
+
+/// Full per-request decision used by the h1 cache path. Kept crate-private
+/// so the public [`Decision`] keeps its 0.9.x layout (adding a field to a
+/// publicly constructible struct is a breaking change).
+pub(crate) fn decide_policy(
+    method: &str,
+    framing_none: bool,
+    headers: &[(String, String)],
+    cookie_affinity: bool,
+) -> Result<RequestCachePolicy, Bypass> {
     if method != "GET" && method != "HEAD" {
         return Err(Bypass::Method);
     }
@@ -915,33 +1162,26 @@ pub fn decide(
     if cookie_affinity {
         return Err(Bypass::CookieAffinity);
     }
-    let mut no_cache = false;
-    for (name, value) in headers {
-        if BYPASS_REQUEST_HEADERS.contains(&name.as_str()) {
+    for (name, _) in headers {
+        if BYPASS_REQUEST_HEADERS
+            .iter()
+            .any(|bypass| name.eq_ignore_ascii_case(bypass))
+        {
             return Err(Bypass::SessionHeader);
         }
-        if name == "cache-control" {
-            for directive in value.split(',') {
-                let directive = directive.trim();
-                if directive.eq_ignore_ascii_case("no-store") {
-                    return Err(Bypass::NoStore);
-                }
-                if directive.eq_ignore_ascii_case("no-cache") {
-                    no_cache = true;
-                }
-            }
-        }
     }
-    Ok(Decision {
-        force_revalidate: no_cache,
-    })
+    let (policy, no_store) = request_cache_policy(headers);
+    if no_store {
+        return Err(Bypass::NoStore);
+    }
+    Ok(policy)
 }
 
 /// A cacheable request: how to look it up.
 #[derive(Debug)]
 pub struct Decision {
-    /// The client sent `Cache-Control: no-cache`: skip fresh hits and
-    /// revalidate (or fetch when the entry has no validators).
+    /// The client sent `Cache-Control: no-cache` or `max-age=0`: skip fresh
+    /// hits and revalidate (or fetch when the entry has no validators).
     pub force_revalidate: bool,
 }
 
@@ -1493,6 +1733,44 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_304_that_revokes_shared_storability_is_not_refreshable() {
+        let clean = parse_origin_head(b"HTTP/1.1 304 Not Modified\r\netag: \"v1\"\r\n")
+            .expect("clean 304 facts");
+        assert!(Cache::refresh_storable(&clean, &[]));
+        assert!(
+            Cache::refresh_storable(&clean, &["accept-language".to_owned()]),
+            "a 304 that omits Vary keeps the stored key"
+        );
+
+        let cookie =
+            parse_origin_head(b"HTTP/1.1 304 Not Modified\r\nset-cookie: session=1; Path=/\r\n")
+                .expect("cookie 304 facts");
+        assert!(!Cache::refresh_storable(&cookie, &[]));
+
+        let private = parse_origin_head(b"HTTP/1.1 304 Not Modified\r\ncache-control: private\r\n")
+            .expect("private 304 facts");
+        assert!(!Cache::refresh_storable(&private, &[]));
+
+        let no_store =
+            parse_origin_head(b"HTTP/1.1 304 Not Modified\r\ncache-control: no-store\r\n")
+                .expect("no-store 304 facts");
+        assert!(!Cache::refresh_storable(&no_store, &[]));
+
+        let changed_vary =
+            parse_origin_head(b"HTTP/1.1 304 Not Modified\r\nvary: accept-language\r\n")
+                .expect("vary 304 facts");
+        assert!(!Cache::refresh_storable(&changed_vary, &[]));
+        assert!(Cache::refresh_storable(
+            &changed_vary,
+            &["accept-language".to_owned()]
+        ));
+
+        let session_vary = parse_origin_head(b"HTTP/1.1 304 Not Modified\r\nvary: cookie\r\n")
+            .expect("session vary 304 facts");
+        assert!(!Cache::refresh_storable(&session_vary, &[]));
+    }
+
     #[tokio::test]
     async fn a_completion_before_wait_is_not_lost() {
         let cache = Cache::load(
@@ -1617,6 +1895,239 @@ mod tests {
         );
         assert!(decide("GET", true, &[], false).is_ok());
         assert!(decide("HEAD", true, &[], false).is_ok());
+    }
+
+    fn request_policy(value: &str) -> RequestCachePolicy {
+        let (policy, no_store) =
+            request_cache_policy(&[("cache-control".to_owned(), value.to_owned())]);
+        assert!(!no_store, "unexpected no-store in {value:?}");
+        policy
+    }
+
+    #[test]
+    fn request_cache_control_parses_supported_directives() {
+        assert_eq!(request_policy(""), RequestCachePolicy::default());
+        assert_eq!(
+            request_policy("max-age=0"),
+            RequestCachePolicy {
+                max_age: Some(0),
+                ..RequestCachePolicy::default()
+            }
+        );
+        assert_eq!(
+            request_policy("MAX-AGE=120, Min-Fresh=30, max-stale=600"),
+            RequestCachePolicy {
+                max_age: Some(120),
+                min_fresh: Some(30),
+                max_stale: Some(MaxStale::Seconds(600)),
+                ..RequestCachePolicy::default()
+            }
+        );
+        assert_eq!(
+            request_policy("max-stale"),
+            RequestCachePolicy {
+                max_stale: Some(MaxStale::Any),
+                ..RequestCachePolicy::default()
+            }
+        );
+        // Unknown directives are ignored, including their arguments.
+        assert_eq!(
+            request_policy("only-if-cached, stale-if-error=60, max-age=7"),
+            RequestCachePolicy {
+                max_age: Some(7),
+                ..RequestCachePolicy::default()
+            }
+        );
+    }
+
+    #[test]
+    fn request_cache_control_invalid_values_are_strict_and_duplicates_use_the_minimum() {
+        for invalid in [
+            "max-age=",
+            "max-age=abc",
+            "max-age=-1",
+            "max-age=+5",
+            "max-age=18446744073709551616",
+        ] {
+            assert_eq!(
+                request_policy(invalid).max_age,
+                Some(0),
+                "{invalid:?} must conservatively mean max-age=0"
+            );
+        }
+        assert_eq!(request_policy("min-fresh=abc").min_fresh, Some(0));
+        assert_eq!(
+            request_policy("max-stale=abc").max_stale,
+            Some(MaxStale::Seconds(0))
+        );
+        assert_eq!(request_policy("max-age=60, max-age=10").max_age, Some(10));
+        assert_eq!(
+            request_policy("max-age=10, max-age=invalid").max_age,
+            Some(0),
+            "an invalid duplicate cannot make the policy less strict"
+        );
+        assert_eq!(
+            request_policy("min-fresh=20, min-fresh=5").min_fresh,
+            Some(5)
+        );
+        assert_eq!(
+            request_policy("max-stale=20, max-stale=10").max_stale,
+            Some(MaxStale::Seconds(10))
+        );
+        assert_eq!(
+            request_policy("max-stale, max-stale=10").max_stale,
+            Some(MaxStale::Seconds(10)),
+            "a finite duplicate is stricter than unlimited staleness"
+        );
+        assert_eq!(
+            request_policy("max-stale=10, max-stale").max_stale,
+            Some(MaxStale::Seconds(10))
+        );
+    }
+
+    #[test]
+    fn request_no_store_bypasses_even_with_freshness_directives() {
+        let headers = vec![
+            ("Cache-Control".to_owned(), "max-age=60".to_owned()),
+            ("cache-control".to_owned(), "no-store".to_owned()),
+        ];
+        assert_eq!(
+            decide_policy("GET", true, &headers, false).unwrap_err(),
+            Bypass::NoStore
+        );
+    }
+
+    #[tokio::test]
+    async fn max_age_and_min_fresh_decide_each_lookup_without_storing_the_policy() {
+        let cache = Cache::load(settings(), metrics()).expect("builds");
+        let key = key();
+        cache
+            .complete(
+                key.clone(),
+                FetchOutcome::Stored(StoredParts {
+                    etag: Some("\"v1\"".to_owned()),
+                    ..parts(200)
+                }),
+            )
+            .await;
+
+        // A satisfiable min-fresh and a max-age above the stored age hit.
+        assert!(matches!(
+            cache.lookup_with_policy(
+                &key,
+                &[],
+                &RequestCachePolicy {
+                    min_fresh: Some(30),
+                    ..RequestCachePolicy::default()
+                }
+            ),
+            Lookup::Hit(_)
+        ));
+        assert!(matches!(
+            cache.lookup_with_policy(
+                &key,
+                &[],
+                &RequestCachePolicy {
+                    max_age: Some(60),
+                    ..RequestCachePolicy::default()
+                }
+            ),
+            Lookup::Hit(_)
+        ));
+
+        // max-age=0 revalidates this caller, but the next plain lookup still
+        // hits the same fresh entry: the directive never entered the store.
+        assert!(matches!(
+            cache.lookup_with_policy(
+                &key,
+                &[],
+                &RequestCachePolicy {
+                    max_age: Some(0),
+                    ..RequestCachePolicy::default()
+                }
+            ),
+            Lookup::Revalidate(_)
+        ));
+        assert!(matches!(
+            cache.lookup_with_policy(&key, &[], &RequestCachePolicy::default()),
+            Lookup::Hit(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn unsatisfiable_min_fresh_revalidates() {
+        let cache = Cache::load(settings(), metrics()).expect("builds");
+        let key = key();
+        cache
+            .complete(
+                key.clone(),
+                FetchOutcome::Stored(StoredParts {
+                    etag: Some("\"v1\"".to_owned()),
+                    ..parts(200)
+                }),
+            )
+            .await;
+        assert!(matches!(
+            cache.lookup_with_policy(
+                &key,
+                &[],
+                &RequestCachePolicy {
+                    min_fresh: Some(120),
+                    ..RequestCachePolicy::default()
+                }
+            ),
+            Lookup::Revalidate(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn max_stale_serves_only_within_its_margin() {
+        let cache = Cache::load(settings(), metrics()).expect("builds");
+        let key = key();
+        cache
+            .complete(
+                key.clone(),
+                FetchOutcome::Stored(StoredParts {
+                    etag: Some("\"v1\"".to_owned()),
+                    ttl: Duration::ZERO,
+                    ..parts(200)
+                }),
+            )
+            .await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(matches!(
+            cache.lookup_with_policy(
+                &key,
+                &[],
+                &RequestCachePolicy {
+                    max_stale: Some(MaxStale::Seconds(60)),
+                    ..RequestCachePolicy::default()
+                }
+            ),
+            Lookup::Hit(_)
+        ));
+        assert!(matches!(
+            cache.lookup_with_policy(
+                &key,
+                &[],
+                &RequestCachePolicy {
+                    max_stale: Some(MaxStale::Any),
+                    ..RequestCachePolicy::default()
+                }
+            ),
+            Lookup::Hit(_)
+        ));
+        assert!(matches!(
+            cache.lookup_with_policy(
+                &key,
+                &[],
+                &RequestCachePolicy {
+                    max_stale: Some(MaxStale::Seconds(0)),
+                    ..RequestCachePolicy::default()
+                }
+            ),
+            Lookup::Revalidate(_)
+        ));
     }
 
     #[test]

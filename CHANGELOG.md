@@ -9,14 +9,6 @@ _Nothing yet._
 
 ## [v0.9.6] — 2026-11-11
 
-### Added
-
-- **Fuzz CI and seeded campaigns.** `.github/workflows/fuzz.yml` checks the
-  fuzz workspace, builds `framing`, `rules` and `config_import`, and runs a
-  short seeded campaign manually or on a schedule. The workflow is committed
-  but has not run in GitHub Actions; P0-7 remains open until a remote run and
-  its artifacts are cited.
-
 ### Fixed
 
 - **P0-8: HAProxy `hdr(<name>)` and `hdr_dom(<name>)` stay distinct.** The
@@ -34,23 +26,22 @@ _Nothing yet._
   restoring them; the exact output is in
   [v095-p0-8-p0-9](docs/evidence/v095-p0-8-p0-9.md). The fix is inherited
   from v0.9.5, which is an ancestor of this tree.
-- **`Metrics` stays constructible in a patch release.** The AUD-03 trailer
-  counter moved out of a private field on the public `Metrics` struct and into
-  the opaque `DetailMetrics` substructure, preserving the original public field
-  set. `cargo-semver-checks check-release --baseline-rev v0.9.1
-  --release-type patch` passes 223/223 checks; the counter remains per-instance
-  and is covered with the detail registry disabled.
-- **A multiline directive no longer creates an extra report bullet.** The
-  importer keeps each source directive on one Markdown line, so the report's
-  "one bullet per classified directive" contract holds for quoted and
-  malformed source text. Found by the `config_import` fuzz target.
 
-### Changed
+Only M-01 and P0-8 are claimed as closed fixes in this release.
 
-- **Shared cache entries reject authentication challenges.** A response with
-  `WWW-Authenticate` or `Proxy-Authenticate` is never stored, and a `304`
-  carrying either header invalidates the entry. Contract tests cover the
-  direct miss and the `Vary` multi-value key.
+### Pending
+
+- **P0-7 is not closed.** `.github/workflows/fuzz.yml` is committed, but it
+  has not run in GitHub Actions; there is no remote run, log or artifact. This
+  release does not claim P0-7 as verified.
+- **P1 and the remaining P0 work are not closed.** P0-10…P0-15 and
+  P1-1…P1-10 remain open in the roadmap and the production verdict; no fix or
+  gate from that list is claimed here.
+- **The post-0.9.5 local changes are not release-cleared.** The `a0ac3fc`
+  tree contains the `Metrics` compatibility, importer-report and cache-auth
+  changes, with local tests recorded in
+  [v095-p1](docs/evidence/v095-p1.md); the P1 group remains open and none of
+  them is claimed as a completed release item in this section.
 
 Release evidence: [docs/release-0.9.6.md](docs/release-0.9.6.md).
 

@@ -1,15 +1,15 @@
 # Reproducción — auditoría adversarial EQProxy 2026-11-09
 
-Esta carpeta contiene una copia byte a byte del laboratorio E2E usado en la
-auditoría:
+El laboratorio E2E ejecutable ya **no vive bajo `docs/`**: se movió a
+`scripts/evidence/adversarial-2026-11-09/run_lab.py` (tooling local-only, fuera
+del repositorio publicado). Esta carpeta conserva el README y los datos
+registrados; `docs/` no contiene scripts ejecutables.
 
-```
-f130fd41d00aec46cad8b1d0784b28d67cdb4e1fb32ab85c6a74104d1d414929  run_lab.py
-```
-
-Esta es la copia usada por la evidencia final de v0.9.5. El hash anterior
-corresponde al estado de la auditoría; el actual incluye S12 h1 y el probe
-h2c en crudo que sustituye al cliente curl para la petición h2.
+El hash del arnés en el momento de la auditoría era
+`f130fd41d00aec46cad8b1d0784b28d67cdb4e1fb32ab85c6a74104d1d414929`; la copia
+usada por la evidencia final de v0.9.5 incluye S12 h1 y el probe h2c en crudo
+que sustituye al cliente curl para la petición h2. La ruta y el comando de uso
+actuales están en el README de `scripts/evidence/adversarial-2026-11-09/`.
 
 ---
 
@@ -48,32 +48,23 @@ no está.
 
 ## 3. Ejecutar el laboratorio
 
-### Forma canónica (deja la evidencia en `report/`)
+### Forma canónica (tooling local-only)
 
 ```bash
 cd /Volumes/Lexar/Cursor/EQProxy
-python3 report/adversarial-2026-11-09/lab/run_lab.py
+python3.13 scripts/evidence/adversarial-2026-11-09/run_lab.py
 echo "EXIT:$?"
 ```
 
 Genera:
 
-- `report/adversarial-2026-11-09/lab/eqproxy.toml` (config temporal),
-- `report/adversarial-2026-11-09/lab/eqproxy.log` (stdout/stderr del proxy),
-- `report/adversarial-2026-11-09/lab/results.json` (resultado por escenario),
+- `scripts/evidence/adversarial-2026-11-09/eqproxy.toml` (config temporal),
+- `scripts/evidence/adversarial-2026-11-09/eqproxy.log` (stdout/stderr del proxy),
+- `scripts/evidence/adversarial-2026-11-09/results.json` (resultado por escenario),
 - salida PASS/FAIL por consola.
 
-### Forma archivada (copia en esta carpeta)
-
-```bash
-cd /Volumes/Lexar/Cursor/EQProxy
-python3 docs/adversarial-audit-2026-11-09/reproduction/run_lab.py
-echo "EXIT:$?"
-```
-
-Al ser una copia idéntica, escribe `eqproxy.toml`, `eqproxy.log` y
-`results.json` **en esta misma carpeta**. Es útil para verificar el hash, pero
-la evidencia oficial es la de `report/`.
+La antigua copia archivada bajo `docs/adversarial-audit-2026-11-09/reproduction/`
+se eliminó al mover el arnés: `docs/` solo lleva Markdown y datos.
 
 ---
 
@@ -179,11 +170,11 @@ rm -f report/adversarial-2026-11-09/lab/eqproxy.toml \
       report/adversarial-2026-11-09/lab/results.json
 rm -rf report/adversarial-2026-11-09/lab/__pycache__
 
-# Si se ejecutó la copia archivada:
-rm -f docs/adversarial-audit-2026-11-09/reproduction/eqproxy.toml \
-      docs/adversarial-audit-2026-11-09/reproduction/eqproxy.log \
-      docs/adversarial-audit-2026-11-09/reproduction/results.json
-rm -rf docs/adversarial-audit-2026-11-09/reproduction/__pycache__
+# Artefactos del harness movido a scripts/:
+rm -f scripts/evidence/adversarial-2026-11-09/eqproxy.toml \
+      scripts/evidence/adversarial-2026-11-09/eqproxy.log \
+      scripts/evidence/adversarial-2026-11-09/results.json
+rm -rf scripts/evidence/adversarial-2026-11-09/__pycache__
 ```
 
 **No borrar** `report/adversarial-2026-11-09/*.log` ni

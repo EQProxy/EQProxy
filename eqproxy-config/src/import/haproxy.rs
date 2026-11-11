@@ -1724,6 +1724,8 @@ fn http_request(
                         rule.path_prefix = condition.path_prefix;
                         rule.path = condition.path;
                         rule.host = condition.host;
+                        rule.host_regex = condition.host_regex;
+                        rule.headers = condition.headers;
                         rule.methods = condition.methods;
                         conv.done(
                             1,
@@ -1777,11 +1779,150 @@ fn http_request(
     }
 }
 
+/// A supported HAProxy ACL sample fetch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Fetch {
+    Path,
+    PathBeg,
+    Host,
+    Header(String),
+    HeaderDomain(String),
+    Source,
+    Method,
+    UrlBeg,
+}
+
+/// Parses `hdr(<name>)`, `hdr_dom(<name>)` and the simple fetch names the
+/// rule schema can evaluate. A bare `hdr` is not a fetch: treating the next
+/// token as a header name used to collapse `hdr` and `hdr_dom` into the same
+/// Host rule.
+fn parse_fetch(token: &str) -> Option<Fetch> {
+    let lower = token.to_ascii_lowercase();
+    match lower.as_str() {
+        "path" => return Some(Fetch::Path),
+        "path_beg" => return Some(Fetch::PathBeg),
+        "host" => return Some(Fetch::Host),
+        "src" => return Some(Fetch::Source),
+        "method" => return Some(Fetch::Method),
+        "url_beg" => return Some(Fetch::UrlBeg),
+        _ => {}
+    }
+    let (inner, domain) = if let Some(inner) = lower.strip_prefix("hdr_dom(") {
+        (inner, true)
+    } else {
+        let inner = lower.strip_prefix("hdr(")?;
+        (inner, false)
+    };
+    let name = inner.strip_suffix(')')?;
+    if name.is_empty()
+        || name.contains('(')
+        || name.contains(')')
+        || name.contains(char::is_whitespace)
+    {
+        return None;
+    }
+    if domain {
+        // `hdr_dom` extracts the domain of a header; only Host has one.
+        if name != "host" {
+            return None;
+        }
+        Some(Fetch::HeaderDomain(name.to_owned()))
+    } else {
+        Some(Fetch::Header(name.to_owned()))
+    }
+}
+
+/// Escapes a literal so it can be embedded in a `regex` condition.
+fn regex_literal(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for character in value.chars() {
+        if matches!(
+            character,
+            '\\' | '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|'
+        ) {
+            out.push('\\');
+        }
+        out.push(character);
+    }
+    out
+}
+
+/// Domain matching for `hdr_dom(host) -m dom`: a dot-delimited suffix that
+/// also accepts the bare domain and a leading `*.` wildcard. The host sample
+/// arrives lowercased and without its port; the pattern is lowered to match
+/// HAProxy's case-insensitive domain semantics.
+fn domain_regex(value: &str) -> Option<String> {
+    let value = value.trim().to_ascii_lowercase();
+    let name = value
+        .strip_prefix("*.")
+        .or_else(|| value.strip_prefix('.'))
+        .unwrap_or(&value);
+    if name.is_empty() || name.contains(':') {
+        return None;
+    }
+    Some(format!("(^|\\.){}$", regex_literal(name)))
+}
+
+/// Builds the header condition for `hdr(<name>)`. `str` stays an exact
+/// byte-for-byte comparison; the ordered and regex methods become anchored
+/// regexes, and `-i` adds the regex crate's inline case-insensitive flag.
+fn header_condition(
+    name: &str,
+    method: &str,
+    value: &str,
+    insensitive: bool,
+) -> Option<super::HeaderCondition> {
+    if value.is_empty() {
+        return None;
+    }
+    let mut condition = super::HeaderCondition {
+        name: name.to_owned(),
+        ..super::HeaderCondition::default()
+    };
+    let flag = if insensitive { "(?i)" } else { "" };
+    let literal = regex_literal(value);
+    match method {
+        "str" if !insensitive => condition.exact = Some(value.to_owned()),
+        "str" => condition.regex = Some(format!("{flag}^{literal}$")),
+        "beg" => condition.regex = Some(format!("{flag}^{literal}")),
+        "end" => condition.regex = Some(format!("{flag}{literal}$")),
+        "sub" => condition.regex = Some(format!("{flag}{literal}")),
+        "reg" => condition.regex = Some(format!("{flag}{value}")),
+        "dom" => condition.regex = Some(format!("{flag}{}", domain_regex(value)?)),
+        "found" => condition.present = true,
+        _ => return None,
+    }
+    Some(condition)
+}
+
+/// Applies `hdr_dom(<host>)` using the rule engine's port-free Host
+/// comparison. Exact stays `host`; the other string methods are expressed as
+/// anchored regexes over the lowercased host (the engine strips the port
+/// before matching).
+fn apply_header_domain(rule: &mut Rule, method: &str, value: &str) -> Option<()> {
+    if value.is_empty() {
+        return None;
+    }
+    let lowered = value.trim().to_ascii_lowercase();
+    match method {
+        "str" => rule.host = Some(value.to_owned()),
+        "beg" => rule.host_regex = Some(format!("^{}", regex_literal(&lowered))),
+        "end" => rule.host_regex = Some(format!("{}$", regex_literal(&lowered))),
+        "sub" => rule.host_regex = Some(regex_literal(&lowered)),
+        "reg" => rule.host_regex = Some(format!("(?i){value}")),
+        "dom" => rule.host_regex = Some(domain_regex(value)?),
+        _ => return None,
+    }
+    Some(())
+}
+
 /// Parses a HAProxy inline ACL (`{ path_beg /api }`) into a rule.
 ///
 /// Only the conditions `[[listener.*.rules]]` evaluates are accepted; anything
 /// else returns `None` so the caller classifies the directive instead of
-/// emitting a rule that would mean something else.
+/// emitting a rule that would mean something else. `hdr` and `hdr_dom` are
+/// deliberately distinct: `hdr(host)` compares the literal header value
+/// (including any port), while `hdr_dom(host)` matches the port-free domain.
 fn condition_rule(args: &[String], backend: &str) -> Option<Rule> {
     let mut rule = Rule {
         use_backend: if backend.is_empty() {
@@ -1806,29 +1947,110 @@ fn condition_rule(args: &[String], backend: &str) -> Option<Rule> {
     let mut index = 0;
     let mut seen = 0usize;
     while index < tokens.len() {
-        let name = tokens[index].to_ascii_lowercase();
-        let value = tokens.get(index + 1)?.to_string();
-        match name.as_str() {
-            "path_beg" => rule.path_prefix = Some(value),
-            "path" => rule.path = Some(value),
-            "path_end" | "path_reg" | "path_sub" => return None,
-            "hdr" | "hdr_dom" => rule.host = Some(value),
-            "src" => {
+        let fetch = parse_fetch(tokens[index])?;
+        index += 1;
+        let mut insensitive = false;
+        let mut method = "str".to_owned();
+        while index < tokens.len() {
+            match tokens[index] {
+                "-i" => {
+                    insensitive = true;
+                    index += 1;
+                }
+                "-m" => {
+                    let value = tokens.get(index + 1)?.to_ascii_lowercase();
+                    if !matches!(
+                        value.as_str(),
+                        "str" | "beg" | "end" | "sub" | "reg" | "dom" | "found"
+                    ) {
+                        return None;
+                    }
+                    method = value;
+                    index += 2;
+                }
+                token if token.starts_with('-') => return None,
+                _ => break,
+            }
+        }
+        match fetch {
+            Fetch::Path => {
+                if insensitive || method != "str" {
+                    return None;
+                }
+                rule.path = Some(tokens.get(index)?.to_string());
+                index += 1;
+            }
+            Fetch::PathBeg => {
+                if insensitive || method != "str" {
+                    return None;
+                }
+                rule.path_prefix = Some(tokens.get(index)?.to_string());
+                index += 1;
+            }
+            Fetch::Host => {
+                if insensitive || method != "str" {
+                    return None;
+                }
+                rule.host = Some(tokens.get(index)?.to_string());
+                index += 1;
+            }
+            Fetch::Header(name) => {
+                if method == "found" {
+                    rule.headers.push(super::HeaderCondition {
+                        name,
+                        present: true,
+                        ..super::HeaderCondition::default()
+                    });
+                } else {
+                    let value = tokens.get(index)?;
+                    rule.headers
+                        .push(header_condition(&name, &method, value, insensitive)?);
+                    index += 1;
+                }
+            }
+            Fetch::HeaderDomain(name) => {
+                if method == "found" {
+                    rule.headers.push(super::HeaderCondition {
+                        name,
+                        present: true,
+                        ..super::HeaderCondition::default()
+                    });
+                } else {
+                    let value = tokens.get(index)?;
+                    apply_header_domain(&mut rule, &method, value)?;
+                    index += 1;
+                }
+            }
+            Fetch::Source => {
+                if insensitive || method != "str" {
+                    return None;
+                }
+                let value = tokens.get(index)?.to_string();
                 rule.ip = vec![if value.contains('/') {
                     value
                 } else if value.contains(':') {
                     format!("{value}/128")
                 } else {
                     format!("{value}/32")
-                }]
+                }];
+                index += 1;
             }
-            "method" => rule.methods = vec![value],
-            "host" => rule.host = Some(value),
-            "url_beg" => rule.path_prefix = Some(value),
-            _ => return None,
+            Fetch::Method => {
+                if insensitive || method != "str" {
+                    return None;
+                }
+                rule.methods = vec![tokens.get(index)?.to_string()];
+                index += 1;
+            }
+            Fetch::UrlBeg => {
+                if insensitive || method != "str" {
+                    return None;
+                }
+                rule.path_prefix = Some(tokens.get(index)?.to_string());
+                index += 1;
+            }
         }
         seen += 1;
-        index += 2;
     }
     if seen == 0 { None } else { Some(rule) }
 }
@@ -1943,6 +2165,91 @@ mod tests {
             parsed[2].lines[0],
             vec!["bind".to_owned(), ":80".to_owned()]
         );
+    }
+
+    #[test]
+    fn hdr_and_hdr_dom_keep_distinct_semantics() {
+        let literal = condition_rule(
+            &[
+                "{".to_owned(),
+                "hdr(host)".to_owned(),
+                "example.com:8080".to_owned(),
+                "}".to_owned(),
+            ],
+            "svc",
+        )
+        .expect("hdr(host)");
+        assert!(literal.host.is_none(), "hdr(host) is not a domain rule");
+        assert_eq!(literal.headers.len(), 1);
+        assert_eq!(
+            literal.headers[0].exact.as_deref(),
+            Some("example.com:8080")
+        );
+
+        let domain = condition_rule(
+            &[
+                "{".to_owned(),
+                "hdr_dom(host)".to_owned(),
+                "example.com".to_owned(),
+                "}".to_owned(),
+            ],
+            "svc",
+        )
+        .expect("hdr_dom(host)");
+        assert_eq!(domain.host.as_deref(), Some("example.com"));
+        assert!(domain.headers.is_empty(), "hdr_dom is not a header rule");
+
+        let suffix = condition_rule(
+            &[
+                "{".to_owned(),
+                "hdr_dom(host)".to_owned(),
+                "-m".to_owned(),
+                "end".to_owned(),
+                ".example.com".to_owned(),
+                "}".to_owned(),
+            ],
+            "svc",
+        )
+        .expect("hdr_dom -m end");
+        assert_eq!(suffix.host_regex.as_deref(), Some("\\.example\\.com$"));
+    }
+
+    #[test]
+    fn header_and_domain_acls_emit_different_configuration() {
+        let source = "defaults\n    mode http\n\nfrontend fe\n    bind 127.0.0.1:0\n    default_backend fallback\n    use_backend literal if { hdr(host) example.com }\n    use_backend tenant if { hdr(X-Tenant) -i acme }\n    use_backend domain if { hdr_dom(host) example.com }\n    use_backend suffix if { hdr_dom(host) -m end .example.com }\n\nbackend literal\n    server s1 10.0.0.1:8080\nbackend tenant\n    server s1 10.0.0.1:8080\nbackend domain\n    server s1 10.0.0.1:8080\nbackend suffix\n    server s1 10.0.0.1:8080\nbackend fallback\n    server s1 10.0.0.1:8080\n";
+        let outcome = super::super::convert(super::super::Source::Haproxy, source)
+            .expect("header ACLs must convert");
+        assert!(
+            outcome
+                .toml
+                .contains("headers = [{ name = \"host\", exact = \"example.com\" }]"),
+            "hdr(host) must stay a literal header condition:\n{}",
+            outcome.toml
+        );
+        assert!(
+            outcome
+                .toml
+                .contains("headers = [{ name = \"x-tenant\", regex = \"(?i)^acme$\" }]"),
+            "hdr(X-Tenant) -i must become a case-insensitive header regex:\n{}",
+            outcome.toml
+        );
+        assert!(
+            outcome.toml.contains("host = \"example.com\""),
+            "hdr_dom(host) must use the port-free Host condition:\n{}",
+            outcome.toml
+        );
+        assert!(
+            outcome
+                .toml
+                .contains("host_regex = \"\\\\.example\\\\.com$\""),
+            "hdr_dom -m end must become a Host suffix regex:\n{}",
+            outcome.toml
+        );
+        let parsed = crate::parse_str(&outcome.toml, std::path::Path::new("haproxy.cfg"))
+            .expect("generated TOML parses");
+        let check =
+            crate::validate::check(&parsed, &outcome.toml, std::path::Path::new("haproxy.cfg"));
+        assert!(check.is_valid(), "{check:?}");
     }
 
     #[test]

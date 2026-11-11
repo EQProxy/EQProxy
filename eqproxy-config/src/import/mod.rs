@@ -258,6 +258,17 @@ struct HeaderOp {
     value: String,
 }
 
+/// One request-header condition in the import IR. The fields mirror
+/// `eqproxy_core::rules::HeaderSpec`: exactly one of `exact`, `regex` or
+/// `present` is set.
+#[derive(Debug, Clone, Default)]
+struct HeaderCondition {
+    name: String,
+    exact: Option<String>,
+    regex: Option<String>,
+    present: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 struct Rule {
     name: String,
@@ -266,6 +277,7 @@ struct Rule {
     path: Option<String>,
     host: Option<String>,
     host_regex: Option<String>,
+    headers: Vec<HeaderCondition>,
     methods: Vec<String>,
     ip: Vec<String>,
     set_headers: Vec<HeaderOp>,

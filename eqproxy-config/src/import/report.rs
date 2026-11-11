@@ -216,6 +216,25 @@ pub fn emit_toml(conv: &Conv) -> String {
             if let Some(regex) = &rule.host_regex {
                 let _ = writeln!(out, "host_regex = {}", toml_string(regex));
             }
+            if !rule.headers.is_empty() {
+                let rendered: Vec<String> = rule
+                    .headers
+                    .iter()
+                    .map(|header| {
+                        let condition = if header.present {
+                            "present = true".to_owned()
+                        } else if let Some(exact) = &header.exact {
+                            format!("exact = {}", toml_string(exact))
+                        } else if let Some(regex) = &header.regex {
+                            format!("regex = {}", toml_string(regex))
+                        } else {
+                            "present = false".to_owned()
+                        };
+                        format!("{{ name = {}, {condition} }}", toml_string(&header.name))
+                    })
+                    .collect();
+                let _ = writeln!(out, "headers = [{}]", rendered.join(", "));
+            }
             if !rule.methods.is_empty() {
                 let _ = writeln!(out, "methods = {}", string_list(&rule.methods));
             }

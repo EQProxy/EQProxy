@@ -1498,6 +1498,99 @@ fn body_of(response: &str) -> &str {
     ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
 )]
 #[test]
+fn run_applies_imported_hdr_and_hdr_dom_with_distinct_semantics() {
+    let literal = start_identity_backend("literal");
+    let tenant = start_identity_backend("tenant");
+    let domain = start_identity_backend("domain");
+    let fallback = start_identity_backend("fallback");
+    let source = temp_config(
+        "haproxy-hdr-source",
+        &format!(
+            "defaults\n    mode http\n\n\
+             frontend fe\n    bind 127.0.0.1:0\n    default_backend fallback\n    \
+             use_backend literal if {{ hdr(host) literal.example }}\n    \
+             use_backend tenant if {{ hdr(X-Tenant) -i acme }}\n    \
+             use_backend domain if {{ hdr_dom(host) example.com }}\n\n\
+             backend literal\n    server s1 {literal}\n\
+             backend tenant\n    server s1 {tenant}\n\
+             backend domain\n    server s1 {domain}\n\
+             backend fallback\n    server s1 {fallback}\n"
+        ),
+    );
+    let converted = source.with_extension("imported.toml");
+    let imported = bin()
+        .args(["config", "import", "--input"])
+        .arg(&source)
+        .arg("--output")
+        .arg(&converted)
+        .output()
+        .expect("run eqproxy config import");
+    assert_eq!(
+        imported.status.code(),
+        Some(0),
+        "import stderr: {}",
+        String::from_utf8_lossy(&imported.stderr)
+    );
+    let toml = std::fs::read_to_string(&converted).expect("read imported config");
+    assert!(
+        toml.contains("headers = [{ name = \"host\", exact = \"literal.example\" }]"),
+        "hdr(host) must be emitted as a literal header condition:\n{toml}"
+    );
+    assert!(
+        toml.contains("headers = [{ name = \"x-tenant\", regex = \"(?i)^acme$\" }]"),
+        "hdr(X-Tenant) -i must be emitted as a header regex:\n{toml}"
+    );
+    assert!(
+        toml.contains("host = \"example.com\""),
+        "hdr_dom(host) must be emitted as a Host condition:\n{toml}"
+    );
+
+    let (mut child, addr, _stderr) = spawn_run_and_wait(&converted, "fe");
+    let route = |request: &[u8], want: &str, why: &str| {
+        let response = proxied(addr.as_str(), request);
+        assert!(response.starts_with("HTTP/1.1 200 OK"), "{why}: {response}");
+        assert_eq!(body_of(&response), want, "{why}");
+    };
+    route(
+        b"GET / HTTP/1.1\r\nHost: literal.example\r\nConnection: close\r\n\r\n",
+        "literal",
+        "hdr(host) matches the literal Host value",
+    );
+    route(
+        b"GET / HTTP/1.1\r\nHost: literal.example:8080\r\nConnection: close\r\n\r\n",
+        "fallback",
+        "hdr(host) must not silently strip the port",
+    );
+    route(
+        b"GET / HTTP/1.1\r\nHost: example.com:8080\r\nConnection: close\r\n\r\n",
+        "domain",
+        "hdr_dom(host) matches the domain with the port ignored",
+    );
+    route(
+        b"GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n",
+        "domain",
+        "hdr_dom(host) matches the bare domain",
+    );
+    route(
+        b"GET / HTTP/1.1\r\nHost: other.example\r\nX-Tenant: ACME\r\nConnection: close\r\n\r\n",
+        "tenant",
+        "hdr(X-Tenant) -i matches case-insensitively",
+    );
+    route(
+        b"GET / HTTP/1.1\r\nHost: other.example\r\nConnection: close\r\n\r\n",
+        "fallback",
+        "a missing header does not match",
+    );
+
+    wait_for_sigint_shutdown(&mut child, &converted);
+    remove_temp(&source);
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
+)]
+#[test]
 fn run_routes_by_rules_first_match_wins_with_default_fallback() {
     let api = start_identity_backend("api");
     let mgmt = start_identity_backend("mgmt");

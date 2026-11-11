@@ -31,6 +31,11 @@ workspace suite (**804 passed, 0 failed, 2 ignored**), the fuzz workspace check,
 `cargo +nightly fuzz build`, the release build and `git diff --check`; the
 seeded fuzz campaigns and their counts are in the evidence page.
 
+A later local commit closes P0-8/P0-9 (HAProxy header semantics, production
+verdict and the move of the lab harness out of `docs/`). It is not in the
+`v0.9.5` tag and has no remote counterpart; evidence:
+[P0-8/P0-9](evidence/v095-p0-8-p0-9.md).
+
 The independent Veyra run on that post-tag tree is **ACCEPTED** (exit 0,
 `.veyra/evidence/20261111T182801Z/`): the former `Metrics` patch-semver finding
 is fixed by moving the counter into `DetailMetrics`; no version bump was needed.

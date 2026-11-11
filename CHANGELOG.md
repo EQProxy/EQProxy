@@ -3,6 +3,34 @@
 Language: **English**. Format follows "Keep a Changelog" (Added / Changed /
 Fixed); versions are `vMAJOR.MINOR.PATCH` git tags.
 
+## [Unreleased]
+
+### Added
+
+- **Fuzz CI and seeded campaigns.** `.github/workflows/fuzz.yml` checks the
+  fuzz workspace, builds `framing`, `rules` and `config_import`, and runs a
+  short seeded campaign manually or on a schedule.
+
+### Fixed
+
+- **`Metrics` stays constructible in a patch release.** The AUD-03 trailer
+  counter moved out of a private field on the public `Metrics` struct and into
+  the opaque `DetailMetrics` substructure, preserving the original public field
+  set. `cargo-semver-checks check-release --baseline-rev v0.9.1
+  --release-type patch` passes 223/223 checks; the counter remains per-instance
+  and is covered with the detail registry disabled.
+- **A multiline directive no longer creates an extra report bullet.** The
+  importer keeps each source directive on one Markdown line, so the report's
+  "one bullet per classified directive" contract holds for quoted and
+  malformed source text. Found by the `config_import` fuzz target.
+
+### Changed
+
+- **Shared cache entries reject authentication challenges.** A response with
+  `WWW-Authenticate` or `Proxy-Authenticate` is never stored, and a `304`
+  carrying either header invalidates the entry. Contract tests cover the
+  direct miss and the `Vary` multi-value key.
+
 ## [v0.9.5] — 2026-11-11
 
 ### Fixed

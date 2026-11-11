@@ -139,6 +139,27 @@ async fn start_origin() -> Origin {
             },
         ),
         (
+            "/auth-headers".to_owned(),
+            Behavior {
+                status: 200,
+                headers: vec![
+                    ("content-type".to_owned(), "text/plain".to_owned()),
+                    (
+                        "www-authenticate".to_owned(),
+                        "Basic realm=\"private\"".to_owned(),
+                    ),
+                    (
+                        "proxy-authenticate".to_owned(),
+                        "Basic realm=\"proxy\"".to_owned(),
+                    ),
+                ],
+                body: b"auth".to_vec(),
+                etag: None,
+                delay: Duration::ZERO,
+                revalidate_headers: Vec::new(),
+            },
+        ),
+        (
             "/vary".to_owned(),
             Behavior {
                 status: 200,
@@ -594,6 +615,35 @@ async fn set_cookie_responses_are_never_stored() {
         assert_eq!(header(&head, "x-cache"), Some("MISS".to_owned()));
     }
     assert_eq!(origin.hits("/login"), 2);
+    assert_eq!(metrics.snapshot().cache_stores, 0);
+}
+
+#[tokio::test]
+async fn authentication_challenges_are_never_stored_or_served() {
+    let origin = start_origin().await;
+    let (proxy, metrics, _handle, _serve) = start_proxy(origin.addr, cache_settings("web")).await;
+
+    for _ in 0..2 {
+        let (status, head, body) = fetch(proxy, "GET", "/auth-headers", &[]).await;
+        assert_eq!(status, 200);
+        assert_eq!(body, b"auth");
+        assert_eq!(header(&head, "x-cache"), Some("MISS".to_owned()));
+        // The origin's own challenge reaches each direct response; what
+        // matters is that neither response came from the shared cache.
+        assert_eq!(
+            header(&head, "www-authenticate").as_deref(),
+            Some("Basic realm=\"private\"")
+        );
+        assert_eq!(
+            header(&head, "proxy-authenticate").as_deref(),
+            Some("Basic realm=\"proxy\"")
+        );
+    }
+    assert_eq!(
+        origin.hits("/auth-headers"),
+        2,
+        "both requests reached the origin"
+    );
     assert_eq!(metrics.snapshot().cache_stores, 0);
 }
 

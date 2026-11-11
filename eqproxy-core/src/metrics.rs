@@ -140,10 +140,6 @@ pub struct Metrics {
     pub compression_bytes_in: AtomicU64,
     /// Compressed bytes written to the client (gzip payload, no framing).
     pub compression_bytes_out: AtomicU64,
-    /// Chunked trailer sections refused for crossing the byte/field budget.
-    /// Kept private so adding it does not change the public snapshot shape;
-    /// operators and tests read it through [`Metrics::trailer_limit_exceeded`].
-    trailer_limit_exceeded: AtomicU64,
     /// HTTP/3 connections that ended with a normal close (`H3_NO_ERROR` or
     /// QUIC application code 0): not an error, not logged.
     pub h3_clean_closes: AtomicU64,
@@ -388,6 +384,10 @@ pub struct DetailMetrics {
     maps: RwLock<DetailMaps>,
     /// Observations refused for lack of budget (monotonic).
     dropped: AtomicU64,
+    /// Chunked trailer sections refused for crossing the byte/field budget
+    /// (AUD-03). This lives in the opaque detail substructure so `Metrics`
+    /// keeps its original public, constructible field set.
+    trailer_limit_exceeded: AtomicU64,
 }
 
 impl Default for DetailMetrics {
@@ -404,6 +404,7 @@ impl DetailMetrics {
             budget,
             maps: RwLock::new(DetailMaps::default()),
             dropped: AtomicU64::new(0),
+            trailer_limit_exceeded: AtomicU64::new(0),
         }
     }
 
@@ -429,6 +430,15 @@ impl DetailMetrics {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clear();
         }
+    }
+
+    fn note_trailer_limit_exceeded(&self) {
+        self.trailer_limit_exceeded.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[must_use]
+    fn trailer_limit_exceeded(&self) -> u64 {
+        self.trailer_limit_exceeded.load(Ordering::Relaxed)
     }
 
     /// Attributes one completed exchange to a backend server. `failed` marks
@@ -792,16 +802,16 @@ impl Metrics {
     }
 
     /// Counts a chunked trailer section refused for exceeding the shared
-    /// byte/field budget (AUD-03). The counter is private so the public
-    /// `MetricsSnapshot` layout stays stable for downstream users.
+    /// byte/field budget (AUD-03). The storage lives in the opaque detail
+    /// substructure so the public `Metrics` field set stays constructible.
     pub fn note_trailer_limit_exceeded(&self) {
-        self.trailer_limit_exceeded.fetch_add(1, Ordering::Relaxed);
+        self.detail.note_trailer_limit_exceeded();
     }
 
     /// Number of chunked trailer sections refused by the budget (AUD-03).
     #[must_use]
     pub fn trailer_limit_exceeded(&self) -> u64 {
-        self.trailer_limit_exceeded.load(Ordering::Relaxed)
+        self.detail.trailer_limit_exceeded()
     }
 }
 
@@ -995,6 +1005,20 @@ mod tests {
         let metrics = Metrics::default();
         metrics.release_connection();
         assert_eq!(metrics.snapshot().connections_active, 0);
+    }
+
+    #[test]
+    fn trailer_counter_works_with_detail_disabled_and_is_per_instance() {
+        let metrics = Metrics::with_detail(false, 0);
+        let other = Metrics::with_detail(true, 1);
+        assert_eq!(metrics.trailer_limit_exceeded(), 0);
+        metrics.note_trailer_limit_exceeded();
+        assert_eq!(metrics.trailer_limit_exceeded(), 1);
+        assert_eq!(
+            other.trailer_limit_exceeded(),
+            0,
+            "the counter belongs to its Metrics instance"
+        );
     }
 
     #[test]

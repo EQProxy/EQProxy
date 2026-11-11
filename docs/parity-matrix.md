@@ -1,6 +1,7 @@
-# EQProxy parity matrix — v0.9.1 (reference scope)
+# EQProxy parity matrix — v0.9.5 (reference scope)
 
-- Status: **complete classification** of the reference scope, 2026-11-01.
+- Status: **complete classification** of the reference scope, reviewed
+  2026-11-11 against the v0.9.5 tree.
 - References: HAProxy **3.4.6 LTS** (primary) / 3.0.29, nginx **1.27.1**
   (the data plane shipped in the ingress-nginx controller image) and Envoy
   **API v3, v1.34.2** with a static bootstrap.
@@ -105,7 +106,7 @@ the honest ceiling until the corpus grows.
 | C9 | Error pages and local responses | E2 | `local_response_serves_the_configured_body`, `direct_response_answers_locally_and_keeps_keep_alive`, `e2e_error_pages.rs` (body/file/status/intercept/errorloc). Difference: pages are per listener, not per rule or `http-request return` location. |
 | C10 | Maps | E2 | `map_condition_consults_hot_data_and_swaps_in_hot`, `run_hot_maps_swap_under_traffic_without_config_reload`. Difference: values used by `equals` matching only; file-driven updates, no API write. |
 | C11 | Compression | E2 | `run_compresses_gzip_and_respects_every_refusal_case`, `run_compresses_brotli_and_prefers_it_over_gzip`, `run_serves_brotli_over_h2c_to_a_real_client`. Difference: gzip and brotli, no zstd; per-rule minimum size and content types. |
-| C12 | In-memory HTTP cache | E2 | `e2e_cache.rs` (miss/hit, Vary, ETag, TTL, coalescing, HEAD, bypass, disk restart). Difference: opt-in per listener; no `stale-while-revalidate`, `stale-if-error`, `only-if-cached` or `If-Modified-Since`. |
+| C12 | In-memory HTTP cache | E2 | `e2e_cache.rs` (miss/hit, Vary, ETag, TTL, coalescing, HEAD, bypass, disk restart, 304 revocation and shared-header contract). Difference: opt-in per listener; client `max-age`/`min-fresh`/`max-stale` are honored; no `stale-while-revalidate`, `stale-if-error`, `only-if-cached` or `If-Modified-Since`. |
 | C13 | WASM request filter | E2 | `e2e_plugins.rs` (header, denial, fuel, deadline, memory, fail-open, reserved headers, h2). Difference: request head only; no response phase, body or cross-request state; no WASI. |
 
 ### D. Operations
@@ -165,7 +166,7 @@ this is the mapping used to classify them without duplicating evidence.
 | B-N4 | Headers and X-Forwarded-For | **E1** | Differential: `h1-xff-append`, `h2-xff-xri-replace`, `h4-xfp`, `h5-set-header`, `h6-del-header`, `h7-add-header`, `h8-response-marker`. Difference: no full nginx variable language. |
 | B-N5 | `rewrite`, `return`, `if`, `try_files` | E2 | `rewrite_action_rewrites_target_and_host_for_the_backend`, `redirect_action_answers_locally_with_rendered_location`, `direct_response_answers_locally_and_keeps_keep_alive`. Difference: no `if` blocks or `try_files`; rewrite/return are rule actions. |
 | B-N6 | Compression | E2 | `run_compresses_gzip_and_respects_every_refusal_case`, `run_compresses_brotli_and_prefers_it_over_gzip`, `run_serves_brotli_over_h2c_to_a_real_client`. Difference: gzip and brotli, no zstd; per-rule types and minimum size. |
-| B-N7 | `proxy_cache` | E2 | `e2e_cache.rs` (13 E2E). Difference: opt-in per listener, semantic parity not directive-compatible; no stale directives. |
+| B-N7 | `proxy_cache` | E2 | `e2e_cache.rs` (cache journeys including 304 revocation and shared-header contract). Difference: opt-in per listener, semantic parity not directive-compatible; client cache directives are honored; no stale directives. |
 | B-N8 | Rate limiting and limits | E2 | `rate_limit_rejects_over_the_limit_explicitly`, `e2e_limits.rs` (headers, body cap, chunked, h2). Difference: fixed-window per rule, no token bucket or `limit_conn`. |
 | B-N9 | Authentication | E2 | `auth_basic_rejects_missing_or_wrong_credentials_explicitly`, `auth_subrequest_allows_on_2xx_and_fails_closed`, mTLS test. Difference: no `satisfy`/`auth_request` directive spelling; subrequest is the documented equivalent. |
 | B-N10 | Passive vs active health | E2 | Active TCP/HTTP checks; passive `fall`/`rise`. Difference: no `max_fails`/`fail_timeout` per upstream. |

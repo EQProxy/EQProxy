@@ -5,6 +5,12 @@ Artefacto auditado: tag anotado `v0.9.4` → commit `24e6dc6b29728b8ce16c197642a
 Árbol de trabajo: `ecda55a46f91982842f8bfe87772bf44324df905` (solo documentación de release por encima del tag; código de producto idéntico)
 Imagen ya verificada en el corte: `sha256:d139f07b49f6829e354971ade4076512eae469cf40540c4e34add61fd0574ba8`
 
+> **Actualización 2026-11-11 (posterior a este snapshot).** El veredicto de abajo
+> describe el artefacto v0.9.4 y no se reescribe. AUD-01 a AUD-05 están cerrados
+> en la rama `release/v0.9.5` (AUD-04/AUD-05 son cambios post-tag); el cierre y
+> las campañas de fuzz están en
+> [findings.md](findings.md) y [v095-p1](../evidence/v095-p1.md).
+
 ## Veredicto
 
 v0.9.4 **funciona** en los recorridos ya verificados (tráfico HTTP real a través de

@@ -66,6 +66,15 @@ const UNKEYABLE_VARY: [&str; 2] = ["cookie", "authorization"];
 /// that is not theirs).
 const SET_COOKIE: &str = "set-cookie";
 
+/// Headers that carry session or authentication material and must never be
+/// served from a shared entry. `Set-Cookie` is already rejected by
+/// `storable_vary`; the two authentication challenges are refused for the
+/// same reason: an anonymous client may be a different principal than the
+/// one the origin answered. `Proxy-Authenticate` is hop-by-hop at the HTTP
+/// layer, but rejecting it here keeps the cache contract independent of the
+/// translator that happened to produce the head.
+const SHARED_FORBIDDEN_HEADERS: [&str; 3] = [SET_COOKIE, "www-authenticate", "proxy-authenticate"];
+
 /// Headers the cache manages itself on serve and never stores: framing is
 /// recomputed from the stored body, and `x-cache`/`age` describe the serve,
 /// not the stored response (a stored `MISS` marker must never leak into a
@@ -615,7 +624,7 @@ impl Cache {
     /// re-keyed in place. `Set-Cookie`, `private` and `no-store` revoke the
     /// shared representation even though the body is byte-identical.
     fn refresh_storable(facts: &ResponseFacts, old_vary: &[String]) -> bool {
-        if facts.has_set_cookie {
+        if has_shared_forbidden_header(facts) {
             return false;
         }
         for value in &facts.cache_control {
@@ -1348,8 +1357,8 @@ pub fn storable_vary(facts: &ResponseFacts) -> Option<Vec<String>> {
     if !facts.storable_status {
         return None;
     }
-    // H1 core: session responses are never stored.
-    if facts.has_set_cookie {
+    // H1 core: session and authentication responses are never stored.
+    if has_shared_forbidden_header(facts) {
         return None;
     }
     // Explicit origin opt-outs.
@@ -1376,6 +1385,16 @@ pub fn storable_vary(facts: &ResponseFacts) -> Option<Vec<String>> {
         return None;
     }
     Some(facts.vary.clone())
+}
+
+/// Whether the response carries a header that cannot be part of a shared
+/// representation. Kept separate from `storable_vary` so a `304` refresh
+/// applies the same gate as a `200` store.
+fn has_shared_forbidden_header(facts: &ResponseFacts) -> bool {
+    facts
+        .headers
+        .iter()
+        .any(|(name, _)| SHARED_FORBIDDEN_HEADERS.contains(&name.as_str()))
 }
 
 /// End-to-end headers of a response: hop-by-hop, framing and cache-managed
@@ -2136,6 +2155,54 @@ mod tests {
         let facts = parse_origin_head(head).expect("parses");
         assert!(facts.has_set_cookie);
         assert!(storable_vary(&facts).is_none());
+    }
+
+    #[test]
+    fn authentication_challenges_are_never_storable() {
+        for name in ["www-authenticate", "proxy-authenticate"] {
+            let head = format!(
+                "HTTP/1.1 200 OK\r\n{name}: Basic realm=\"private\"\r\ncontent-length: 0\r\n"
+            );
+            let facts = parse_origin_head(head.as_bytes()).expect("parses");
+            assert!(
+                storable_vary(&facts).is_none(),
+                "{name} must never enter a shared cache entry"
+            );
+            let not_modified = format!("HTTP/1.1 304 Not Modified\r\n{name}: Basic\r\n");
+            let facts_304 = parse_origin_head(not_modified.as_bytes()).expect("parses");
+            assert!(
+                !Cache::refresh_storable(&facts_304, &[]),
+                "a 304 carrying {name} must invalidate the entry"
+            );
+        }
+    }
+
+    #[test]
+    fn vary_with_multiple_values_is_keyed_exactly() {
+        let facts = parse_origin_head(
+            b"HTTP/1.1 200 OK\r\nvary: Accept-Language, Accept-Encoding\r\ncontent-length: 0\r\n",
+        )
+        .expect("parses");
+        assert_eq!(facts.vary, vec!["accept-language", "accept-encoding"]);
+        assert_eq!(storable_vary(&facts), Some(facts.vary.clone()));
+
+        let headers = vec![
+            ("accept-language".to_owned(), "en".to_owned()),
+            ("accept-language".to_owned(), "fr".to_owned()),
+            ("accept-encoding".to_owned(), "gzip".to_owned()),
+        ];
+        assert_eq!(
+            vary_values(&headers, &facts.vary),
+            vec!["en, fr".to_owned(), "gzip".to_owned()]
+        );
+        assert_ne!(
+            vary_values(&headers, &facts.vary),
+            vary_values(
+                &[("accept-language".to_owned(), "en, fr".to_owned())],
+                &facts.vary
+            ),
+            "multiple fields are joined, not folded into one comma-separated value"
+        );
     }
 
     #[test]

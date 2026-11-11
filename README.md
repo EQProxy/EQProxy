@@ -7,8 +7,8 @@ EQProxy — the reverse proxy and load balancer that imports your HAProxy and ng
 ![Status](https://img.shields.io/badge/status-pre--1.0-orange)
 
 **65/65 migration checks** against HAProxy 3.4.6, nginx, ingress-nginx and
-static Envoy 1.34.2 · **31/31** differential cases · **738 tests** across 36
-targets · a single static Linux binary (musl).
+static Envoy 1.34.2 · **31/31** differential cases · **the full workspace
+suite** across 36 targets · a single static Linux binary (musl).
 
 ```bash
 # 1. Translate the config you already have. The report names every directive

@@ -227,7 +227,7 @@ funcionando.
 
 **Severidad:** Media (aseguramiento)
 **Componente:** `fuzz/fuzz_targets/rules.rs`, `.github/workflows/`
-**Estado:** confirmado
+**Estado:** cerrado (2026-11-11) — target compilado, campañas ejecutadas y workflow añadido.
 
 ### Qué pasa
 
@@ -268,13 +268,26 @@ Salida guardada en `scripts/evidence/audit-2026-11-09/fuzz-check.out`.
 `cargo check --manifest-path fuzz/Cargo.toml --bins` exit 0; `cargo fuzz build`
 construye los tres targets; CI falla si vuelven a romperse.
 
+**Cierre (2026-11-11).** `cargo check --manifest-path fuzz/Cargo.toml --bins`
+exit 0; `cargo +nightly fuzz build` construyó `framing`, `rules` y
+`config_import`; las campañas de 60 s pasaron con 525 432, 183 768 y 25 280
+ejecuciones respectivamente, sin crash. La primera campaña de `config_import`
+sí encontró un defecto real: una directiva multilínea añadía una viñeta al
+informe Markdown y rompía el oráculo de conteo. Se corrigió en
+`eqproxy-config/src/import/report.rs` con `single_line`, se añadió un test de
+regresión y el artefacto minimizado de 937 bytes ahora termina con exit 0. El
+workflow [`fuzz.yml`](../../.github/workflows/fuzz.yml) es manual y programado,
+con `cargo check`, build por target y campaña corta. La validación del YAML se
+hizo con PyYAML `BaseLoader`; `actionlint` no está instalado. Evidencia:
+[v095-p1](../evidence/v095-p1.md).
+
 ---
 
 ## AUD-05 — Deriva documental de release
 
 **Severidad:** Baja
 **Componente:** `KNOWN_GAPS.md`, `README.md`
-**Estado:** confirmado
+**Estado:** cerrado (2026-11-11) — documentación revisada contra el árbol v0.9.5.
 
 ### Qué pasa
 
@@ -299,6 +312,11 @@ El conteo de tests no es un contrato, pero alimenta la confianza y ya no coincid
 
 `KNOWN_GAPS.md` nombra la versión publicada; el README no afirma un conteo que la
 suite no produce.
+
+**Cierre (2026-11-11).** `KNOWN_GAPS.md` nombra v0.9.5 y se revisó contra el
+árbol; el README ya no fija un número de tests, sino que remite a la suite
+completa. `docs/parity-matrix.md` y `docs/semantics.md` se revisaron en la misma
+pasada, incluida la política de revalidación y `Vary` del caché.
 
 ---
 

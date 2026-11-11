@@ -424,7 +424,9 @@ pub fn render(source: Source, conv: &Conv, counts: Counts) -> String {
             let _ = writeln!(
                 out,
                 "- `{}` — *{}*: {}",
-                note.directive, note.context, note.message
+                single_line(&note.directive),
+                single_line(&note.context),
+                single_line(&note.message)
             );
         }
         out.push('\n');
@@ -445,7 +447,7 @@ pub fn render(source: Source, conv: &Conv, counts: Counts) -> String {
         );
     } else {
         for (message, count) in gaps {
-            let _ = writeln!(out, "- {message} ({count})");
+            let _ = writeln!(out, "- {} ({count})", single_line(message));
         }
         out.push_str(
             "\nCada uno de estos puntos es un cambio de comportamiento frente al proxy de origen. \
@@ -460,6 +462,15 @@ pub fn render(source: Source, conv: &Conv, counts: Counts) -> String {
          3. `eqproxy config diff --help` para comparar con la configuración actual antes de `config apply`."
     );
     out
+}
+
+/// Keeps one source note on one Markdown line. A directive can contain a
+/// newline (quoted or malformed source text); without this, its second line
+/// would be indistinguishable from another classification bullet.
+fn single_line(text: &str) -> String {
+    text.chars()
+        .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+        .collect()
 }
 
 fn source_label(source: Source) -> &'static str {
@@ -494,6 +505,22 @@ mod tests {
         assert_eq!(
             report_with_paths("sin marcadores", "x", "y"),
             "sin marcadores"
+        );
+    }
+
+    #[test]
+    fn a_multiline_directive_does_not_create_a_second_bullet() {
+        let mut conv = Conv::new();
+        conv.review(1, "first\n- `second`", "ctx", "message\n- `tail`");
+        let counts = conv.classify();
+        let report = render(Source::Nginx, &conv, counts);
+        assert_eq!(
+            report
+                .lines()
+                .filter(|line| line.starts_with("- `"))
+                .count(),
+            1,
+            "one classified directive must render one bullet:\n{report}"
         );
     }
 }

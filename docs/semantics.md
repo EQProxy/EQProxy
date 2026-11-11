@@ -1,6 +1,6 @@
 # Semantics, limits and what EQProxy does NOT do
 
-**Status:** public behaviour reference (v0.9.1, boxes H7 · H8). Every claim on
+**Status:** public behaviour reference (v0.9.5, revised 2026-11-11). Every claim on
 this page comes from [SPEC.md](../SPEC.md), an accepted ADR or a repository
 test; when a figure is a design target rather than a measurement, the page says
 so. It does not announce compatibility: the SPEC sentence still stands —
@@ -179,10 +179,26 @@ not hidden behind the same word.
   disabled). Only `GET` is stored; `HEAD` serves headers from the `GET` entry.
   It is neither consulted nor stored if the request carries `Cookie`,
   `Authorization`, `Range` or `Cache-Control: no-store`, or if the response
-  carries `Set-Cookie`; `206`/`302` bypass the cache. The key is method +
+  carries `Set-Cookie`, `WWW-Authenticate` or `Proxy-Authenticate`;
+  `206`/`302` bypass the cache. The key is method +
   scheme + lower-case host + target + values of the headers listed in `Vary`;
-  `Vary: *` or `Vary` over `Cookie`/`Authorization` makes the response
-  unstorable. A backend with cookie affinity avoids the cache.
+  `Vary` names are lowercased and split on commas, and repeated request fields
+  are joined with `, ` (exact match, no folding). `Vary: *` or `Vary` over
+  `Cookie`/`Authorization` makes the response unstorable. A backend with cookie
+  affinity avoids the cache.
+- **Revalidation.** A clean `304` that omits `Vary` keeps the stored key and may
+  update only `ETag`, `Last-Modified`, `Date`, `Content-Type`,
+  `Content-Language`, `Content-Location` and `Expires`; the body and the key
+  stay unchanged. A `304` carrying `Set-Cookie`, `WWW-Authenticate`,
+  `Proxy-Authenticate`, `Cache-Control: private`/`no-store`, `Vary: *`, a
+  `Vary` over `Cookie`/`Authorization`, or a `Vary` different from the stored
+  one invalidates the entry in memory and on disk. The current request then
+  retries in full; a second `304` to that unconditional retry is `502`.
+- **Client directives.** Per request, `Cache-Control: no-cache` and
+  `max-age=0` force revalidation; `min-fresh` requires the remaining freshness;
+  `max-stale` permits a stale entry within its margin. Malformed or negative
+  delta-seconds are treated as zero. The policy belongs to the request and is
+  never written into the shared entry.
 - **Limits.** `default_ttl` 1 s..1 day (60 s by default; `s-maxage`/`max-age`
   shorten it, never extend it); `max_memory_bytes` 1 MiB..1 GiB (64 MiB by
   default) with LRU; `max_entry_bytes` 64 KiB..64 MiB (1 MiB by default) and
@@ -190,9 +206,9 @@ not hidden behind the same word.
   bound are assembled; chunked/close-delimited bodies bypass the cache. There
   is a cache-lock per key and a bounded `lock_wait`.
 - **What it does NOT do.** It does not implement `stale-while-revalidate`,
-  `stale-if-error`, `only-if-cached`, `Pragma`, client `If-Modified-Since`
-  evaluation or `Vary` folding beyond the exact match (ADR-0034). The cache is
-  per process; it is not shared between instances.
+  `stale-if-error`, `only-if-cached`, `Pragma` or client `If-Modified-Since`
+  evaluation, nor `Vary` folding beyond the exact match (ADR-0034). The cache
+  is per process; it is not shared between instances.
 
 ## 10. Response compression
 

@@ -1,8 +1,8 @@
-# Production verdict — EQProxy v0.9.5
+# Production verdict — EQProxy v0.9.6
 
 **Verdict: NOT PRODUCTION READY.**
 
-This page is the production verdict for the v0.9.5 hardening tree. It separates
+This page is the production verdict for the v0.9.6 hardening tree. It separates
 what has actually been executed from what is still a hypothesis, a local-only
 result or a known open defect. A green local build is not a production
 declaration.
@@ -12,9 +12,9 @@ declaration.
 | Item | State |
 |---|---|
 | Branch | `release/v0.9.5` |
-| Source revision | `a0ac3fc` plus the local P0-8/P0-9 commit |
-| Version | `0.9.5` in `Cargo.toml`; `CHANGELOG.md` has `## [v0.9.5]` |
-| Tag | annotated `v0.9.5` → `a76f017`, **local only**; no remote tag |
+| Source revision | `c9234d4` plus the v0.9.6 release-metadata commit (the tag target) |
+| Version | `0.9.6` in `Cargo.toml`; `CHANGELOG.md` has `## [v0.9.6]` |
+| Tag | annotated `v0.9.6` → release commit, **local only**; `v0.9.5` remains at `a76f017`; no remote tag |
 | Published artifact | **none**: no push, GitHub release, registry image, digest promotion or re-pull |
 | Final local suite | `cargo test --workspace --locked` → **807 passed, 0 failed, 2 ignored** (39 result blocks); see [P0-8/P0-9 evidence](evidence/v095-p0-8-p0-9.md) |
 
@@ -57,7 +57,7 @@ declaration.
 - **P1-1 / architectures:** no native `linux/amd64` journey on `netcup-bench`
   and no native `linux/arm64` journey on `oracle-quasar` for this tree.
 - **Docker / Scout:** no image build, no native image E2E and no Docker Scout
-  critical/high gate for v0.9.5. **NOT EXECUTED.**
+  critical/high gate for v0.9.6. **NOT EXECUTED.**
 - **Publication:** no push, remote tag, GitHub release, image digest or
   checksum verification of a published artifact exists.
 - **P1-4:** version and changelog exist, but the release is not closed; the
@@ -93,7 +93,7 @@ semantics (P1-9), and supply-chain/CI evidence (P1-10).
   adversarial tests are not executed here.
 - **macOS** is the local build platform; the release image and both Linux
   architectures are unverified for this tree.
-- **No users outside the author.** v0.9.5 has not been operated in production
+- **No users outside the author.** v0.9.6 has not been operated in production
   and does not claim production readiness.
 
 ## Conditions required before a production declaration
@@ -113,4 +113,5 @@ PRODUCTION READY**.
 - [P0-5 trailer budget and RSS](evidence/v095-p0-5.md)
 - [P0-7/P1 fuzz, CI and audit record](evidence/v095-p1.md)
 - [EXT-H reproduction](evidence/v095-ext-h-repro.md)
-- [Release preparation and publication status](release-0.9.5.md)
+- [Current release preparation and publication status](release-0.9.6.md)
+- [Historical v0.9.5 preparation record](release-0.9.5.md)

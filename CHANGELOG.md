@@ -5,14 +5,35 @@ Fixed); versions are `vMAJOR.MINOR.PATCH` git tags.
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [v0.9.6] — 2026-11-11
+
 ### Added
 
 - **Fuzz CI and seeded campaigns.** `.github/workflows/fuzz.yml` checks the
   fuzz workspace, builds `framing`, `rules` and `config_import`, and runs a
-  short seeded campaign manually or on a schedule.
+  short seeded campaign manually or on a schedule. The workflow is committed
+  but has not run in GitHub Actions; P0-7 remains open until a remote run and
+  its artifacts are cited.
 
 ### Fixed
 
+- **P0-8: HAProxy `hdr(<name>)` and `hdr_dom(<name>)` stay distinct.** The
+  importer emits literal header conditions for `hdr(...)` and the port-free
+  Host matcher for `hdr_dom(host)`; a bare `hdr`/`hdr_dom` token is rejected
+  instead of becoming a Host rule. The real-binary E2E proves that
+  `hdr(host)` keeps the port, `hdr_dom(host)` strips it, and
+  `hdr(X-Tenant) -i` remains a header match. Evidence:
+  [v095-p0-8-p0-9](docs/evidence/v095-p0-8-p0-9.md).
+- **M-01: HTTP/1.0 chunked framing remains fixed and is re-verified.** An
+  HTTP/1.0 request carrying `Transfer-Encoding` is rejected, and a chunked
+  origin response is dechunked, stripped of `Transfer-Encoding`/`Trailer`,
+  close-delimited and marked `Connection: close`. The unit test and both E2E
+  tests were red without the two HTTP/1.0 halves (exit 101) and green after
+  restoring them; the exact output is in
+  [v095-p0-8-p0-9](docs/evidence/v095-p0-8-p0-9.md). The fix is inherited
+  from v0.9.5, which is an ancestor of this tree.
 - **`Metrics` stays constructible in a patch release.** The AUD-03 trailer
   counter moved out of a private field on the public `Metrics` struct and into
   the opaque `DetailMetrics` substructure, preserving the original public field
@@ -30,6 +51,8 @@ Fixed); versions are `vMAJOR.MINOR.PATCH` git tags.
   `WWW-Authenticate` or `Proxy-Authenticate` is never stored, and a `304`
   carrying either header invalidates the entry. Contract tests cover the
   direct miss and the `Vary` multi-value key.
+
+Release evidence: [docs/release-0.9.6.md](docs/release-0.9.6.md).
 
 ## [v0.9.5] — 2026-11-11
 

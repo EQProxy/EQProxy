@@ -195,7 +195,8 @@ pub(crate) async fn serve(
             pos: 0,
             inner: reader,
         };
-        let relayed = relay_response(BufReader::new(resumed), &mut respond, false, cfg).await;
+        let relayed =
+            relay_response(BufReader::new(resumed), &mut respond, false, cfg, metrics).await;
         if let Err(err) = relayed {
             eprintln!(
                 "WARN [{}] WebSocket refusal could not be relayed: {err:?}",

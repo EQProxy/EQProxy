@@ -140,6 +140,10 @@ pub struct Metrics {
     pub compression_bytes_in: AtomicU64,
     /// Compressed bytes written to the client (gzip payload, no framing).
     pub compression_bytes_out: AtomicU64,
+    /// Chunked trailer sections refused for crossing the byte/field budget.
+    /// Kept private so adding it does not change the public snapshot shape;
+    /// operators and tests read it through [`Metrics::trailer_limit_exceeded`].
+    trailer_limit_exceeded: AtomicU64,
     /// HTTP/3 connections that ended with a normal close (`H3_NO_ERROR` or
     /// QUIC application code 0): not an error, not logged.
     pub h3_clean_closes: AtomicU64,
@@ -785,6 +789,19 @@ impl Metrics {
                 Some(v.saturating_sub(1))
             });
         self.connections_completed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Counts a chunked trailer section refused for exceeding the shared
+    /// byte/field budget (AUD-03). The counter is private so the public
+    /// `MetricsSnapshot` layout stays stable for downstream users.
+    pub fn note_trailer_limit_exceeded(&self) {
+        self.trailer_limit_exceeded.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Number of chunked trailer sections refused by the budget (AUD-03).
+    #[must_use]
+    pub fn trailer_limit_exceeded(&self) -> u64 {
+        self.trailer_limit_exceeded.load(Ordering::Relaxed)
     }
 }
 

@@ -41,7 +41,8 @@ use eqproxy_core::Metrics;
 
 use crate::http1::{
     BodyFraming, CopyError, FORBIDDEN_TRAILERS, HeadLimits, MAX_LINE_BYTES, Prefixed,
-    parse_chunk_size, parse_header_line, parse_response_head, read_crlf_line, read_head,
+    TrailerBudget, parse_chunk_size, parse_header_line, parse_response_head, read_crlf_line,
+    read_head,
 };
 use crate::proxy::ResolvedListener;
 
@@ -119,6 +120,10 @@ pub(crate) enum StreamError {
     /// (RFC 9113 §8.1.4): replaying it is safe, and the session itself is
     /// still healthy.
     StreamRefused,
+    /// A chunked trailer section crossed the shared AUD-03 budget. The stream
+    /// is reset with `ENHANCE_YOUR_CALM`, never ended as if the trailers were
+    /// complete.
+    TrailerLimit,
 }
 
 pub(crate) fn copy_error(err: CopyError) -> StreamError {
@@ -130,6 +135,7 @@ pub(crate) fn copy_error(err: CopyError) -> StreamError {
         // answers that with a 413 before relaying it here; if it ever
         // reaches the relay, cutting the stream is the only safe answer.
         CopyError::TooLarge => StreamError::Framing,
+        CopyError::TrailerLimit => StreamError::TrailerLimit,
     }
 }
 
@@ -312,9 +318,13 @@ async fn exchange(
     });
 
     let reader = BufReader::new(&mut pipe_read);
-    let relayed = relay_response(reader, &mut respond, head_request, &cfg).await;
-    if relayed.is_err() {
-        respond.send_reset(h2::Reason::INTERNAL_ERROR);
+    let relayed = relay_response(reader, &mut respond, head_request, &cfg, &metrics).await;
+    if let Err(err) = relayed {
+        let reason = match err {
+            StreamError::TrailerLimit => h2::Reason::ENHANCE_YOUR_CALM,
+            _ => h2::Reason::INTERNAL_ERROR,
+        };
+        respond.send_reset(reason);
     }
     // The engine finishes on its own once the pipe reaches EOF (the body
     // task shuts it down); bounded wait so no task outlives its stream.
@@ -499,6 +509,7 @@ pub(crate) async fn relay_response<R>(
     respond: &mut h2::server::SendResponse<Bytes>,
     head_request: bool,
     cfg: &ResolvedListener,
+    metrics: &Metrics,
 ) -> Result<(), StreamError>
 where
     R: AsyncRead + Unpin,
@@ -599,7 +610,7 @@ where
             send.send_data(Bytes::new(), true)
                 .map_err(|_| StreamError::H2)
         }
-        BodyFraming::Chunked => relay_chunked(&mut body, &mut send, &mut buf, idle).await,
+        BodyFraming::Chunked => relay_chunked(&mut body, &mut send, &mut buf, idle, metrics).await,
         BodyFraming::UntilEof => loop {
             let capacity = capacity(&mut send, DATA_CHUNK, idle).await?;
             let want = capacity.min(DATA_CHUNK);
@@ -617,7 +628,11 @@ where
     match relayed {
         Ok(()) => Ok(()),
         Err(err) => {
-            send.send_reset(h2::Reason::INTERNAL_ERROR);
+            let reason = match err {
+                StreamError::TrailerLimit => h2::Reason::ENHANCE_YOUR_CALM,
+                _ => h2::Reason::INTERNAL_ERROR,
+            };
+            send.send_reset(reason);
             Err(err)
         }
     }
@@ -630,6 +645,7 @@ async fn relay_chunked<R>(
     send: &mut h2::SendStream<Bytes>,
     buf: &mut [u8],
     idle: Duration,
+    metrics: &Metrics,
 ) -> Result<(), StreamError>
 where
     R: AsyncRead + Unpin,
@@ -641,6 +657,7 @@ where
         let size = parse_chunk_size(&line).map_err(copy_error)?;
         if size == 0 {
             let mut trailers = HeaderMap::new();
+            let mut budget = TrailerBudget::new(metrics);
             loop {
                 let line = read_crlf_line(body, idle, MAX_LINE_BYTES)
                     .await
@@ -648,6 +665,7 @@ where
                 if line == b"\r\n" {
                     break;
                 }
+                budget.observe(&line).map_err(copy_error)?;
                 let (name, value) =
                     parse_header_line(&line[..line.len() - 2]).map_err(|_| StreamError::Framing)?;
                 if FORBIDDEN_TRAILERS.contains(&name.as_str()) {

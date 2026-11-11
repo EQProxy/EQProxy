@@ -1704,3 +1704,184 @@ async fn access_log_records_parsed_and_unparsed_requests() {
         .expect("serve stops")
         .expect("serve");
 }
+
+fn gzip_for_trailers() -> eqproxy_net::compression::ResolvedCompression {
+    eqproxy_net::compression::ResolvedCompression::new(
+        true,
+        false,
+        6,
+        5,
+        0,
+        &["text/plain".to_owned()],
+    )
+    .expect("gzip compression settings")
+}
+
+/// Real chunked origin that emits a small body followed by `trailers`
+/// generated lines. It never stores the whole section: the proxy must cut it.
+async fn start_trailer_backend(trailers: usize, padding: usize) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind trailer backend");
+    let addr = listener.local_addr().expect("trailer backend addr");
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                let mut total = 0usize;
+                loop {
+                    match socket.read(&mut buf[total..]).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => total += n,
+                    }
+                    if buf[..total].windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                if socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\
+                          Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n\
+                          4\r\nbody\r\n0\r\n",
+                    )
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                for index in 0..trailers {
+                    let mut line = format!("x-trailer-{index}: ");
+                    line.push_str(&"x".repeat(padding));
+                    line.push_str("\r\n");
+                    if socket.write_all(line.as_bytes()).await.is_err() {
+                        return;
+                    }
+                }
+                let _ = socket.write_all(b"\r\n").await;
+            });
+        }
+    });
+    addr
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs TCP sockets: miri does not support networking (rust-lang/miri#3449)"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn compressed_h1_trailer_section_is_cut_at_the_budget() {
+    // Keep each line below MAX_LINE_BYTES (8 KiB): the budget, not the
+    // per-line parser, must be what stops this section.
+    let backend = start_trailer_backend(100_000, 8 * 1024 - 64).await;
+    let metrics = Arc::new(Metrics::default());
+    let cfg = http_listener_cfg(
+        "127.0.0.1:0".parse().expect("addr"),
+        backend,
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    )
+    .with_compression(gzip_for_trailers());
+    let (proxy_addr, handle, serve) = start_proxy(cfg, Arc::clone(&metrics)).await;
+
+    let mut client = TcpStream::connect(proxy_addr).await.expect("connect");
+    client
+        .write_all(
+            b"GET /trailers HTTP/1.1\r\nHost: t\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n",
+        )
+        .await
+        .expect("write GET");
+    let mut response = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(10), client.read_to_end(&mut response))
+        .await
+        .expect("the proxy must cut and close the exchange");
+    let text = String::from_utf8_lossy(&response);
+    assert!(
+        text.starts_with("HTTP/1.1 200 OK"),
+        "the committed response head must remain visible: {text:?}"
+    );
+    common::wait_for_counter("trailer_limit_exceeded", 1, || {
+        metrics.trailer_limit_exceeded()
+    })
+    .await;
+
+    handle.trigger();
+    tokio::time::timeout(WAIT, serve)
+        .await
+        .expect("serve stops")
+        .expect("serve");
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs TCP sockets: miri does not support networking (rust-lang/miri#3449)"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_short_trailer_section_still_crosses_compression() {
+    let backend = start_trailer_backend(2, 8).await;
+    let metrics = Arc::new(Metrics::default());
+    let cfg = http_listener_cfg(
+        "127.0.0.1:0".parse().expect("addr"),
+        backend,
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    )
+    .with_compression(gzip_for_trailers());
+    let (proxy_addr, handle, serve) = start_proxy(cfg, Arc::clone(&metrics)).await;
+
+    let mut client = TcpStream::connect(proxy_addr).await.expect("connect");
+    client
+        .write_all(
+            b"GET /trailers HTTP/1.1\r\nHost: t\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n",
+        )
+        .await
+        .expect("write GET");
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), client.read_to_end(&mut response))
+        .await
+        .expect("the normal response must finish")
+        .expect("read normal response");
+    let text = String::from_utf8_lossy(&response);
+    assert!(text.starts_with("HTTP/1.1 200 OK"), "head: {text:?}");
+    assert_eq!(metrics.trailer_limit_exceeded(), 0);
+
+    handle.trigger();
+    tokio::time::timeout(WAIT, serve)
+        .await
+        .expect("serve stops")
+        .expect("serve");
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs TCP sockets: miri does not support networking (rust-lang/miri#3449)"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn request_trailer_over_budget_is_a_client_error() {
+    let backend = start_http_backend().await;
+    let metrics = Arc::new(Metrics::default());
+    let cfg = http_listener_cfg(
+        "127.0.0.1:0".parse().expect("addr"),
+        backend,
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    );
+    let (proxy_addr, handle, serve) = start_proxy(cfg, Arc::clone(&metrics)).await;
+
+    let mut request = b"POST /x HTTP/1.1\r\nHost: t\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\nbody\r\n0\r\n".to_vec();
+    for index in 0..129 {
+        request.extend_from_slice(format!("x-trailer-{index}: v\r\n").as_bytes());
+    }
+    request.extend_from_slice(b"\r\n");
+    let response = send_and_read(proxy_addr, &request).await;
+    assert!(
+        response.starts_with("HTTP/1.1 400"),
+        "the request trailer budget must be an explicit 400: {response:?}"
+    );
+    assert_eq!(metrics.trailer_limit_exceeded(), 1);
+
+    handle.trigger();
+    tokio::time::timeout(WAIT, serve)
+        .await
+        .expect("serve stops")
+        .expect("serve");
+}

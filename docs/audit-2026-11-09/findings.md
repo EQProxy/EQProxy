@@ -158,7 +158,7 @@ petición condicional. `max-age` mayor que la edad sigue dando `HIT`.
 **Severidad:** Media (disponibilidad)
 **Componente:** `pump_chunked_plain` (`http1.rs:1404-1432`), relay h2
 (`http2.rs:643-666`)
-**Estado:** mecanismo confirmado por código; medición de memoria **NOT EXECUTED**
+**Estado:** cerrado y commiteado (2026-11-11); medición real ejecutada sobre el binario y límites impuestos en h1/h2/h3. Evidencia: [v095-p0-5](../evidence/v095-p0-5.md)
 
 ### Qué pasa
 
@@ -185,23 +185,35 @@ Requiere control del upstream o un bug grave del upstream; no lo provoca un
 cliente final por sí solo. Aun así, un proxy inverso no debe confiar en que el
 upstream termine.
 
-### Reproducción pendiente
+### Reproducción y evidencia (2026-11-11)
 
-No se ejecutó la medición. El plan es: origen real que responde `Transfer-Encoding:
-chunked` con cuerpo pequeño y N trailers de ~8 KiB, listener con compresión
-activada, medir RSS del proceso con `ps -o rss= -p <pid>` mientras N crece, y
-repetir con h2. Sin esa medición no se reporta una cifra de memoria; solo el
-mecanismo.
+La medición se ejecutó con el binario real y un origen real, no con una
+estimación: listener h1 con compresión gzip, origen `chunked` con cuerpo
+pequeño y **100 000 trailers** de ~7,9 KiB. `ps -o rss= -p <pid>` midió el
+proceso vivo: **14 048 KiB baseline → 18 704 KiB peak**, crecimiento de
+**4 656 KiB** frente a un presupuesto declarado de 64 MiB. La respuesta se cortó
+tras el head comprometido y el contador privado `trailer_limit_exceeded` quedó
+en 1. La prueba es `eqproxy-cli/tests/trailer_budget_e2e.rs`; la evidencia
+completa, comandos y límites están en [v095-p0-5](../evidence/v095-p0-5.md).
 
-### Corrección propuesta
+La ruta h2 se cubre con `h2_resets_a_chunked_response_over_the_trailer_budget`
+y la h3 con `http3_resets_a_chunked_response_over_the_trailer_budget`; ambas
+usan clientes reales (h2/QUIC), no mocks. La suite h3 se repitió 20/20 para
+comprobar que el corte no depende de una carrera del fixture.
 
-- Constantes `MAX_TRAILER_BYTES` (por ejemplo 64 KiB) y `MAX_TRAILER_FIELDS` (por
-  ejemplo 128), aplicadas en los cuatro caminos (h1 capped, h1 dechunked, h1
-  comprimido, h2/h3).
-- Al superar el límite: `502` al cliente y cierre de la conexión de origen; en h2,
-  `RST_STREAM` con `ENHANCE_YOUR_CALM` o `PROTOCOL_ERROR`.
-- Métrica `trailer_limit_exceeded` para alertar.
-- Test E2E que envía N trailers y comprueba el corte y el RSS acotado.
+### Corrección aplicada
+
+- Constantes `MAX_TRAILER_BYTES = 64 * 1024` y `MAX_TRAILER_FIELDS = 128` en
+  `eqproxy-net/src/http1.rs`, con un `TrailerBudget` compartido aplicado en
+  `copy_chunked_capped`, `copy_chunked_dechunked`, `pump_chunked_plain` y los
+  relays h2/h3.
+- Petición h1 sobre presupuesto → `400`; respuesta h1 ya comprometida → cierre
+  explícito (no se puede enviar un `502` después del `200` sin bufferizar el
+  cuerpo); h2 → `RST_STREAM(ENHANCE_YOUR_CALM)`; h3 →
+  `H3_GENERAL_PROTOCOL_ERROR`.
+- Métrica privada `trailer_limit_exceeded`, con accessor público, que no cambia
+  el layout de `MetricsSnapshot`.
+- Tests unitarios, E2E h1/h2/h3 y journey de RSS con 100 000 trailers.
 
 ### Criterio de aceptación
 

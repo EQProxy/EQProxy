@@ -10,9 +10,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use eqproxy_net::cache::{
-    self, Cache, CacheKey, CacheSettings, Lookup, ResponseFacts, StoredParts,
-};
+use eqproxy_net::cache::{self, Cache, CacheSettings, Lookup, ResponseFacts, StoredParts};
 use eqproxy_net::http1::{HeadLimits, parse_request_head, parse_response_head};
 
 // ---------------------------------------------------------------------------
@@ -84,7 +82,7 @@ fn mutate(seed: &[u8], rng: &mut Rng) -> Vec<u8> {
             3 => {
                 let at = rng.below(out.len());
                 let len = 1 + rng.below(8.min(out.len() - at));
-                out.splice(at..at + len, [b'\r', b'\n']);
+                out.splice(at..at + len, *b"\r\n");
             }
             _ => {
                 let at = rng.below(out.len() + 1);
@@ -139,7 +137,11 @@ fn p1_parsers_never_panic_and_reject_explicitly() {
 // ---------------------------------------------------------------------------
 
 fn rebuild(request: &eqproxy_net::http1::RequestHead) -> Vec<u8> {
-    let version = if request.version == 10 { "HTTP/1.0" } else { "HTTP/1.1" };
+    let version = if request.version == 10 {
+        "HTTP/1.0"
+    } else {
+        "HTTP/1.1"
+    };
     let mut head = format!("{} {} {version}", request.method, request.target).into_bytes();
     if !request.host.is_empty() {
         head.extend_from_slice(b"\r\nhost: ");
@@ -221,14 +223,24 @@ fn p3_effective_ttl_never_exceeds_default() {
                 "ttl {ttl:?} exceeded default {default:?} for {values:?}"
             );
             let lower: Vec<String> = values.iter().map(|v| v.to_lowercase()).collect();
-            if lower.iter().any(|v| v.split(',').any(|d| d.trim() == "no-cache")) {
-                assert_eq!(ttl, Duration::ZERO, "no-cache must zero the TTL: {values:?}");
+            if lower
+                .iter()
+                .any(|v| v.split(',').any(|d| d.trim() == "no-cache"))
+            {
+                assert_eq!(
+                    ttl,
+                    Duration::ZERO,
+                    "no-cache must zero the TTL: {values:?}"
+                );
             }
         }
     }
     // s-maxage wins over max-age regardless of order.
     assert_eq!(
-        cache::effective_ttl(Duration::from_secs(100), &["max-age=50, s-maxage=10".into()]),
+        cache::effective_ttl(
+            Duration::from_secs(100),
+            &["max-age=50, s-maxage=10".into()]
+        ),
         Duration::from_secs(10)
     );
 }
@@ -309,10 +321,7 @@ fn p5_end_to_end_removes_connection_nominated_headers() {
             "{forbidden} survived end_to_end: {names:?}"
         );
     }
-    assert!(
-        names.contains(&"content-type"),
-        "end-to-end header dropped"
-    );
+    assert!(names.contains(&"content-type"), "end-to-end header dropped");
     assert!(names.contains(&"x-keep"), "unrelated header dropped");
     // Stored metadata is deliberately kept so a later HIT can revalidate and
     // forward the origin's freshness/validators (ADR-0034).
@@ -467,7 +476,10 @@ async fn p9_revoking_304_invalidates_clean_304_refreshes() {
 
     // Clean 304: only metadata changes, body stays.
     let clean = facts(&[("etag", "\"v2\""), ("cache-control", "max-age=10")]);
-    match cache.refresh(key.clone(), &old, &clean, Duration::from_secs(10)).await {
+    match cache
+        .refresh(key.clone(), &old, &clean, Duration::from_secs(10))
+        .await
+    {
         cache::RefreshOutcome::Refreshed(entry) => assert_eq!(entry_len(&entry), 4),
         cache::RefreshOutcome::Invalidated => panic!("clean 304 must refresh"),
     }
@@ -476,7 +488,9 @@ async fn p9_revoking_304_invalidates_clean_304_refreshes() {
     let revoking = facts(&[("set-cookie", "sid=1")]);
     assert!(
         matches!(
-            cache.refresh(key.clone(), &old, &revoking, Duration::from_secs(10)).await,
+            cache
+                .refresh(key.clone(), &old, &revoking, Duration::from_secs(10))
+                .await,
             cache::RefreshOutcome::Invalidated
         ),
         "Set-Cookie on 304 must invalidate the shared entry"

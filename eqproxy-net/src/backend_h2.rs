@@ -560,6 +560,7 @@ fn describe(err: StreamError) -> &'static str {
         StreamError::H3 => "HTTP/3 stream error",
         StreamError::Refused => "refused by a GOAWAY and not replayable",
         StreamError::StreamRefused => "reset with REFUSED_STREAM and not replayable",
+        StreamError::TrailerLimit => "chunked trailers exceeded their byte/field budget",
     }
 }
 

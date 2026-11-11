@@ -152,6 +152,48 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for MirrorTee<'_, W> {
     }
 }
 
+/// Maximum bytes and fields accepted in one chunked trailer section.
+///
+/// AUD-03: a hostile origin can otherwise keep a chunked body open with
+/// trailers forever. The section is deliberately small because trailers are
+/// metadata, not a second body; 64 KiB still leaves room for signatures and
+/// 128 fields covers normal tracing/cache metadata. Exceeding either limit
+/// is a protocol error, never a silent truncation.
+pub(crate) const MAX_TRAILER_BYTES: usize = 64 * 1024;
+/// Maximum number of trailer fields in one chunked trailer section.
+pub(crate) const MAX_TRAILER_FIELDS: usize = 128;
+
+/// Shared byte/field budget for one chunked trailer section (AUD-03).
+///
+/// The budget counts the complete wire line, including its CRLF, before the
+/// caller parses or forwards it. `observe` records the refusal exactly once
+/// on the process counter, so every h1/h2/h3 path exposes the same signal.
+pub(crate) struct TrailerBudget<'a> {
+    bytes: usize,
+    fields: usize,
+    metrics: &'a Metrics,
+}
+
+impl<'a> TrailerBudget<'a> {
+    pub(crate) fn new(metrics: &'a Metrics) -> Self {
+        Self {
+            bytes: 0,
+            fields: 0,
+            metrics,
+        }
+    }
+
+    pub(crate) fn observe(&mut self, line: &[u8]) -> Result<(), CopyError> {
+        self.bytes = self.bytes.saturating_add(line.len());
+        self.fields += 1;
+        if self.bytes > MAX_TRAILER_BYTES || self.fields > MAX_TRAILER_FIELDS {
+            self.metrics.note_trailer_limit_exceeded();
+            return Err(CopyError::TrailerLimit);
+        }
+        Ok(())
+    }
+}
+
 /// Headers forbidden in chunked trailers (T01).
 pub(crate) const FORBIDDEN_TRAILERS: [&str; 6] = [
     "host",
@@ -1082,6 +1124,9 @@ pub(crate) enum CopyError {
     /// that would cross is refused **before** its data is forwarded, and the
     /// exchange answers 413 instead of truncating silently.
     TooLarge,
+    /// A chunked trailer section crossed `MAX_TRAILER_BYTES` or
+    /// `MAX_TRAILER_FIELDS` (AUD-03).
+    TrailerLimit,
 }
 
 fn idle_copy_error(idle_counter: &AtomicU64) -> CopyError {
@@ -1218,10 +1263,11 @@ async fn copy_chunked<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     reader: &mut R,
     writer: &mut W,
     idle: Duration,
+    metrics: &Metrics,
     counter: &AtomicU64,
     idle_counter: &AtomicU64,
 ) -> Result<(), CopyError> {
-    copy_chunked_capped(reader, writer, idle, counter, idle_counter, None).await
+    copy_chunked_capped(reader, writer, idle, metrics, counter, idle_counter, None).await
 }
 
 /// [`copy_chunked`] with an optional payload cap (B-N19).
@@ -1235,11 +1281,13 @@ async fn copy_chunked_capped<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     reader: &mut R,
     writer: &mut W,
     idle: Duration,
+    metrics: &Metrics,
     counter: &AtomicU64,
     idle_counter: &AtomicU64,
     cap: Option<std::num::NonZeroU64>,
 ) -> Result<(), CopyError> {
     let mut total = 0u64;
+    let mut trailers = TrailerBudget::new(metrics);
     loop {
         let line = read_crlf_line(reader, idle, MAX_LINE_BYTES).await?;
         let size = parse_chunk_size(&line)?;
@@ -1251,13 +1299,16 @@ async fn copy_chunked_capped<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         total += size;
         write_with_timeout(writer, &line, idle).await?;
         if size == 0 {
-            // Trailers: empty or validated as headers; never framing.
+            // Trailers: empty or validated as headers; never framing. The
+            // shared budget is checked before the line is parsed or written
+            // (AUD-03), so an endless section cannot consume the proxy.
             loop {
                 let trailer = read_crlf_line(reader, idle, MAX_LINE_BYTES).await?;
                 if trailer == CRLF {
                     write_with_timeout(writer, CRLF, idle).await?;
                     return Ok(());
                 }
+                trailers.observe(&trailer)?;
                 let (name, _) = parse_header_line(&trailer[..trailer.len() - CRLF.len()])
                     .map_err(CopyError::Framing)?;
                 if FORBIDDEN_TRAILERS.contains(&name.as_str()) {
@@ -1296,21 +1347,25 @@ async fn copy_chunked_dechunked<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     reader: &mut R,
     writer: &mut W,
     idle: Duration,
+    metrics: &Metrics,
     counter: &AtomicU64,
     idle_counter: &AtomicU64,
 ) -> Result<(), CopyError> {
+    let mut trailers = TrailerBudget::new(metrics);
     loop {
         let line = read_crlf_line(reader, idle, MAX_LINE_BYTES).await?;
         let size = parse_chunk_size(&line)?;
         if size == 0 {
             // Consume the trailer section through its empty line. The
             // headers are still validated: a forbidden trailer must fail
-            // the exchange even though HTTP/1.0 will not receive it.
+            // the exchange even though HTTP/1.0 will not receive it. The
+            // budget is enforced even when the bytes are discarded.
             loop {
                 let trailer = read_crlf_line(reader, idle, MAX_LINE_BYTES).await?;
                 if trailer == CRLF {
                     return Ok(());
                 }
+                trailers.observe(&trailer)?;
                 let (name, _) = parse_header_line(&trailer[..trailer.len() - CRLF.len()])
                     .map_err(CopyError::Framing)?;
                 if FORBIDDEN_TRAILERS.contains(&name.as_str()) {
@@ -1405,9 +1460,11 @@ async fn pump_chunked_plain<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     reader: &mut R,
     writer: &mut W,
     idle: Duration,
+    metrics: &Metrics,
     idle_counter: &AtomicU64,
 ) -> Result<Vec<u8>, CopyError> {
     let scratch = AtomicU64::new(0);
+    let mut budget = TrailerBudget::new(metrics);
     let mut trailers = Vec::new();
     loop {
         let line = read_crlf_line(reader, idle, MAX_LINE_BYTES).await?;
@@ -1418,6 +1475,7 @@ async fn pump_chunked_plain<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                 if trailer == CRLF {
                     return Ok(trailers);
                 }
+                budget.observe(&trailer)?;
                 let (name, _) = parse_header_line(&trailer[..trailer.len() - CRLF.len()])
                     .map_err(CopyError::Framing)?;
                 if FORBIDDEN_TRAILERS.contains(&name.as_str()) {
@@ -1510,9 +1568,14 @@ async fn copy_compressed_body<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                 ),
                 async move {
                     let mut plain_write = plain_write;
-                    let result =
-                        pump_chunked_plain(reader, &mut plain_write, idle, &metrics.idle_timeouts)
-                            .await;
+                    let result = pump_chunked_plain(
+                        reader,
+                        &mut plain_write,
+                        idle,
+                        metrics,
+                        &metrics.idle_timeouts,
+                    )
+                    .await;
                     drop(plain_write);
                     result
                 },
@@ -1895,6 +1958,7 @@ async fn drain_body<T: AsyncRead + Unpin>(
             reader,
             &mut tokio::io::sink(),
             idle,
+            metrics,
             &discard,
             &metrics.idle_timeouts,
         )
@@ -3153,6 +3217,7 @@ where
                         from_client,
                         &mut tee,
                         h1.cfg.idle_timeout,
+                        &h1.metrics,
                         &h1.metrics.bytes_client_to_backend,
                         &h1.metrics.idle_timeouts,
                         h1.body_cap,
@@ -3166,6 +3231,7 @@ where
                         from_client,
                         &mut *backend_write,
                         h1.cfg.idle_timeout,
+                        &h1.metrics,
                         &h1.metrics.bytes_client_to_backend,
                         &h1.metrics.idle_timeouts,
                         h1.body_cap,
@@ -3268,6 +3334,7 @@ where
                             &mut from_backend,
                             client_write,
                             h1.cfg.idle_timeout,
+                            &h1.metrics,
                             &h1.metrics.bytes_backend_to_client,
                             &h1.metrics.idle_timeouts,
                         )
@@ -3277,6 +3344,7 @@ where
                             &mut from_backend,
                             client_write,
                             h1.cfg.idle_timeout,
+                            &h1.metrics,
                             &h1.metrics.bytes_backend_to_client,
                             &h1.metrics.idle_timeouts,
                         )
@@ -4765,6 +4833,27 @@ pub async fn serve_http<CR, CW>(
                     .await;
                     return;
                 }
+                Err(CopyError::TrailerLimit) => {
+                    // The trailer budget was crossed after the body was
+                    // forwarded. The client gets an explicit 400 and the
+                    // exchange is never pooled (AUD-03).
+                    metrics
+                        .http_requests_rejected
+                        .fetch_add(1, Ordering::Relaxed);
+                    if let Some(record) = access.as_mut() {
+                        record.status(400);
+                    }
+                    write_local(
+                        &mut client_write,
+                        cfg,
+                        &metrics,
+                        400,
+                        "trailer budget exceeded",
+                        head_only,
+                    )
+                    .await;
+                    return;
+                }
                 Err(CopyError::TooLarge) => {
                     // The exchange is abandoned: earlier chunks already reached
                     // the backend, so the connection is not pooled (dropped on
@@ -5593,10 +5682,12 @@ mod tests {
         let mut out = Vec::new();
         let countered = AtomicU64::new(0);
         let idle = AtomicU64::new(0);
+        let metrics = Metrics::default();
         let result = copy_chunked_capped(
             &mut reader,
             &mut out,
             Duration::from_secs(1),
+            &metrics,
             &countered,
             &idle,
             Some(std::num::NonZeroU64::new(16).expect("non-zero cap")),
@@ -5607,6 +5698,80 @@ mod tests {
             "a chunk of u64::MAX bytes must be refused by the cap, not added to the total"
         );
         assert!(out.is_empty(), "nothing of that frame may be forwarded");
+    }
+
+    #[test]
+    fn trailer_budget_accepts_128_fields_and_refuses_the_129th() {
+        let metrics = Metrics::default();
+        let mut budget = TrailerBudget::new(&metrics);
+        for index in 0..MAX_TRAILER_FIELDS {
+            let line = format!("x-trailer-{index}: v\r\n");
+            budget
+                .observe(line.as_bytes())
+                .expect("the configured field count must fit");
+        }
+        assert_eq!(metrics.trailer_limit_exceeded(), 0);
+        let error = budget
+            .observe(b"x-trailer-over: v\r\n")
+            .expect_err("the 129th trailer must be refused");
+        assert!(matches!(error, CopyError::TrailerLimit));
+        assert_eq!(
+            metrics.trailer_limit_exceeded(),
+            1,
+            "the refusal must be observable exactly once"
+        );
+    }
+
+    #[test]
+    fn trailer_budget_refuses_a_section_over_64_kib() {
+        let metrics = Metrics::default();
+        let mut budget = TrailerBudget::new(&metrics);
+        let at_limit = vec![b'x'; MAX_TRAILER_BYTES];
+        budget
+            .observe(&at_limit)
+            .expect("the byte limit is inclusive");
+        let error = budget
+            .observe(b"x\r\n")
+            .expect_err("one byte over the budget must be refused");
+        assert!(matches!(error, CopyError::TrailerLimit));
+        assert_eq!(metrics.trailer_limit_exceeded(), 1);
+    }
+
+    #[tokio::test]
+    async fn chunked_copy_stops_before_the_129th_trailer() {
+        let mut payload = b"4\r\nbody\r\n0\r\n".to_vec();
+        for index in 0..=MAX_TRAILER_FIELDS {
+            payload.extend_from_slice(format!("x-trailer-{index}: v\r\n").as_bytes());
+        }
+        payload.extend_from_slice(b"\r\n");
+        let (mut sender, mut reader) = tokio::io::duplex(128 * 1024);
+        sender.write_all(&payload).await.expect("seed chunked body");
+        sender.shutdown().await.expect("close seed writer");
+
+        let metrics = Metrics::default();
+        let counter = AtomicU64::new(0);
+        let idle = AtomicU64::new(0);
+        let mut out = Vec::new();
+        let result = copy_chunked_capped(
+            &mut reader,
+            &mut out,
+            Duration::from_secs(1),
+            &metrics,
+            &counter,
+            &idle,
+            None,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(CopyError::TrailerLimit)),
+            "the 129th trailer must stop the copy"
+        );
+        assert_eq!(metrics.trailer_limit_exceeded(), 1);
+        assert!(
+            !out.windows(b"x-trailer-128".len())
+                .any(|window| window == b"x-trailer-128"),
+            "the refused trailer must never be forwarded"
+        );
     }
 
     #[tokio::test]

@@ -5,6 +5,20 @@ Fixed); versions are `vMAJOR.MINOR.PATCH` git tags.
 
 ## [Unreleased]
 
+### Fixed
+
+- **AUD-03: HTTP trailers are bounded on h1, h2 and h3.** A shared
+  `TrailerBudget` enforces 64 KiB and 128 fields per trailer section in the
+  h1 chunked paths (including compression), the h2 relay and the h3 relay.
+  A request that exceeds it receives `400`; a response whose head is already
+  committed closes the connection instead of fabricating a `502`; h2 resets
+  with `ENHANCE_YOUR_CALM` and h3 with `H3_GENERAL_PROTOCOL_ERROR`; the
+  private `trailer_limit_exceeded` counter records each refusal. A real
+  binary journey with a compressed origin and 100 000 trailers measured
+  RSS `14 048 → 18 704 KiB` (4 656 KiB growth) against a 64 MiB budget;
+  normal 0–2 trailer responses are unchanged. Evidence:
+  [`docs/evidence/v095-p0-5.md`](docs/evidence/v095-p0-5.md).
+
 ## [v0.9.4] — 2026-11-08
 
 ### Fixed

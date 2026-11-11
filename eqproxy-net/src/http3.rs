@@ -41,8 +41,9 @@ use tokio::sync::mpsc;
 use eqproxy_core::Metrics;
 
 use crate::http1::{
-    BodyFraming, FORBIDDEN_TRAILERS, HeadLimits, MAX_LINE_BYTES, Prefixed, parse_chunk_size,
-    parse_header_line, parse_response_head, read_crlf_line, read_head,
+    BodyFraming, CopyError, FORBIDDEN_TRAILERS, HeadLimits, MAX_LINE_BYTES, MAX_TRAILER_FIELDS,
+    Prefixed, TrailerBudget, parse_chunk_size, parse_header_line, parse_response_head,
+    read_crlf_line, read_head,
 };
 use crate::http2::{ClientBody, StreamError, build_request_head, copy_error};
 use crate::proxy::{ResolvedListener, SharedCfg, current_cfg};
@@ -374,7 +375,14 @@ async fn exchange(
     // every step removes most of the per-request overhead of a GET.
     if body_done {
         if pipe_write.shutdown().await.is_ok() {
-            relay_stream(BufReader::new(pipe_read), &mut stream, head_request, &cfg).await;
+            relay_stream(
+                BufReader::new(pipe_read),
+                &mut stream,
+                head_request,
+                &cfg,
+                &metrics,
+            )
+            .await;
             if tokio::time::timeout(Duration::from_secs(1), &mut engine)
                 .await
                 .is_err()
@@ -389,12 +397,14 @@ async fn exchange(
 
     let (commands_tx, mut commands_rx) = mpsc::channel(RESPONSE_QUEUE);
     let relay_cfg = Arc::clone(&cfg);
+    let relay_metrics = Arc::clone(&metrics);
     let mut relay = tokio::spawn(async move {
         relay_response(
             BufReader::new(pipe_read),
             commands_tx,
             head_request,
             relay_cfg,
+            &relay_metrics,
         )
         .await;
     });
@@ -443,6 +453,11 @@ async fn exchange(
             }
             Event::Response(Command::Reset) | Event::RelayGone | Event::BodyError => {
                 stream.stop_stream(h3::error::Code::H3_INTERNAL_ERROR);
+                relay.abort();
+                break;
+            }
+            Event::Response(Command::ResetProtocol) => {
+                stream.stop_stream(h3::error::Code::H3_GENERAL_PROTOCOL_ERROR);
                 relay.abort();
                 break;
             }
@@ -534,6 +549,7 @@ enum Command {
     Trailers(HeaderMap),
     Finish,
     Reset,
+    ResetProtocol,
 }
 
 /// Waits for whichever happens first: a response command or the next request
@@ -705,12 +721,24 @@ impl Sink<'_> {
         }
     }
 
-    async fn reset(&mut self) {
+    async fn reset(&mut self, protocol_error: bool) {
         match self {
             Sink::Channel(commands) => {
-                let _ = commands.send(Command::Reset).await;
+                let command = if protocol_error {
+                    Command::ResetProtocol
+                } else {
+                    Command::Reset
+                };
+                let _ = commands.send(command).await;
             }
-            Sink::Stream(stream) => stream.stop_stream(h3::error::Code::H3_INTERNAL_ERROR),
+            Sink::Stream(stream) => {
+                let code = if protocol_error {
+                    h3::error::Code::H3_GENERAL_PROTOCOL_ERROR
+                } else {
+                    h3::error::Code::H3_INTERNAL_ERROR
+                };
+                stream.stop_stream(code);
+            }
         }
     }
 }
@@ -722,10 +750,11 @@ async fn relay_stream<R: AsyncRead + Unpin>(
     stream: &mut H3Stream,
     head_request: bool,
     cfg: &ResolvedListener,
+    metrics: &Metrics,
 ) {
     let mut sink = Sink::Stream(stream);
-    if let Err(err) = relay_inner(&mut reader, &mut sink, head_request, cfg).await {
-        sink.reset().await;
+    if let Err(err) = relay_inner(&mut reader, &mut sink, head_request, cfg, metrics).await {
+        sink.reset(matches!(err, StreamError::TrailerLimit)).await;
         if !matches!(err, StreamError::H3) {
             eprintln!(
                 "WARN [{}] HTTP/3 response relay stopped: {:?}",
@@ -743,10 +772,11 @@ async fn relay_response<R: AsyncRead + Unpin>(
     commands: mpsc::Sender<Command>,
     head_request: bool,
     cfg: Arc<ResolvedListener>,
+    metrics: &Metrics,
 ) {
     let mut sink = Sink::Channel(&commands);
-    if let Err(err) = relay_inner(&mut reader, &mut sink, head_request, &cfg).await {
-        sink.reset().await;
+    if let Err(err) = relay_inner(&mut reader, &mut sink, head_request, &cfg, metrics).await {
+        sink.reset(matches!(err, StreamError::TrailerLimit)).await;
         if !matches!(err, StreamError::H3) {
             eprintln!(
                 "WARN [{}] HTTP/3 response relay stopped: {:?}",
@@ -761,6 +791,7 @@ async fn relay_inner<R: AsyncRead + Unpin>(
     sink: &mut Sink<'_>,
     head_request: bool,
     cfg: &ResolvedListener,
+    metrics: &Metrics,
 ) -> Result<(), StreamError> {
     let idle = cfg.idle_timeout;
     let mut carry: Vec<u8> = Vec::new();
@@ -849,7 +880,7 @@ async fn relay_inner<R: AsyncRead + Unpin>(
             }
         }
         BodyFraming::Chunked => {
-            if relay_chunked(&mut body, sink, idle).await? {
+            if relay_chunked(&mut body, sink, idle, metrics).await? {
                 return Ok(());
             }
         }
@@ -872,6 +903,7 @@ async fn relay_chunked<R: AsyncRead + Unpin>(
     body: &mut Prefixed<R>,
     sink: &mut Sink<'_>,
     idle: Duration,
+    metrics: &Metrics,
 ) -> Result<bool, StreamError> {
     loop {
         let line = read_crlf_line(body, idle, MAX_LINE_BYTES)
@@ -880,13 +912,26 @@ async fn relay_chunked<R: AsyncRead + Unpin>(
         let size = parse_chunk_size(&line).map_err(copy_error)?;
         if size == 0 {
             let mut trailers = HeaderMap::new();
+            let mut budget = TrailerBudget::new(metrics);
+            let mut trailer_index = 0usize;
             loop {
-                let line = read_crlf_line(body, idle, MAX_LINE_BYTES)
-                    .await
-                    .map_err(copy_error)?;
+                let line = match read_crlf_line(body, idle, MAX_LINE_BYTES).await {
+                    Ok(line) => line,
+                    // The h1 engine in front of the h3 pipe may have already
+                    // enforced the same field budget and closed the pipe at
+                    // the 128th accepted trailer. That EOF is the budget,
+                    // not an unrelated truncation; the h1 engine already
+                    // counted it, so do not count it twice.
+                    Err(CopyError::Truncated) if trailer_index == MAX_TRAILER_FIELDS => {
+                        return Err(StreamError::TrailerLimit);
+                    }
+                    Err(err) => return Err(copy_error(err)),
+                };
                 if line == b"\r\n" {
                     break;
                 }
+                budget.observe(&line).map_err(copy_error)?;
+                trailer_index += 1;
                 let (name, value) =
                     parse_header_line(&line[..line.len() - 2]).map_err(|_| StreamError::Framing)?;
                 if FORBIDDEN_TRAILERS.contains(&name.as_str()) {

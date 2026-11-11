@@ -53,6 +53,13 @@ async fn start_proxy(
     cfg: ResolvedListener,
 ) -> (SocketAddr, shutdown::ShutdownHandle, JoinHandle<()>) {
     let metrics = Arc::new(Metrics::default());
+    start_proxy_with_metrics(cfg, metrics).await
+}
+
+async fn start_proxy_with_metrics(
+    cfg: ResolvedListener,
+    metrics: Arc<Metrics>,
+) -> (SocketAddr, shutdown::ShutdownHandle, JoinHandle<()>) {
     let bound: BoundProxy = bind(vec![cfg], Arc::clone(&metrics))
         .await
         .expect("bind proxy");
@@ -859,5 +866,53 @@ async fn access_log_marks_h2_requests_and_their_status() {
     assert_eq!(entry.backend.as_deref(), Some("api"));
     assert_eq!(log.dropped(), 0);
 
+    stop_proxy(handle, serve).await;
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs TCP sockets: miri does not support networking (rust-lang/miri#3449)"
+)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn h2_resets_a_chunked_response_over_the_trailer_budget() {
+    let mut raw = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\
+                    Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n\
+                    4\r\nbody\r\n0\r\n"
+        .to_vec();
+    for index in 0..129 {
+        raw.extend_from_slice(format!("x-trailer-{index}: v\r\n").as_bytes());
+    }
+    raw.extend_from_slice(b"\r\n");
+    let raw: &'static [u8] = Box::leak(raw.into_boxed_slice());
+    let origin = start_raw_origin(raw).await;
+    let metrics = Arc::new(Metrics::default());
+    let (proxy, handle, serve) =
+        start_proxy_with_metrics(http_listener(origin), Arc::clone(&metrics)).await;
+    let mut send = h2_connect(proxy).await;
+
+    let response = tokio::time::timeout(WAIT, h2_get(&mut send, "/chunked"))
+        .await
+        .expect("response in time");
+    let mut body = response.into_body();
+    let mut reset = false;
+    while let Some(chunk) = body.data().await {
+        if chunk.is_err() {
+            reset = true;
+            break;
+        }
+    }
+    if !reset {
+        let _ = body.trailers().await;
+    }
+    assert!(
+        reset,
+        "the h2 stream must be reset, not ended as a complete response"
+    );
+    common::wait_for_counter("trailer_limit_exceeded", 1, || {
+        metrics.trailer_limit_exceeded()
+    })
+    .await;
+
+    drop(send);
     stop_proxy(handle, serve).await;
 }

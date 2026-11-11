@@ -120,6 +120,19 @@ async fn start_origin() -> (SocketAddr, Origin) {
                     "/chunked" => {
                         b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n8\r\n chunked\r\n0\r\nx-origin: yes\r\n\r\n".to_vec()
                     }
+                    "/trailers" => {
+                        let mut out = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\
+                                      Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n\
+                                      4\r\nbody\r\n0\r\n"
+                            .to_vec();
+                        for index in 0..129 {
+                            out.extend_from_slice(
+                                format!("x-trailer-{index}: v\r\n").as_bytes(),
+                            );
+                        }
+                        out.extend_from_slice(b"\r\n");
+                        out
+                    }
                     "/slow" => {
                         tokio::time::sleep(Duration::from_millis(300)).await;
                         response(200, "text/plain", b"slow")
@@ -127,6 +140,12 @@ async fn start_origin() -> (SocketAddr, Origin) {
                     _ => response(200, "text/plain", b"ok"),
                 };
                 let _ = socket.write_all(&response).await;
+                // This fixture must let the trailer budget, not the fixture's
+                // immediate FIN, decide the outcome. A real origin may keep the
+                // connection open while it emits a trailer section.
+                if path == "/trailers" {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
                 let _ = socket.shutdown().await;
             });
         }
@@ -534,6 +553,66 @@ async fn http3_chunked_response_and_trailers_cross_the_translation() {
     assert_eq!(trailers.get("x-origin").expect("origin trailer"), "yes");
     // The h1 framing header never crosses: h3 has DATA frames.
     assert!(answer.headers.get("transfer-encoding").is_none());
+
+    drop(client);
+    drop(proxy);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn http3_resets_a_chunked_response_over_the_trailer_budget() {
+    let (origin, _seen) = start_origin().await;
+    let metrics = Arc::new(Metrics::default());
+    let (proxy, addr) = start_proxy(quic_listener(origin), Arc::clone(&metrics)).await;
+    let mut client = connect(addr).await;
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("https://localhost/trailers")
+        .body(())
+        .expect("h3 request");
+    let mut stream = tokio::time::timeout(WAIT, client.send.send_request(request))
+        .await
+        .expect("h3 request in time")
+        .expect("h3 request");
+    stream.finish().await.expect("finish h3 request");
+    let mut reset = false;
+    match tokio::time::timeout(WAIT, stream.recv_response()).await {
+        Ok(Ok(response)) => assert_eq!(response.status(), StatusCode::OK),
+        // The upstream budget can reset the stream before the buffered head
+        // reaches this client; that is still the explicit cut under test.
+        Ok(Err(_)) => reset = true,
+        Err(_) => panic!("h3 response in time"),
+    }
+
+    if !reset {
+        loop {
+            match tokio::time::timeout(WAIT, stream.recv_data())
+                .await
+                .expect("h3 data in time")
+            {
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(_) => {
+                    reset = true;
+                    break;
+                }
+            }
+        }
+    }
+    if !reset {
+        match tokio::time::timeout(WAIT, stream.recv_trailers()).await {
+            Ok(Err(_)) | Err(_) => reset = true,
+            Ok(Ok(_)) => {}
+        }
+    }
+    assert!(
+        reset,
+        "the h3 stream must be reset when the trailer budget is exceeded"
+    );
+    common::wait_for_counter("trailer_limit_exceeded", 1, || {
+        metrics.trailer_limit_exceeded()
+    })
+    .await;
 
     drop(client);
     drop(proxy);

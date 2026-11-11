@@ -143,6 +143,33 @@ pub(crate) fn is_hop_by_hop(name: &str) -> bool {
     HOP_BY_HOP.contains(&name)
 }
 
+/// Appends the lowercased tokens of one `Connection` value, skipping empty
+/// tokens and duplicates. RFC 9110 §7.6.1 makes every nominated header
+/// hop-by-hop, not just the fixed list above (ADV-02).
+fn push_connection_tokens(tokens: &mut Vec<String>, value: &[u8]) {
+    for token in value.split(|byte| *byte == b',') {
+        let token = token.trim_ascii();
+        let Ok(token) = std::str::from_utf8(token) else {
+            continue;
+        };
+        let token = token.to_ascii_lowercase();
+        if !token.is_empty() && !tokens.contains(&token) {
+            tokens.push(token);
+        }
+    }
+}
+
+/// The names nominated by every `Connection` header of an h2 request.
+fn request_connection_tokens(headers: &HeaderMap) -> Vec<String> {
+    let mut tokens = Vec::new();
+    for value in headers.get_all("connection") {
+        if let Ok(value) = value.to_str() {
+            push_connection_tokens(&mut tokens, value.as_bytes());
+        }
+    }
+    tokens
+}
+
 /// True when the first bytes already received are the h2c connection
 /// preface, waiting for the remaining bytes when they are a valid prefix.
 ///
@@ -377,6 +404,7 @@ pub(crate) fn build_request_head(
         // or to a client that is not talking to a reverse proxy.
         return Err(());
     }
+    let nominated = request_connection_tokens(headers);
     let mut head = Vec::with_capacity(256);
     head.extend_from_slice(method.as_str().as_bytes());
     head.push(b' ');
@@ -389,7 +417,11 @@ pub(crate) fn build_request_head(
     }
     for (name, value) in headers {
         let name_str = name.as_str();
-        if name_str == "host" || name_str == "content-length" || is_hop_by_hop(name_str) {
+        if name_str == "host"
+            || name_str == "content-length"
+            || is_hop_by_hop(name_str)
+            || nominated.iter().any(|token| token == name_str)
+        {
             continue;
         }
         let raw = value.as_bytes();
@@ -755,6 +787,16 @@ fn informational_response(status: u16) -> Response<()> {
 /// h2 headers from an already validated h1 response head: names lowercased,
 /// hop-by-hop and h1 framing headers removed, everything else preserved.
 pub(crate) fn response_headers(head: &[u8]) -> HeaderMap {
+    let mut nominated = Vec::new();
+    for line in head.split(|byte| *byte == b'\n').skip(1) {
+        let line = line.strip_suffix(&b"\r"[..]).unwrap_or(line);
+        let Some(colon) = line.iter().position(|byte| *byte == b':') else {
+            continue;
+        };
+        if line[..colon].eq_ignore_ascii_case(b"connection") {
+            push_connection_tokens(&mut nominated, &line[colon + 1..]);
+        }
+    }
     let mut headers = HeaderMap::new();
     for (index, line) in head.split(|byte| *byte == b'\n').enumerate() {
         if index == 0 {
@@ -767,7 +809,9 @@ pub(crate) fn response_headers(head: &[u8]) -> HeaderMap {
         let name = line[..colon].to_ascii_lowercase();
         let value = line[colon + 1..].trim_ascii();
         let name = match std::str::from_utf8(&name) {
-            Ok(name) if !is_hop_by_hop(name) => name,
+            Ok(name) if !is_hop_by_hop(name) && !nominated.iter().any(|token| token == name) => {
+                name
+            }
             _ => continue,
         };
         if let (Ok(name), Ok(value)) = (
@@ -884,6 +928,48 @@ mod tests {
         assert!(headers.get("transfer-encoding").is_none());
         assert!(headers.get("connection").is_none());
         assert!(headers.get("proxy-authenticate").is_none());
+    }
+
+    #[test]
+    fn response_headers_drop_connection_nominated_names() {
+        let head = b"HTTP/1.1 200 OK\r\nConnection: X-Secret\r\nX-Secret: leaked\r\nContent-Length: 2\r\nX-Keep: yes\r\n\r\n";
+        let headers = response_headers(head);
+        assert!(headers.get("x-secret").is_none(), "nominated header leaked");
+        assert_eq!(headers.get("x-keep").unwrap(), "yes");
+        assert_eq!(headers.get("content-length").unwrap(), "2");
+
+        let head = b"HTTP/1.1 200 OK\r\nconnection: a, b\r\nA: 1\r\nB: 2\r\nX-Keep: yes\r\n\r\n";
+        let headers = response_headers(head);
+        assert!(headers.get("a").is_none(), "first token leaked");
+        assert!(headers.get("b").is_none(), "second token leaked");
+        assert_eq!(headers.get("x-keep").unwrap(), "yes");
+
+        // The nomination may follow the header it names: the pre-pass must
+        // see the whole head before filtering, not just the previous lines.
+        let head =
+            b"HTTP/1.1 200 OK\r\nX-Secret: leaked\r\nConnection: X-Secret\r\nX-Keep: yes\r\n\r\n";
+        let headers = response_headers(head);
+        assert!(headers.get("x-secret").is_none(), "late nomination leaked");
+        assert_eq!(headers.get("x-keep").unwrap(), "yes");
+    }
+
+    #[test]
+    fn build_request_head_drops_connection_nominated_names() {
+        let uri: http::Uri = "https://api.example.com/echo".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.append("connection", HeaderValue::from_static("x-evil"));
+        headers.append("connection", HeaderValue::from_static("x-other, x-evil"));
+        headers.insert("x-evil", HeaderValue::from_static("smuggled-h2"));
+        headers.insert("x-other", HeaderValue::from_static("also-nominated"));
+        headers.insert("x-keep", HeaderValue::from_static("yes"));
+        let translated = build_request_head(&Method::GET, &uri, &headers, true).unwrap();
+        let head = head_of(&translated);
+        assert!(!head.contains("x-evil"), "nominated header leaked: {head}");
+        assert!(!head.contains("x-other"), "nominated header leaked: {head}");
+        assert!(
+            head.contains("x-keep: yes\r\n"),
+            "normal header dropped: {head}"
+        );
     }
 
     #[test]

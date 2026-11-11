@@ -61,6 +61,17 @@ pub const MAX_LINE_BYTES: usize = 8 * 1024;
 /// `limits.stream_buffer_bytes`.
 const DEFAULT_COMPRESSION_PIPE: usize = 64 * 1024;
 
+/// Process-wide count of upstream responses refused for illegal bodyless
+/// framing (ADV-01). It lives outside `Metrics` so the public metrics struct
+/// stays exhaustively constructible (semver); the accessor is additive.
+static BODYLESS_FRAMING_REJECTED: AtomicU64 = AtomicU64::new(0);
+
+/// Number of upstream responses refused for illegal bodyless framing.
+#[must_use]
+pub fn bodyless_framing_rejected() -> u64 {
+    BODYLESS_FRAMING_REJECTED.load(Ordering::Relaxed)
+}
+
 /// Head bounds for one message, resolved from
 /// [`ResolvedListener::limits`](crate::proxy::ResolvedListener::limits)
 /// (B-N19). [`Default`] is the historical constant pair, so a listener that
@@ -1009,6 +1020,30 @@ pub fn parse_request_head(head: &[u8], limits: HeadLimits) -> Result<RequestHead
     })
 }
 
+/// Why an upstream response head was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResponseHeadError {
+    /// The head is not valid HTTP/1.1.
+    Malformed,
+    /// A bodyless status declared body framing (ADV-01).
+    BodylessFraming,
+}
+
+impl ResponseHeadError {
+    fn reject(self) -> Reject {
+        match self {
+            Self::Malformed => Reject {
+                status: 502,
+                reason: "malformed response from upstream",
+            },
+            Self::BodylessFraming => Reject {
+                status: 502,
+                reason: "bodyless response declared body framing",
+            },
+        }
+    }
+}
+
 /// Parses the response head with the same line rules (T02) and the
 /// RFC 9112 §6 framing. An ambiguous backend answers 502 (never forwarded
 /// a framing the client could interpret differently).
@@ -1017,10 +1052,19 @@ pub fn parse_response_head(
     head_request: bool,
     limits: HeadLimits,
 ) -> Result<ResponseHead, Reject> {
-    let bad_gateway = Reject {
-        status: 502,
-        reason: "malformed response from upstream",
-    };
+    parse_response_head_checked(head, head_request, limits, false)
+        .map_err(ResponseHeadError::reject)
+}
+
+/// The same parser, keeping the refusal reason so the caller can count a
+/// bodyless-framing rejection without re-parsing the head.
+fn parse_response_head_checked(
+    head: &[u8],
+    head_request: bool,
+    limits: HeadLimits,
+    allow_bodyless_te: bool,
+) -> Result<ResponseHead, ResponseHeadError> {
+    let bad_gateway = ResponseHeadError::Malformed;
     let lines = parse_lines(head).map_err(|_| bad_gateway)?;
     let status_line = lines.first().ok_or(bad_gateway)?;
 
@@ -1086,10 +1130,21 @@ pub fn parse_response_head(
         }
     }
 
+    let bodyless = status < 200 || status == 204 || status == 304 || head_request;
+    // ADV-01: a status that cannot carry a body must not declare a body
+    // framing. Ignoring TE/CL here left a delayed body on a pooled
+    // connection, so the next client received it as its own response.
+    // RFC 9112 §6.3: TE is never valid on 1xx/204/304/HEAD; CL is invalid
+    // on 1xx/204 (it is metadata on 304/HEAD).
+    if bodyless
+        && (te_chunked || (content_length.is_some() && (status < 200 || status == 204)))
+        && !(allow_bodyless_te && te_chunked)
+    {
+        return Err(ResponseHeadError::BodylessFraming);
+    }
     if te_chunked && content_length.is_some() {
         return Err(bad_gateway);
     }
-    let bodyless = status < 200 || status == 204 || status == 304 || head_request;
     let framing = if bodyless {
         BodyFraming::None
     } else if te_chunked {
@@ -1102,6 +1157,12 @@ pub fn parse_response_head(
     let wants_close = connection_close
         || (version == 10 && !connection_keep_alive)
         || framing == BodyFraming::UntilEof;
+    // A 304/HEAD may legally carry CL as metadata. The client connection
+    // stays usable (the client knows the message has no body); the caller
+    // derives `bodyless_backend_close` from the raw head and never pools
+    // that backend connection. A `1.0` client keeps the M-01 rewrite:
+    // `http10_te` removes the chunked advertisement and forces the
+    // connection closed, so TE is allowed only there.
     Ok(ResponseHead {
         status,
         framing,
@@ -2108,12 +2169,33 @@ fn head_has_transfer_encoding(head: &[u8]) -> bool {
     })
 }
 
+/// True when the response head carries `Content-Length` (already validated by
+/// the parser). A `304`/`HEAD` may keep it as metadata; the backend connection
+/// is then not pooled because the empty boundary is not proven (ADV-01).
+fn head_has_content_length(head: &[u8]) -> bool {
+    head.split(|&byte| byte == b'\n').skip(1).any(|line| {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let name_end = line
+            .iter()
+            .position(|&byte| byte == b':')
+            .unwrap_or(line.len());
+        line[..name_end].eq_ignore_ascii_case(b"content-length")
+    })
+}
+
+/// Whether a bodyless response's legal `Content-Length` metadata forces the
+/// backend connection out of the pool. TE cases are either refused or handled
+/// by the HTTP/1.0 rewrite; this covers `304` and `HEAD` with CL.
+fn bodyless_backend_close(head: &[u8], status: u16, head_request: bool) -> bool {
+    (head_request || status == 304) && head_has_content_length(head)
+}
+
 /// Has the peer already closed this connection? One non-blocking poll:
 /// `Pending` (no data, no EOF) = alive; empty `Ready` = EOF; error or
-/// pending bytes = unusable. Used before pooling (A16): a connection the
+/// buffered bytes = unusable. Used before pooling (A16): a connection the
 /// backend already closed must be dropped, never handed to the next
-/// exchange (which would fail with 502 on its first write).
-async fn peer_gone<R: AsyncBufRead + Unpin>(read: &mut R) -> bool {
+/// exchange (which would fail with 502 while reading the response head).
+pub(crate) async fn peer_gone<R: AsyncBufRead + Unpin>(read: &mut R) -> bool {
     std::future::poll_fn(|cx| match Pin::new(&mut *read).poll_fill_buf(cx) {
         Poll::Ready(Ok(_)) => Poll::Ready(true),
         Poll::Ready(Err(_)) => Poll::Ready(true),
@@ -2997,6 +3079,7 @@ fn finish_exchange(
     poolable: bool,
     req_close: bool,
     resp_close: bool,
+    backend_close: bool,
     clean_boundary: bool,
     backend_alive: bool,
     conn_addr: &Endpoint,
@@ -3030,7 +3113,14 @@ fn finish_exchange(
     }
     // Reuse-safety contract (A16): a pooled connection must end the
     // exchange byte-aligned at a message boundary.
-    if poolable && !req_close && !resp_close && clean_boundary && backend_alive && !maintenance {
+    if poolable
+        && !req_close
+        && !resp_close
+        && !backend_close
+        && clean_boundary
+        && backend_alive
+        && !maintenance
+    {
         backend
             .pool
             .checkin(conn_addr, backend_read, backend_write, Instant::now());
@@ -3584,13 +3674,18 @@ where
             carry = rest;
             carry.extend(unread_prefix);
 
-            let response = match parse_response_head(
+            let response = match parse_response_head_checked(
                 &head_bytes,
                 self.request.method == "HEAD",
                 self.h1.head_limits,
+                self.request.version == 10,
             ) {
                 Ok(response) => response,
-                Err(reject) => {
+                Err(error) => {
+                    if error == ResponseHeadError::BodylessFraming {
+                        BODYLESS_FRAMING_REJECTED.fetch_add(1, Ordering::Relaxed);
+                    }
+                    let reject = error.reject();
                     eprintln!(
                         "WARN [{}] invalid response head from {} (peer {}): {} — refusing with {}",
                         self.h1.cfg.name, self.addr, self.h1.peer, reject.reason, reject.status
@@ -5007,6 +5102,7 @@ pub async fn serve_http<CR, CW>(
                     && !request.wants_close
                     && !response.wants_close
                     && clean
+                    && !bodyless_backend_close(&response_head_bytes, response.status, head_only)
                     && backend_alive
                     && active.mode() != ServerMode::Maintenance
                 {
@@ -5224,6 +5320,7 @@ pub async fn serve_http<CR, CW>(
                         poolable,
                         request.wants_close,
                         response.wants_close,
+                        bodyless_backend_close(&response_head_bytes, response.status, head_only),
                         clean_boundary,
                         backend_alive,
                         &conn.addr,
@@ -5314,6 +5411,7 @@ pub async fn serve_http<CR, CW>(
                 // rewrite also covers bodyless responses so they cannot keep a
                 // chunked advertisement open.
                 response.wants_close || http10_te,
+                bodyless_backend_close(&response_head_bytes, response.status, head_only),
                 clean_boundary,
                 backend_alive,
                 &conn.addr,
@@ -5875,6 +5973,101 @@ mod tests {
                 parse_response_head(head.as_bytes(), false, HeadLimits::default()).expect_err(head);
             assert_eq!(err.status, 502, "case: {head}");
         }
+    }
+
+    #[test]
+    fn bodyless_responses_reject_body_framing_and_close_on_metadata() {
+        for head in [
+            "HTTP/1.1 204 No Content\r\nTransfer-Encoding: chunked\r\n",
+            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n",
+            "HTTP/1.1 101 Switching Protocols\r\nContent-Length: 0\r\n",
+            "HTTP/1.1 304 Not Modified\r\nTransfer-Encoding: chunked\r\n",
+        ] {
+            let err =
+                parse_response_head(head.as_bytes(), false, HeadLimits::default()).expect_err(head);
+            assert_eq!(err.status, 502, "case: {head}");
+        }
+
+        let err = parse_response_head(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n",
+            true,
+            HeadLimits::default(),
+        )
+        .expect_err("HEAD must reject TE");
+        assert_eq!(err.status, 502);
+
+        let parsed = parse_response_head(
+            b"HTTP/1.1 304 Not Modified\r\nContent-Length: 0\r\n",
+            false,
+            HeadLimits::default(),
+        )
+        .expect("304 CL is metadata");
+        assert_eq!(parsed.framing, BodyFraming::None);
+        assert!(!parsed.wants_close, "the client connection stays usable");
+        assert!(bodyless_backend_close(
+            b"HTTP/1.1 304 Not Modified\r\nContent-Length: 0\r\n",
+            304,
+            false
+        ));
+        assert!(!bodyless_backend_close(
+            b"HTTP/1.1 304 Not Modified\r\n",
+            304,
+            false
+        ));
+
+        let parsed = parse_response_head(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n",
+            true,
+            HeadLimits::default(),
+        )
+        .expect("HEAD CL is metadata");
+        assert_eq!(parsed.framing, BodyFraming::None);
+        assert!(!parsed.wants_close, "the client connection stays usable");
+        assert!(bodyless_backend_close(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n",
+            200,
+            true
+        ));
+
+        let parsed = parse_response_head(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n",
+            false,
+            HeadLimits::default(),
+        )
+        .expect("200 with CL");
+        assert_eq!(parsed.framing, BodyFraming::ContentLength(2));
+        assert!(!parsed.wants_close, "a normal 200 with CL keeps the client");
+        assert!(!bodyless_backend_close(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n",
+            200,
+            false
+        ));
+
+        let parsed =
+            parse_response_head(b"HTTP/1.1 204 No Content\r\n", false, HeadLimits::default())
+                .expect("legitimate 204");
+        assert!(
+            !parsed.wants_close,
+            "a 204 without framing keeps keep-alive"
+        );
+        assert!(!bodyless_backend_close(
+            b"HTTP/1.1 204 No Content\r\n",
+            204,
+            false
+        ));
+
+        // M-01 compatibility: a 1.0 client reaches this parser with the TE
+        // rewrite enabled, so the head is accepted and the backend is never
+        // pooled. The public parser (1.1 path) still refuses it above.
+        let parsed = parse_response_head_checked(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n",
+            true,
+            HeadLimits::default(),
+            true,
+        )
+        .expect("1.0 HEAD rewrite");
+        assert_eq!(parsed.framing, BodyFraming::None);
+        assert!(!parsed.wants_close, "the client still gets its response");
     }
 
     #[test]

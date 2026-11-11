@@ -2,9 +2,9 @@
 """Adversarial E2E lab for EQProxy (audit 2026-11-09).
 
 Starts the *real* release binary and *real* TCP origins on loopback, then
-drives raw HTTP/1.1 (and h2c via curl) from a client that controls every
-byte. No mocks, no in-process shortcuts: every result below is observed on a
-socket.
+drives raw HTTP/1.1, h2c via curl (S10/S11) and raw HTTP/2 frames (S12) from a
+client that controls every byte. No mocks, no in-process shortcuts: every
+result below is observed on a socket.
 
 Writes lab/results.json and prints a PASS/FAIL table. Exit code is 1 while
 any scenario fails, so this file doubles as a regression gate for the two
@@ -324,6 +324,132 @@ def raw_exchange(port: int, payload: bytes, wait=1.0) -> bytes:
         pass
     s.close()
     return out
+
+
+H2_PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+
+
+def hpack_literal(name: str, value: str) -> bytes:
+    """HPACK literal header field without indexing, new name, no Huffman.
+
+    This is deliberately the simplest legal representation: the lab must not
+depend on a Python h2/hpack package. Lengths are one byte because every
+field used here is far below 127 bytes.
+    """
+    name_bytes = name.encode("ascii")
+    value_bytes = value.encode("ascii")
+    if len(name_bytes) > 127 or len(value_bytes) > 127:
+        raise ValueError("lab HPACK literal too long")
+    return (
+        b"\x00"
+        + bytes((len(name_bytes),))
+        + name_bytes
+        + bytes((len(value_bytes),))
+        + value_bytes
+    )
+
+
+def h2_frame(frame_type: int, flags: int, stream_id: int, payload: bytes) -> bytes:
+    return (
+        len(payload).to_bytes(3, "big")
+        + bytes((frame_type, flags))
+        + (stream_id & 0x7FFFFFFF).to_bytes(4, "big")
+        + payload
+    )
+
+
+def parse_h2_frames(raw: bytes) -> list[dict]:
+    """Decodes server frames without needing an h2 library."""
+    names = {
+        0: "DATA",
+        1: "HEADERS",
+        2: "PRIORITY",
+        3: "RST_STREAM",
+        4: "SETTINGS",
+        5: "PUSH_PROMISE",
+        6: "PING",
+        7: "GOAWAY",
+        8: "WINDOW_UPDATE",
+        9: "CONTINUATION",
+    }
+    frames = []
+    offset = 0
+    while offset + 9 <= len(raw):
+        length = int.from_bytes(raw[offset : offset + 3], "big")
+        frame_type = raw[offset + 3]
+        flags = raw[offset + 4]
+        stream = int.from_bytes(raw[offset + 5 : offset + 9], "big") & 0x7FFFFFFF
+        payload = raw[offset + 9 : offset + 9 + length]
+        item = {
+            "type": names.get(frame_type, str(frame_type)),
+            "flags": flags,
+            "stream": stream,
+            "payload_hex": payload.hex(),
+        }
+        if frame_type == 3 and length >= 4:
+            item["error_code"] = int.from_bytes(payload[:4], "big")
+        if frame_type == 7 and length >= 8:
+            item["last_stream"] = int.from_bytes(payload[:4], "big") & 0x7FFFFFFF
+            item["error_code"] = int.from_bytes(payload[4:8], "big")
+            item["debug"] = payload[8:].decode("utf-8", "replace")
+        frames.append(item)
+        offset += 9 + length
+    return frames
+
+
+def raw_h2_request(
+    port: int,
+    path: str,
+    authority: str,
+    extra_headers: list[tuple[str, str]],
+    origin: Origin,
+    timeout: float = 3.0,
+) -> tuple[bytes, dict | None]:
+    """Sends one h2c HEADERS frame and waits for the real origin to see it.
+
+    The client pretends to be a permissive HTTP/2 peer: it sends the bytes a
+    conforming curl/h2 client refuses to emit (Connection-nominated names),
+    but uses only legal HPACK and frame syntax. The verdict comes from the
+    origin's recorded request, not from a synthesized response.
+    """
+    headers = [
+        (":method", "GET"),
+        (":scheme", "http"),
+        (":path", path),
+        (":authority", authority),
+        ("user-agent", "raw-h2-lab"),
+        *extra_headers,
+    ]
+    block = b"".join(hpack_literal(name, value) for name, value in headers)
+    payload = (
+        H2_PREFACE
+        + h2_frame(0x4, 0, 0, b"")  # SETTINGS
+        + h2_frame(0x1, 0x5, 1, block)  # HEADERS | END_STREAM | END_HEADERS
+    )
+    raw = b""
+    seen = None
+    s = connect(port, timeout=timeout)
+    try:
+        s.sendall(payload)
+        s.settimeout(0.1)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if seen is None:
+                for request in list(origin.requests):
+                    if request["path"] == path:
+                        seen = request
+                        break
+            if seen is not None:
+                break
+            try:
+                chunk = s.recv(65536)
+            except socket.timeout:
+                chunk = b""
+            if chunk:
+                raw += chunk
+        return raw, seen
+    finally:
+        s.close()
 
 
 def wait_port(port: int, timeout=15.0) -> bool:
@@ -712,49 +838,322 @@ server = "127.0.0.1:{desync_up}"
         else:
             record("S11_h2c_basic_translation", False, "BLOCKED: curl h2c unavailable")
 
-        # --- S12: h2 request: does a Connection-nominated header reach origin? -
-        if h2_ok_support:
-            try:
-                proc_req = subprocess.run(
-                    [
-                        "curl",
-                        "--http2-prior-knowledge",
-                        "-s",
-                        "--max-time",
-                        "8",
-                        "-H",
-                        "Connection: X-Evil",
-                        "-H",
-                        "X-Evil: smuggled-h2",
-                        f"http://127.0.0.1:{main_port}/echo",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=12,
-                )
-                echoed = proc_req.stdout
-                # The origin replies with the headers it actually received.
-                leaked_req = "x-evil=smuggled-h2" in echoed
-                sent = "x-evil" in echoed
-                record(
-                    "S12_h2_request_connection_nominated_header",
-                    proc_req.returncode == 0 and not leaked_req,
-                    f"curl_rc={proc_req.returncode} origin_saw_x_evil={leaked_req} "
-                    f"origin_echo={echoed!r}",
-                    {"origin_echo": echoed},
-                )
-            except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
-                record(
-                    "S12_h2_request_connection_nominated_header",
-                    False,
-                    f"BLOCKED: curl failed: {exc}",
-                )
-        else:
-            record(
-                "S12_h2_request_connection_nominated_header",
-                False,
-                "BLOCKED: curl h2c unavailable",
+        # --- S12: raw h2c request frames, including Connection nomination ----
+        # A conforming h2 client removes Connection before sending (RFC 7540
+        # §8.1.2.2), so curl cannot exercise this path. These frames are legal
+        # HPACK/frame syntax with a permissive peer's headers; the origin is
+        # the witness. Case 1 nominates x-evil; case 2 also nominates
+        # content-length. Each path is unique so the proxy cache cannot hide
+        # the forwarding.
+        control_path = "/echo?s12=control"
+        try:
+            control_raw, control_seen = raw_h2_request(
+                main_port,
+                control_path,
+                f"127.0.0.1:{main_port}",
+                [("x-evil", "control-visible"), ("x-keep", "yes")],
+                origin,
+                timeout=3.0,
             )
+            control_headers = control_seen["headers"] if control_seen else {}
+            control_ok = (
+                control_seen is not None
+                and control_headers.get("x-evil") == "control-visible"
+                and control_headers.get("x-keep") == "yes"
+            )
+            control_error = None
+        except OSError as exc:
+            control_raw = b""
+            control_headers = {}
+            control_ok = False
+            control_error = str(exc)
+
+        s12_cases = [
+            (
+                "connection: x-evil",
+                "/echo?s12=nomination",
+                [
+                    ("connection", "x-evil"),
+                    ("x-evil", "smuggled-h2"),
+                    ("x-keep", "yes"),
+                ],
+                ["connection", "x-evil"],
+            ),
+            (
+                "connection: x-evil, content-length",
+                "/echo?s12=nomination-cl",
+                [
+                    ("connection", "x-evil, content-length"),
+                    ("x-evil", "smuggled-h2"),
+                    ("content-length", "0"),
+                    ("x-keep", "yes"),
+                ],
+                ["connection", "x-evil", "content-length"],
+            ),
+        ]
+        s12_evidence = []
+        filter_verified = True
+        protocol_rejected = 0
+        for case_name, path, extra, forbidden in s12_cases:
+            try:
+                raw, seen = raw_h2_request(
+                    main_port,
+                    path,
+                    f"127.0.0.1:{main_port}",
+                    extra,
+                    origin,
+                    timeout=3.0,
+                )
+                headers = seen["headers"] if seen is not None else {}
+                leaked = [name for name in forbidden if name in headers]
+                kept = headers.get("x-keep") == "yes"
+                frames = parse_h2_frames(raw)
+                rst = [
+                    frame
+                    for frame in frames
+                    if frame.get("type") == "RST_STREAM"
+                    and frame.get("stream") == 1
+                    and frame.get("error_code") == 1
+                ]
+                if seen is not None:
+                    verdict = "FILTER_VERIFIED" if not leaked and kept else "LEAK"
+                    case_ok = not leaked and kept
+                    filter_verified = filter_verified and case_ok
+                elif rst:
+                    verdict = "PROTOCOL_REJECTED"
+                    case_ok = not leaked
+                    protocol_rejected += 1
+                    filter_verified = False
+                else:
+                    verdict = "NOT_FORWARDED"
+                    case_ok = False
+                    filter_verified = False
+                error = None
+            except OSError as exc:
+                raw = b""
+                seen = None
+                headers = {}
+                leaked = list(forbidden)
+                kept = False
+                frames = []
+                verdict = "PROBE_ERROR"
+                case_ok = False
+                filter_verified = False
+                error = str(exc)
+            s12_evidence.append(
+                {
+                    "case": case_name,
+                    "path": path,
+                    "ok": case_ok,
+                    "verdict": verdict,
+                    "origin_saw_request": seen is not None,
+                    "origin_headers": headers,
+                    "forbidden_present": leaked,
+                    "normal_header_kept": kept,
+                    "server_frames": frames,
+                    "raw_server_bytes_hex": raw[:4096].hex(),
+                    "error": error,
+                }
+            )
+        if not control_ok:
+            verdict = "PROBE_INVALID"
+        elif filter_verified:
+            verdict = "FILTER_VERIFIED"
+        elif protocol_rejected == len(s12_cases):
+            verdict = "PROTOCOL_REJECTED"
+        else:
+            verdict = "MIXED"
+        s12_ok = control_ok and all(item["ok"] for item in s12_evidence)
+        detail_cases = [
+            {
+                "case": item["case"],
+                "ok": item["ok"],
+                "verdict": item["verdict"],
+                "origin_saw_request": item["origin_saw_request"],
+                "forbidden_present": item["forbidden_present"],
+                "normal_header_kept": item["normal_header_kept"],
+            }
+            for item in s12_evidence
+        ]
+        record(
+            "S12_h2_request_connection_nominated_header",
+            s12_ok,
+            f"raw h2c verdict={verdict} control={control_ok} cases={detail_cases}",
+            {
+                "verdict": verdict,
+                "control": {
+                    "path": control_path,
+                    "ok": control_ok,
+                    "origin_headers": control_headers,
+                    "raw_server_bytes_hex": control_raw[:4096].hex(),
+                    "error": control_error,
+                },
+                "cases": s12_evidence,
+            },
+        )
+
+        # --- S12 h1: legal Connection nomination on the h1c listener --------
+        # HTTP/1.1 is an accepted codec and Connection is legal there. The
+        # h1 parser has its own nominated-header sanitizer; this is the path a
+        # conforming client can really produce. The second case names a
+        # framing header, which the h1 parser deliberately rejects with 400.
+        def h1_payload(path: str, extra_headers: list[tuple[str, str]]) -> bytes:
+            lines = [f"GET {path} HTTP/1.1", f"Host: 127.0.0.1:{main_port}"]
+            lines.extend(f"{name}: {value}" for name, value in extra_headers)
+            return ("\r\n".join(lines) + "\r\n\r\n").encode()
+
+        def origin_request(path: str):
+            for request in list(origin.requests):
+                if request["path"] == path:
+                    return request
+            return None
+
+        # Regression for the h2c → h1 pool hand-off: the first HTTP/1.1
+        # request after an h2c exchange must not inherit a backend connection
+        # the origin already closed. A 502 here is the bug, so this is an
+        # assertion, not a throwaway warm-up.
+        h1_preflight_path = "/s12-h1-preflight"
+        h1_preflight_raw = raw_exchange(
+            main_port,
+            h1_payload(h1_preflight_path, [("x-keep", "preflight")]),
+            wait=0.5,
+        )
+        h1_preflight_seen = origin_request(h1_preflight_path)
+        h1_preflight_headers = (
+            h1_preflight_seen["headers"] if h1_preflight_seen else {}
+        )
+        h1_preflight_status = (
+            int(h1_preflight_raw.split(b" ")[1])
+            if h1_preflight_raw.startswith(b"HTTP/1.1 ")
+            and len(h1_preflight_raw.split(b" ")) > 1
+            else 0
+        )
+        h1_preflight_ok = (
+            h1_preflight_status == 200
+            and h1_preflight_headers.get("x-keep") == "preflight"
+        )
+
+        h1_control_path = "/s12-h1-control"
+        h1_control_raw = raw_exchange(
+            main_port,
+            h1_payload(h1_control_path, [("x-keep", "yes")]),
+            wait=0.5,
+        )
+        h1_control_seen = origin_request(h1_control_path)
+        h1_control_headers = h1_control_seen["headers"] if h1_control_seen else {}
+        h1_control_status = (
+            int(h1_control_raw.split(b" ")[1])
+            if h1_control_raw.startswith(b"HTTP/1.1 ")
+            and len(h1_control_raw.split(b" ")) > 1
+            else 0
+        )
+        h1_control_ok = (
+            h1_control_seen is not None
+            and h1_control_headers.get("x-keep") == "yes"
+            and h1_control_status == 200
+        )
+
+        h1_cases = [
+            (
+                "h1 connection: x-evil",
+                "/echo?s12=h1-nomination",
+                [
+                    ("Connection", "x-evil"),
+                    ("x-evil", "smuggled-h1"),
+                    ("x-keep", "yes"),
+                ],
+                ["connection", "x-evil"],
+                "filter",
+            ),
+            (
+                "h1 connection: x-evil, content-length",
+                "/echo?s12=h1-nomination-cl",
+                [
+                    ("Connection", "x-evil, content-length"),
+                    ("x-evil", "smuggled-h1"),
+                    ("Content-Length", "0"),
+                    ("x-keep", "yes"),
+                ],
+                ["connection", "x-evil", "content-length"],
+                "reject",
+            ),
+        ]
+        h1_evidence = []
+        h1_ok = h1_preflight_ok and h1_control_ok
+        h1_filter_verified = False
+        h1_rejected = 0
+        for case_name, path, extra, forbidden, expectation in h1_cases:
+            raw = raw_exchange(main_port, h1_payload(path, extra), wait=0.5)
+            seen = origin_request(path)
+            headers = seen["headers"] if seen else {}
+            leaked = [name for name in forbidden if name in headers]
+            kept = headers.get("x-keep") == "yes"
+            status = (
+                int(raw.split(b" ")[1])
+                if raw.startswith(b"HTTP/1.1 ") and len(raw.split(b" ")) > 1
+                else 0
+            )
+            if seen is not None:
+                verdict = "FILTER_VERIFIED" if not leaked and kept else "LEAK"
+                case_ok = not leaked and kept
+                h1_filter_verified = h1_filter_verified or case_ok
+            elif expectation == "reject" and status == 400:
+                verdict = "PROTOCOL_REJECTED"
+                case_ok = True
+                h1_rejected += 1
+            else:
+                verdict = "NOT_FORWARDED"
+                case_ok = False
+            h1_ok = h1_ok and case_ok
+            h1_evidence.append(
+                {
+                    "case": case_name,
+                    "path": path,
+                    "ok": case_ok,
+                    "verdict": verdict,
+                    "origin_saw_request": seen is not None,
+                    "origin_headers": headers,
+                    "forbidden_present": leaked,
+                    "normal_header_kept": kept,
+                    "http_status": status,
+                    "raw_server_bytes_hex": raw[:4096].hex(),
+                }
+            )
+        if not h1_control_ok:
+            h1_verdict = "PROBE_INVALID"
+        elif not h1_preflight_ok:
+            h1_verdict = "POOL_REUSE_REGRESSION"
+        elif h1_filter_verified and h1_rejected:
+            h1_verdict = "FILTER_VERIFIED_H1_REJECTS_FRAMING"
+        elif h1_filter_verified:
+            h1_verdict = "FILTER_VERIFIED"
+        elif h1_rejected == len(h1_cases):
+            h1_verdict = "PROTOCOL_REJECTED"
+        else:
+            h1_verdict = "MIXED"
+        record(
+            "S12_h1_request_connection_nominated_header",
+            h1_ok,
+            f"h1 verdict={h1_verdict} preflight={h1_preflight_ok} control={h1_control_ok} cases={h1_evidence}",
+            {
+                "verdict": h1_verdict,
+                "preflight": {
+                    "path": h1_preflight_path,
+                    "ok": h1_preflight_ok,
+                    "http_status": h1_preflight_status,
+                    "origin_headers": h1_preflight_headers,
+                    "raw_server_bytes_hex": h1_preflight_raw[:4096].hex(),
+                },
+                "control": {
+                    "path": h1_control_path,
+                    "ok": h1_control_ok,
+                    "http_status": h1_control_status,
+                    "origin_headers": h1_control_headers,
+                    "raw_server_bytes_hex": h1_control_raw[:4096].hex(),
+                },
+                "cases": h1_evidence,
+            },
+        )
     finally:
         proc.terminate()
         try:

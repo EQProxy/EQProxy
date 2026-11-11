@@ -836,7 +836,9 @@ async fn pool_sizing_keeps_a_400_stream_burst_without_churn() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn access_log_marks_h2_requests_and_their_status() {
-    let origin = start_raw_origin(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n").await;
+    // RFC 9112 §6.3: a 204 must not carry Content-Length. The access-log
+    // test only needs a bodyless 204, so the fixture uses the legal form.
+    let origin = start_raw_origin(b"HTTP/1.1 204 No Content\r\n\r\n").await;
     let metrics = Arc::new(Metrics::default());
     let (log, mut entries) = eqproxy_net::AccessLog::channel(Arc::clone(&metrics));
     let cfg = http_listener(origin).with_access(Arc::clone(&log));

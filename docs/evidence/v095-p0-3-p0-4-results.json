@@ -1,0 +1,330 @@
+[
+  {
+    "name": "startup",
+    "ok": true,
+    "critical": false,
+    "detail": "listeners 51876/51877, origins 51874/51875",
+    "evidence": {}
+  },
+  {
+    "name": "S1_aud01_revoking_304_invalidates",
+    "ok": true,
+    "critical": true,
+    "detail": "first=b'STALE-BODY-v1' second=b'FRESH-BODY-v2' set-cookie=False x-injected=None origin_calls=[(False, '/aud01'), (True, '/aud01'), (False, '/aud01')]",
+    "evidence": {
+      "first": {
+        "status": 200,
+        "headers": {
+          "server": "EQProxy",
+          "content-length": "13",
+          "etag": "\"v1\"",
+          "cache-control": "max-age=1",
+          "x-cache": "MISS"
+        },
+        "body": "STALE-BODY-v1"
+      },
+      "second": {
+        "status": 200,
+        "headers": {
+          "server": "EQProxy",
+          "content-length": "13",
+          "etag": "\"v2\"",
+          "cache-control": "max-age=1",
+          "x-cache": "MISS"
+        },
+        "body": "FRESH-BODY-v2"
+      },
+      "origin_requests": [
+        {
+          "method": "GET",
+          "path": "/aud01",
+          "conditional": false,
+          "headers": {
+            "host": "example.test"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/aud01",
+          "conditional": true,
+          "headers": {
+            "host": "example.test",
+            "if-none-match": "\"v1\""
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/aud01",
+          "conditional": false,
+          "headers": {
+            "host": "example.test"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "S2_client_max_age_zero_scoped",
+    "ok": true,
+    "critical": true,
+    "detail": "x-cache=['MISS', 'HIT', 'MISS', 'HIT'] origin_calls=2 (expected 2: initial + revalidation)",
+    "evidence": {
+      "origin_requests": [
+        {
+          "method": "GET",
+          "path": "/maxage",
+          "conditional": false,
+          "headers": {
+            "host": "example.test"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/maxage",
+          "conditional": true,
+          "headers": {
+            "host": "example.test",
+            "cache-control": "max-age=0",
+            "if-none-match": "\"m1\""
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "S3_request_smuggling_rejected",
+    "ok": true,
+    "critical": true,
+    "detail": "statuses={'cl_te': 'HTTP/1.1 400 content-length together with transfer-encoding', 'dup_cl': 'HTTP/1.1 400 duplicated content-length', 'te_not_chunked': 'HTTP/1.1 400 only a single chunked transfer-encoding is accepted', 'space_before_colon': 'HTTP/1.1 400 invalid header name'} smuggled_reached_origin=0",
+    "evidence": {
+      "statuses": {
+        "cl_te": "HTTP/1.1 400 content-length together with transfer-encoding",
+        "dup_cl": "HTTP/1.1 400 duplicated content-length",
+        "te_not_chunked": "HTTP/1.1 400 only a single chunked transfer-encoding is accepted",
+        "space_before_colon": "HTTP/1.1 400 invalid header name"
+      },
+      "origin_saw": []
+    }
+  },
+  {
+    "name": "S4_header_injection_and_obs_fold_rejected",
+    "ok": true,
+    "critical": true,
+    "detail": "inject_status=b'HTTP/1.1 400 bare CR or LF inside a line' fold_status=b'HTTP/1.1 400 obs-fold continuation is not allowed' injected_reached_origin=0",
+    "evidence": {
+      "injected_reached_origin": []
+    }
+  },
+  {
+    "name": "S5_path_normalization_and_traversal",
+    "ok": true,
+    "critical": false,
+    "detail": "origin_paths=['/admin'] traversal=b'HTTP/1.1 400 path traversal above root' encoded=b'HTTP/1.1 400 path traversal above root'",
+    "evidence": {
+      "origin_paths": [
+        "/admin"
+      ]
+    }
+  },
+  {
+    "name": "S6_host_header_enforcement",
+    "ok": true,
+    "critical": false,
+    "detail": "missing=b'HTTP/1.1 400 exactly one host header is required in HTTP/1.1' duplicate=b'HTTP/1.1 400 exactly one host header is required in HTTP/1.1'",
+    "evidence": {}
+  },
+  {
+    "name": "S7_vary_variants_isolated",
+    "ok": true,
+    "critical": false,
+    "detail": "gzip=b'VARY-gzip'/b'VARY-gzip' identity=b'VARY-identity'/b'VARY-identity' x-cache=['MISS', 'MISS', 'HIT', 'HIT']",
+    "evidence": {}
+  },
+  {
+    "name": "S8_head_served_from_get_entry",
+    "ok": true,
+    "critical": false,
+    "detail": "GET=b'HELLO-WORLD' HEAD status=200 body=b'' CL=11 x-cache=HIT",
+    "evidence": {}
+  },
+  {
+    "name": "S9_backend_204_with_transfer_encoding_does_not_desync",
+    "ok": true,
+    "critical": false,
+    "detail": "first_status=502 second_status=200 second_body=b'NORMAL2' forged_served=False",
+    "evidence": {
+      "first_raw": "HTTP/1.1 502 bodyless response declared body framing\r\nServer: EQProxy\r\ndate: Wed, 11 Nov 2026 16:25:35 GMT\r\nconnection: close\r\ncontent-length: 0\r\n\r\n",
+      "second": {
+        "status": 200,
+        "headers": {
+          "server": "EQProxy",
+          "content-length": "7"
+        },
+        "body": "NORMAL2"
+      }
+    }
+  },
+  {
+    "name": "S10_h2_connection_nominated_header_stripped",
+    "ok": true,
+    "critical": false,
+    "detail": "h2 response headers leak Connection-nominated X-Secret=False",
+    "evidence": {
+      "curl_headers": "http/2 200 \nserver: eqproxy\ncontent-length: 2\nx-cache: miss\n\n"
+    }
+  },
+  {
+    "name": "S11_h2c_basic_translation",
+    "ok": true,
+    "critical": false,
+    "detail": "rc=0 body='NORMAL-OK'",
+    "evidence": {}
+  },
+  {
+    "name": "S12_h2_request_connection_nominated_header",
+    "ok": true,
+    "critical": false,
+    "detail": "raw h2c verdict=PROTOCOL_REJECTED control=True cases=[{'case': 'connection: x-evil', 'ok': True, 'verdict': 'PROTOCOL_REJECTED', 'origin_saw_request': False, 'forbidden_present': [], 'normal_header_kept': False}, {'case': 'connection: x-evil, content-length', 'ok': True, 'verdict': 'PROTOCOL_REJECTED', 'origin_saw_request': False, 'forbidden_present': [], 'normal_header_kept': False}]",
+    "evidence": {
+      "verdict": "PROTOCOL_REJECTED",
+      "control": {
+        "path": "/echo?s12=control",
+        "ok": true,
+        "origin_headers": {
+          "host": "127.0.0.1:51876",
+          "user-agent": "raw-h2-lab",
+          "x-evil": "control-visible",
+          "x-keep": "yes"
+        },
+        "raw_server_bytes_hex": "000012040000000000000300000080000600004000000800000001000000040100000000000023010400000001887686c1b35d87f3eb0f0d8275cf5f87497ca58ae819aa4085f2b10649cb84d19376ef00004c000000000001686f73743d3132372e302e302e313a35313837367c757365722d6167656e743d7261772d68322d6c61627c782d6576696c3d636f6e74726f6c2d76697369626c657c782d6b6565703d796573000000000100000001",
+        "error": null
+      },
+      "cases": [
+        {
+          "case": "connection: x-evil",
+          "path": "/echo?s12=nomination",
+          "ok": true,
+          "verdict": "PROTOCOL_REJECTED",
+          "origin_saw_request": false,
+          "origin_headers": {},
+          "forbidden_present": [],
+          "normal_header_kept": false,
+          "server_frames": [
+            {
+              "type": "SETTINGS",
+              "flags": 0,
+              "stream": 0,
+              "payload_hex": "000300000080000600004000000800000001"
+            },
+            {
+              "type": "SETTINGS",
+              "flags": 1,
+              "stream": 0,
+              "payload_hex": ""
+            },
+            {
+              "type": "RST_STREAM",
+              "flags": 0,
+              "stream": 1,
+              "payload_hex": "00000001",
+              "error_code": 1
+            }
+          ],
+          "raw_server_bytes_hex": "00001204000000000000030000008000060000400000080000000100000004010000000000000403000000000100000001",
+          "error": null
+        },
+        {
+          "case": "connection: x-evil, content-length",
+          "path": "/echo?s12=nomination-cl",
+          "ok": true,
+          "verdict": "PROTOCOL_REJECTED",
+          "origin_saw_request": false,
+          "origin_headers": {},
+          "forbidden_present": [],
+          "normal_header_kept": false,
+          "server_frames": [
+            {
+              "type": "SETTINGS",
+              "flags": 0,
+              "stream": 0,
+              "payload_hex": "000300000080000600004000000800000001"
+            },
+            {
+              "type": "SETTINGS",
+              "flags": 1,
+              "stream": 0,
+              "payload_hex": ""
+            },
+            {
+              "type": "RST_STREAM",
+              "flags": 0,
+              "stream": 1,
+              "payload_hex": "00000001",
+              "error_code": 1
+            }
+          ],
+          "raw_server_bytes_hex": "00001204000000000000030000008000060000400000080000000100000004010000000000000403000000000100000001",
+          "error": null
+        }
+      ]
+    }
+  },
+  {
+    "name": "S12_h1_request_connection_nominated_header",
+    "ok": true,
+    "critical": false,
+    "detail": "h1 verdict=FILTER_VERIFIED_H1_REJECTS_FRAMING preflight=True control=True cases=[{'case': 'h1 connection: x-evil', 'path': '/echo?s12=h1-nomination', 'ok': True, 'verdict': 'FILTER_VERIFIED', 'origin_saw_request': True, 'origin_headers': {'host': '127.0.0.1:51876', 'x-keep': 'yes'}, 'forbidden_present': [], 'normal_header_kept': True, 'http_status': 200, 'raw_server_bytes_hex': '485454502f312e3120323030204f4b0d0a5365727665723a20455150726f78790d0a436f6e74656e742d4c656e6774683a2033310d0a436f6e74656e742d547970653a20746578742f706c61696e0d0a782d63616368653a204d4953530d0a0d0a686f73743d3132372e302e302e313a35313837367c782d6b6565703d796573'}, {'case': 'h1 connection: x-evil, content-length', 'path': '/echo?s12=h1-nomination-cl', 'ok': True, 'verdict': 'PROTOCOL_REJECTED', 'origin_saw_request': False, 'origin_headers': {}, 'forbidden_present': [], 'normal_header_kept': False, 'http_status': 400, 'raw_server_bytes_hex': '485454502f312e312034303020636f6e6e656374696f6e20686561646572206e616d65732061206672616d696e67206f7220726f7574696e67206865616465720d0a5365727665723a20455150726f78790d0a646174653a205765642c203131204e6f7620323032362031363a32353a343520474d540d0a636f6e6e656374696f6e3a20636c6f73650d0a636f6e74656e742d6c656e6774683a20300d0a0d0a'}]",
+    "evidence": {
+      "verdict": "FILTER_VERIFIED_H1_REJECTS_FRAMING",
+      "preflight": {
+        "path": "/s12-h1-preflight",
+        "ok": true,
+        "http_status": 200,
+        "origin_headers": {
+          "host": "127.0.0.1:51876",
+          "x-keep": "preflight"
+        },
+        "raw_server_bytes_hex": "485454502f312e3120323030204f4b0d0a5365727665723a20455150726f78790d0a436f6e74656e742d4c656e6774683a20390d0a782d63616368653a204d4953530d0a0d0a4e4f524d414c2d4f4b"
+      },
+      "control": {
+        "path": "/s12-h1-control",
+        "ok": true,
+        "http_status": 200,
+        "origin_headers": {
+          "host": "127.0.0.1:51876",
+          "x-keep": "yes"
+        },
+        "raw_server_bytes_hex": "485454502f312e3120323030204f4b0d0a5365727665723a20455150726f78790d0a436f6e74656e742d4c656e6774683a20390d0a782d63616368653a204d4953530d0a0d0a4e4f524d414c2d4f4b"
+      },
+      "cases": [
+        {
+          "case": "h1 connection: x-evil",
+          "path": "/echo?s12=h1-nomination",
+          "ok": true,
+          "verdict": "FILTER_VERIFIED",
+          "origin_saw_request": true,
+          "origin_headers": {
+            "host": "127.0.0.1:51876",
+            "x-keep": "yes"
+          },
+          "forbidden_present": [],
+          "normal_header_kept": true,
+          "http_status": 200,
+          "raw_server_bytes_hex": "485454502f312e3120323030204f4b0d0a5365727665723a20455150726f78790d0a436f6e74656e742d4c656e6774683a2033310d0a436f6e74656e742d547970653a20746578742f706c61696e0d0a782d63616368653a204d4953530d0a0d0a686f73743d3132372e302e302e313a35313837367c782d6b6565703d796573"
+        },
+        {
+          "case": "h1 connection: x-evil, content-length",
+          "path": "/echo?s12=h1-nomination-cl",
+          "ok": true,
+          "verdict": "PROTOCOL_REJECTED",
+          "origin_saw_request": false,
+          "origin_headers": {},
+          "forbidden_present": [],
+          "normal_header_kept": false,
+          "http_status": 400,
+          "raw_server_bytes_hex": "485454502f312e312034303020636f6e6e656374696f6e20686561646572206e616d65732061206672616d696e67206f7220726f7574696e67206865616465720d0a5365727665723a20455150726f78790d0a646174653a205765642c203131204e6f7620323032362031363a32353a343520474d540d0a636f6e6e656374696f6e3a20636c6f73650d0a636f6e74656e742d6c656e6774683a20300d0a0d0a"
+        }
+      ]
+    }
+  }
+]

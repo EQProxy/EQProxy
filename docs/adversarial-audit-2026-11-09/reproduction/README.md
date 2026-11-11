@@ -4,11 +4,12 @@ Esta carpeta contiene una copia byte a byte del laboratorio E2E usado en la
 auditoría:
 
 ```
-bdfa1849c8a0b34d29c18dbad73e87e6bcbf0a45cd55c44461fc9e4573ede1a6  run_lab.py
+f130fd41d00aec46cad8b1d0784b28d67cdb4e1fb32ab85c6a74104d1d414929  run_lab.py
 ```
 
-La copia canónica (la que generó la evidencia) está en
-`report/adversarial-2026-11-09/lab/run_lab.py` y tiene el mismo hash.
+Esta es la copia usada por la evidencia final de v0.9.5. El hash anterior
+corresponde al estado de la auditoría; el actual incluye S12 h1 y el probe
+h2c en crudo que sustituye al cliente curl para la petición h2.
 
 ---
 
@@ -19,15 +20,16 @@ La copia canónica (la que generó la evidencia) está en
 | SO | macOS 26.5.1 arm64 | El laboratorio es Python + sockets; debería funcionar en Linux sin cambios. |
 | Rust/Cargo | 1.99.1 | Para compilar el binario. |
 | Python | 3.14.6 | Solo biblioteca estándar (sin `pip install`). |
-| curl | 8.7.1 con nghttp2 | Necesario para S10/S11/S12 (`--http2-prior-knowledge`). |
+| curl | 8.7.1 con nghttp2 | Necesario para S10/S11 (`--http2-prior-knowledge`); S12 usa frames h2c en crudo. |
 | `target/release/eqproxy` | build de esta auditoría | SHA-256 `d68ec1dc…e1a44`. |
 
 El script **no usa mocks**: arranca el binario real y dos servidores TCP reales
 en `127.0.0.1`, y habla HTTP a nivel de socket. Los puertos son efímeros; no
 hay puertos fijos que liberar.
 
-Si `curl` no soporta h2c, S10/S11/S12 se marcan como `BLOCKED` y el resto
-sigue ejecutándose. En ese caso no se puede confirmar ADV-02 con este arnés.
+Si `curl` no soporta h2c, S10/S11 se marcan como `BLOCKED` y el resto
+sigue ejecutándose; el probe S12 h2 no depende de curl. En ese caso no se
+puede confirmar la respuesta h2 con este arnés.
 
 ---
 
@@ -75,39 +77,18 @@ la evidencia oficial es la de `report/`.
 
 ---
 
-## 4. Resultado esperado (estado actual, bugs abiertos)
+## 4. Resultado en v0.9.5 (cerrado)
 
-Con el árbol auditado (`ecda55a…`, ADV-01/ADV-02 sin corregir):
+Con el árbol de release y el binario `0.9.5`:
 
 ```
-10/13 scenarios passed
-CRITICAL S9_backend_204_with_transfer_encoding_does_not_desync: ...
-CRITICAL S10_h2_connection_nominated_header_stripped: ...
-CRITICAL S12_h2_request_connection_nominated_header: ...
-EXIT:1
+14/14 scenarios passed
+EXIT:0
 ```
 
-Los tres fallos son **esperados y deseados** mientras los hallazgos sigan
-abiertos: el script es una puerta de regresión.
-
-| Escenario | Esperado hoy | Esperado tras el fix |
-|---|---|---|
-| `startup` | PASS | PASS |
-| `S1_aud01_revoking_304_invalidates` | PASS | PASS |
-| `S2_client_max_age_zero_scoped` | PASS | PASS |
-| `S3_request_smuggling_rejected` | PASS | PASS |
-| `S4_header_injection_and_obs_fold_rejected` | PASS | PASS |
-| `S5_path_normalization_and_traversal` | PASS | PASS |
-| `S6_host_header_enforcement` | PASS | PASS |
-| `S7_vary_variants_isolated` | PASS | PASS |
-| `S8_head_served_from_get_entry` | PASS | PASS |
-| `S9_backend_204_with_transfer_encoding_does_not_desync` | **FAIL** (`SMUGGLED-RESPONSE`) | PASS (`NORMAL2`) |
-| `S10_h2_connection_nominated_header_stripped` | **FAIL** (`x-secret: leaked`) | PASS (sin `x-secret`) |
-| `S11_h2c_basic_translation` | PASS | PASS |
-| `S12_h2_request_connection_nominated_header` | **FAIL** (`x-evil` en origen) | PASS (sin `x-evil`) |
-
-Cuando ADV-01 y ADV-02 estén corregidos, `EXIT:0` y 13/13 PASS. Ese es el
-criterio de cierre de la auditoría.
+S9, S10, S12 h2 y S12 h1 pasan. La evidencia cruda está en
+`docs/evidence/v095-p0-3-p0-4-results.json`. La tabla 10/13 de la auditoría
+documenta el estado anterior y ya no es el resultado esperado.
 
 ---
 
@@ -130,8 +111,12 @@ criterio de cierre de la auditoría.
 - **S10 — ADV-02 respuesta:** upstream `Connection: X-Secret` + `X-Secret`;
   el cliente h2 no debe ver `x-secret`.
 - **S11 — h2c básico:** control positivo de traducción h2↔h1.
-- **S12 — ADV-02 petición:** cliente h2 con `Connection: X-Evil` + `X-Evil`;
-  el origen no debe ver `x-evil`.
+- **S12 — ADV-02 petición (h2c):** frames h2c en crudo con `Connection`;
+  el protocolo h2 los rechaza antes de la traducción y el origen no recibe la
+  petición.
+- **S12 — ADV-02 petición (h1):** `Connection: X-Evil` + `X-Evil` en el
+  listener HTTP/1.1 real; el origen ve `host` y `x-keep`, nunca `x-evil`, y la
+  variante que nomina `content-length` se rechaza con `400`.
 
 Detalle de implementación: `run_lab.py`, clase `Origin` (método `respond`) y
 `main` (bloques `# --- S…`).

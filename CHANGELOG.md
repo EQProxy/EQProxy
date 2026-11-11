@@ -3,10 +3,39 @@
 Language: **English**. Format follows "Keep a Changelog" (Added / Changed /
 Fixed); versions are `vMAJOR.MINOR.PATCH` git tags.
 
-## [Unreleased]
+## [v0.9.5] — 2026-11-11
 
 ### Fixed
 
+- **AUD-01: a `304` cannot pollute a shared cache entry.** A revalidating
+  `304` now applies the same storability policy as a `200`. `Set-Cookie`,
+  `Cache-Control: private`/`no-store`, `Vary: *`, a session `Vary`, or a
+  changed `Vary` invalidate the entry in memory and on disk; only the
+  end-to-end refresh headers are merged. The current request retries
+  unconditionally, a second `304` to that retry is `502`, and the private
+  `Cache::cache_304_invalidations` counter records each revocation. Evidence:
+  [`docs/evidence/v095-aud-01.md`](docs/evidence/v095-aud-01.md).
+- **AUD-02: client cache directives are honored.** `Cache-Control: max-age`,
+  `min-fresh` and `max-stale` are parsed per request and applied without
+  storing the client policy in the shared entry; `max-age=0` forces
+  revalidation. Evidence:
+  [`docs/evidence/v095-p0-2.md`](docs/evidence/v095-p0-2.md).
+- **ADV-01/P0-3: bodyless responses cannot declare body framing.** A
+  `1xx`/`204` with `Content-Length`, or any `1xx`/`204`/`304`/`HEAD` with
+  `Transfer-Encoding`, is refused with `502` instead of leaving a delayed
+  body on a pooled backend. A `304` or `HEAD` with `Content-Length` remains
+  legal metadata, but its backend connection is not reused; the client
+  keep-alive is preserved. The HTTP/1.0 M-01 rewrite still removes the
+  framing and closes the connection. Evidence:
+  [`docs/evidence/v095-p0-3-p0-4.md`](docs/evidence/v095-p0-3-p0-4.md).
+- **ADV-02/P0-4: h2/h3 strip `Connection`-nominated headers; h1 verified
+  E2E.** The h2↔h1 translation removes every header named by repeated
+  `Connection` fields in both directions, and h3 inherits those helpers. The
+  h1 path strips the same names; the real HTTP/1.1 probe sends
+  `Connection: x-evil` + `x-evil` and the origin receives neither, while a
+  normal header survives. `Connection: x-evil, content-length` is refused
+  with `400`, and raw h2c with `Connection` is rejected with
+  `RST_STREAM PROTOCOL_ERROR` before translation.
 - **AUD-03: HTTP trailers are bounded on h1, h2 and h3.** A shared
   `TrailerBudget` enforces 64 KiB and 128 fields per trailer section in the
   h1 chunked paths (including compression), the h2 relay and the h3 relay.
@@ -18,6 +47,18 @@ Fixed); versions are `vMAJOR.MINOR.PATCH` git tags.
   RSS `14 048 → 18 704 KiB` (4 656 KiB growth) against a 64 MiB budget;
   normal 0–2 trailer responses are unchanged. Evidence:
   [`docs/evidence/v095-p0-5.md`](docs/evidence/v095-p0-5.md).
+- **Reused backend sockets are checked for liveness at pool checkout.** The
+  first HTTP/1.1 request after an h2c exchange could inherit a backend
+  connection the origin had already closed and fail with `502` while reading
+  the response head. The proxy now polls the idle socket at checkout and
+  drops a closed peer before counting it as reused; the S12 preflight returns
+  `200` on the final lab run.
+- **The `rules` fuzz target builds again.** `RequestFacts` gained the `maps`
+  field; the target now supplies `MapRegistry::empty()`, so the committed
+  rule-evaluator fuzz coverage compiles. CI still does not run a fuzz
+  campaign; that remains in AUD-04.
+
+Release evidence: [`docs/evidence/v095-release.md`](docs/evidence/v095-release.md).
 
 ## [v0.9.4] — 2026-11-08
 

@@ -2201,27 +2201,36 @@ async fn dial_with_retries<'a>(
         if !h2
             && opts.use_pool
             && tried.is_empty()
-            && let Some((read, write)) = backend.pool.checkout(&addr, Instant::now())
+            && let Some((mut read, write)) = backend.pool.checkout(&addr, Instant::now())
         {
-            // The pool sizes its idle cap from the concurrency it sees while
-            // a connection is borrowed (never at check-in, which would race a
-            // burst that is still starting up).
-            backend
-                .pool
-                .note_in_flight(&addr, active.in_flight() as usize);
-            metrics
-                .backend_connections_reused
-                .fetch_add(1, Ordering::Relaxed);
-            return Ok((
-                BackendConn {
-                    addr,
-                    read,
-                    write,
-                    reused: true,
-                    poolable: true,
-                },
-                active,
-            ));
+            // A pooled connection can be closed by the origin after the
+            // check-in liveness poll but before the next exchange. Do not
+            // hand a dead socket to the request writer: drop it and dial a
+            // fresh connection instead. This is the h2c → h1 boundary that
+            // used to surface as one spurious 502 on the next request.
+            if crate::http1::peer_gone(&mut read).await {
+                drop((read, write));
+            } else {
+                // The pool sizes its idle cap from the concurrency it sees
+                // while a connection is borrowed (never at check-in, which
+                // would race a burst that is still starting up).
+                backend
+                    .pool
+                    .note_in_flight(&addr, active.in_flight() as usize);
+                metrics
+                    .backend_connections_reused
+                    .fetch_add(1, Ordering::Relaxed);
+                return Ok((
+                    BackendConn {
+                        addr,
+                        read,
+                        write,
+                        reused: true,
+                        poolable: true,
+                    },
+                    active,
+                ));
+            }
         }
 
         // --- Dial the chosen server (or take an h2 stream on a live session) ---

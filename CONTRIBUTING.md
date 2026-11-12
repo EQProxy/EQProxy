@@ -172,8 +172,18 @@ and promoted that exact digest.
 | `eqproxy-0.9.5-src.tar.gz` | `27a5b25298a854af6780becc8f3297afdfcda4cebd97f7e7aa35186f6cb1861a` |
 | `SHA256SUMS.txt` (the file itself) | `b07ff56c404ddd15992b94b9efd0f1fcf0cf0e843381f63de9d19a1c076707d0` |
 
-Those three lines are exactly what `SHA256SUMS.txt` checks; the SBOMs and the
-Scout reports are not listed in it.
+Those three lines are exactly what `SHA256SUMS.txt` checks in this release; the
+SBOMs and the Scout reports are not listed in it.
+
+**From the next release the file covers every attached asset.** The `release`
+job assembles a flat `dist/` (both binaries, the source tarball, one SBOM per
+workspace member and both Scout reports) and its checksum step refuses to
+continue unless `SHA256SUMS.txt` holds one line per published asset —
+`SHA256SUMS.txt covers 9 of 10 published assets` is the failure a stray or
+unhashed file produces. A missing crate SBOM or a missing architecture report
+fails the release before it is created, so a single `sha256sum -c` verifies the
+whole download. The two Linux lines keep their original form at the top of the
+file, which is why the v0.6.x instructions still work unchanged.
 
 Both registries serve one OCI index, promoted by digest after the Scout scan:
 `sha256:ec3413b8a2d871ae810e6cd81f6fbda679fc352a4b3659914a1977ecf5440bc0`

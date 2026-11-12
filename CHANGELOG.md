@@ -5,7 +5,19 @@ Fixed); versions are `vMAJOR.MINOR.PATCH` git tags.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Changed
+
+- **`SHA256SUMS.txt` covers every published asset.** The release job now
+  assembles a flat `dist/` — both Linux binaries, the source tarball, one
+  CycloneDX SBOM per crate and both Docker Scout reports — and writes one
+  checksum line per asset after the three lines earlier releases shipped, so
+  those keep their byte-identical form and the existing install instructions
+  still work. The release fails before it is created when a crate SBOM or an
+  architecture's Scout report is missing, and the checksum step exits non-zero
+  when the file covers fewer assets than are published
+  (`SHA256SUMS.txt covers N of M published assets`). Applies from the next
+  release: the `v0.9.5` artifacts are unchanged and its `SHA256SUMS.txt` still
+  lists only the two binaries and the source tarball.
 
 ## [v0.9.6] — 2026-11-11
 

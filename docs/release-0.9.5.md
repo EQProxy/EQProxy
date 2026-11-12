@@ -38,7 +38,10 @@ succeeded. Assets:
 - `SCOUT-0.9.5-linux-amd64.md` and `SCOUT-0.9.5-linux-arm64.md`, each reporting
   **0 critical / 0 high** (per-image digests `sha256:3325290…` amd64 and
   `sha256:fcde920…` arm64);
-- `SHA256SUMS.txt`.
+- `SHA256SUMS.txt`, which in this release lists the two binaries and the
+  source tarball only; the SBOMs and the two Scout reports are attached
+  without a checksum line (the pipeline covers every asset from the next
+  release).
 
 Checks executed from this checkout on 2026-11-12 against the published
 artifacts:

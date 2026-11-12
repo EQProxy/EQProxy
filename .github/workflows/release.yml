@@ -299,10 +299,14 @@ jobs:
       - name: Assemble dist/ (only after both builds verified)
         run: |
           set -euo pipefail
-          mkdir -p dist sbom scout
+          # dist/ is the flat set of assets the release publishes: a release
+          # asset has no directory, so every file is hashed under the name a
+          # downloader sees. The old sbom/ and scout/ subdirectories were a
+          # local layout that kept those files out of SHA256SUMS.txt.
+          mkdir -p dist
           find collect -type f -name 'eqproxy-linux-*' -exec cp {} dist/ \;
-          find collect -type f -name '*.cdx.json' -exec cp {} sbom/ \;
-          find collect -type f -name 'SCOUT-*.md' -exec cp {} scout/ \;
+          find collect -type f -name '*.cdx.json' -exec cp {} dist/ \;
+          find collect -type f -name 'SCOUT-*.md' -exec cp {} dist/ \;
           # Both architectures must have been scanned; a missing report means
           # the gate did not run and the release must not be created. On a tag
           # run this is hard: no report, no release. A dry run has no report to
@@ -312,7 +316,7 @@ jobs:
           # scoped to the run that can publish, which is the run it protects.
           if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
             for arch in amd64 arm64; do
-              ls scout/SCOUT-*-linux-"$arch".md >/dev/null 2>&1 \
+              ls dist/SCOUT-*-linux-"$arch".md >/dev/null 2>&1 \
                 || { echo "missing Scout report for linux/$arch"; exit 1; }
             done
           else
@@ -320,6 +324,12 @@ jobs:
           fi
           for bin in eqproxy-linux-amd64 eqproxy-linux-arm64; do
             test -f "dist/$bin" || { echo "missing $bin in dist/ (builds did not produce it)"; exit 1; }
+          done
+          # One SBOM per workspace member: a missing one would be an asset the
+          # checksum file silently does not cover.
+          for member in $(sed -n '/^members = /s/.*\[\(.*\)\].*/\1/p' Cargo.toml | tr -d '",'); do
+            test -f "dist/$(basename "$member").cdx.json" \
+              || { echo "missing SBOM for workspace member $member in dist/"; exit 1; }
           done
 
       # The source tarball is exported from the released commit, not from the
@@ -374,7 +384,7 @@ jobs:
             || { echo "source tarball does not declare version $VERSION"; exit 1; }
           echo "==> dist/$SRC: $(wc -l < "$LIST" | tr -d ' ') entries, $(wc -c < "dist/$SRC" | tr -d ' ') bytes, version $VERSION"
 
-      - name: Write SHA256SUMS.txt (the two Linux binary lines, tarball appended)
+      - name: Write SHA256SUMS.txt (every published asset, binaries first)
         run: |
           set -euo pipefail
           VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
@@ -389,9 +399,24 @@ jobs:
           # Appended, never rewritten: the two Linux lines a v0.6.x user
           # already checks keep their byte-identical form.
           (cd dist && sums "$SRC" >> SHA256SUMS.txt)
+          # Every remaining asset lands in the same file, under the flat name it
+          # is published as: the crate SBOMs and the two Scout reports used to
+          # be attached without a checksum, so a downloader could verify the
+          # binaries and the sources but not the documents next to them.
+          (
+            cd dist
+            for asset in *.cdx.json SCOUT-*.md; do
+              # An unmatched glob stays literal; skip it instead of hashing a
+              # name that does not exist.
+              [ -f "$asset" ] || continue
+              sums "$asset"
+            done >> SHA256SUMS.txt
+          )
           (cd dist && sums -c SHA256SUMS.txt)
           lines=$(wc -l < dist/SHA256SUMS.txt | tr -d ' ')
-          [ "$lines" = "3" ] || { echo "SHA256SUMS.txt has $lines lines, expected 3"; exit 1; }
+          assets=$(find dist -maxdepth 1 -type f ! -name SHA256SUMS.txt | wc -l | tr -d ' ')
+          [ "$lines" = "$assets" ] \
+            || { echo "SHA256SUMS.txt covers $lines of $assets published assets"; exit 1; }
           cat dist/SHA256SUMS.txt
 
       # The release body is the changelog section of *this* version. Passing the
@@ -451,11 +476,11 @@ jobs:
           # to a registry) the tag is re-run, and the release must refresh its
           # assets instead of failing on "release already exists".
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/* sbom/*.cdx.json scout/*.md --clobber
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
             gh release edit "$GITHUB_REF_NAME" \
               --title "$GITHUB_REF_NAME" --notes-file release-notes.md $EXTRA
           else
-            gh release create "$GITHUB_REF_NAME" dist/* sbom/*.cdx.json scout/*.md \
+            gh release create "$GITHUB_REF_NAME" dist/* \
               --title "$GITHUB_REF_NAME" --notes-file release-notes.md $EXTRA
           fi
 

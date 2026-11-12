@@ -51,8 +51,10 @@ EQProxy ships a known critical or high finding at the time of the release.
 
 Standalone Linux binaries for both architectures — `eqproxy-linux-amd64` and
 `eqproxy-linux-arm64`, static musl, no libc required — are on the release page
-together with `SHA256SUMS.txt` (the two Linux binaries plus the sources,
-`eqproxy-<version>-src.tar.gz`, all three checked in one file).
+together with `SHA256SUMS.txt`, which lists every asset of the release: both
+Linux binaries, `eqproxy-<version>-src.tar.gz`, one CycloneDX SBOM per crate
+and the two Docker Scout reports. A single `sha256sum -c` therefore verifies
+the whole download, not only the executables.
 
 The musl binary was measured against **genuinely built glibc binaries** on
 arm64 and amd64, same scenario and same hosts, every response a real `200`

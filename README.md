@@ -76,7 +76,10 @@ release carries two prebuilt Linux binaries — `eqproxy-linux-arm64` and
 `eqproxy-linux-amd64` — the matching sources as
 `eqproxy-<version>-src.tar.gz`, the SBOM of each crate and
 the Docker Scout report of both image architectures, all checked by one
-`SHA256SUMS.txt`. Both images must pass
+`SHA256SUMS.txt`. Up to v0.9.5 that file lists the two binaries and the source
+tarball only; from the next release it also lists every crate SBOM and both
+Scout reports, so one `sha256sum -c` verifies the whole download. Both images
+must pass
 `docker scout cves --only-severity critical,high --exit-code` on
 `linux/amd64` and `linux/arm64` at **0 critical / 0 high** before the release
 can be promoted; the reports are attached to the release.

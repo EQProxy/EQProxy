@@ -40,17 +40,19 @@ converter refuses what it cannot map and says so.
 **The translation is proven, not claimed.** A Rust harness starts the four
 originals in containers and the `eqproxy` binary natively, all in front of the
 same five echo backends, sends 13 routing cases to each and asserts identical
-status, body and headers: **65/65** checks. The header corpus is another
-**23/23**, with all four implementations asserted and no exclusions.
+status, body and headers: **65/65** checks. The differential corpus adds
+**31/31** cases — routing, header actions, compression, the response cache, an
+error page, TLS and one framing limit — with the single documented HAProxy
+exclusion named in the corpus.
 
-**It tells you why.** `eqproxy explain` traces a request through the rule set
-per listener (`timeout_on_fire` included); `config schema` ships the JSON
-Schema for editor completion; `doctor`, `plan`, `diff`, `apply` and `rollback`
-cover the operational path.
+**It tells you why.** `eqproxy config explain` traces a request through the
+rule set per listener (`timeout_on_fire` included); `config schema` ships the
+JSON Schema for editor completion; `doctor` and the
+`config plan`/`diff`/`apply`/`rollback` commands cover the operational path.
 
 ## Status
 
-**v0.9.6 · pre-1.0 · not production-ready.** The test suite is green across 36
+**v0.9.5 · pre-1.0 · not production-ready.** The test suite is green across 36
 targets, real HTTP/1.1, HTTP/2 and HTTP/3 dataplanes — but no users outside the
 author yet. Try it on a staging config and tell me what breaks:
 [KNOWN_GAPS.md](KNOWN_GAPS.md) · [open an issue](https://github.com/EQProxy/EQProxy/issues).
@@ -134,8 +136,8 @@ evidence behind each number — is in
 
 - **Migration:** 65/65 checks (13 cases × 5 implementations) against HAProxy
   3.4.6, operator nginx, ingress-nginx and static Envoy 1.34.2.
-- **Differential:** 23/23 header cases, all four columns asserted, no
-  exclusions.
+- **Differential:** 31/31 cases, all four columns asserted, with one
+  documented HAProxy exclusion on the duplicate `Content-Length` case.
 - **Scope:** all 120 reference rows classified E1 (differential), E2
   (documented difference) or E3 (ADR) in
   [docs/parity-matrix.md](docs/parity-matrix.md).

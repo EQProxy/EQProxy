@@ -1,7 +1,7 @@
 # Contributing to EQProxy
 
-EQProxy is a reverse proxy and load balancer in Rust. It is pre-1.0: v0.9.4 is
-the latest published release (2026-11-09). Issues and pull requests are
+EQProxy is a reverse proxy and load balancer in Rust. It is pre-1.0: v0.9.5 is
+the latest published release (2026-11-12). Issues and pull requests are
 welcome; for a change that touches behaviour, configuration or the wire
 protocol, open an issue first so the scope can be agreed before code is
 written.
@@ -152,39 +152,41 @@ git log origin/main..HEAD --format=%b | grep -iE '^co-authored-by:'
 
 ## Releases
 
-### Latest published release — v0.9.4
+### Latest published release — v0.9.5
 
-`v0.9.4` was published `2026-11-09T00:50:07Z` from the annotated tag `v0.9.4`
-(`da14ee23d6faa1d9f16ec72a0853bf99afd1154a`) over commit
-`24e6dc6b29728b8ce16c197642a58268a27d89bd` (`fix(net): close M-01 HTTP/1.0
-framing for v0.9.4`). The tag run
-[42528272498](https://github.com/EQProxy/EQProxy/actions/runs/42528272498)
-finished `success` with all five jobs green, and its `release` job produced the
-ten assets: two Linux binaries, the source tarball, four CycloneDX SBOMs, the
-two Scout reports and `SHA256SUMS.txt`. Its image job built and scanned the
-`0.9.4-candidate` index and promoted that exact digest.
+`v0.9.5` was published `2026-11-12T17:08:38Z` from the annotated tag `v0.9.5`
+(`fd65bee0b62055e427afa4360560fca76d400813`) over commit
+`3451c190362147a95e44eb1f08f306a39ec73125` (`fix(release): refresh Wolfi base
+for v0.9.5`, which is `a76f017` plus a one-line `docker/Dockerfile` change).
+The tag run
+[43232479817](https://github.com/EQProxy/EQProxy/actions/runs/43232479817)
+finished `success`, and its `release` job produced the ten assets: two Linux
+binaries, the source tarball, four CycloneDX SBOMs, the two Scout reports and
+`SHA256SUMS.txt`. Its image job built and scanned the `0.9.5-candidate` index
+and promoted that exact digest.
 
 | Release asset | SHA-256 |
 |---|---|
-| `eqproxy-linux-amd64` | `53f6d2eb93f670dc0f7bce2296af47b0f80a897fde136128d63e84c17250cd9d` |
-| `eqproxy-linux-arm64` | `d0a68be439616dbc9983bb4516569f87355aab100662d9244818899a1fb32e16` |
-| `eqproxy-0.9.4-src.tar.gz` | `9c011e86e684c04209549973f493560ea3617911162fd197dc9cefe1e9f56621` |
-| `SHA256SUMS.txt` (the file itself) | `7616dfbd1f5b61907055e69dab4b3a586ec6c56ac3e7e9bbe64c940336630203` |
+| `eqproxy-linux-amd64` | `f5788affe6794bd2dcbb778e2d64ed556243daf7032e7a6d873f74f0fb481bc4` |
+| `eqproxy-linux-arm64` | `0d7d3e71fcf97b4eb804fdb386f391b9e86f664bc360233ec481395e5bfba606` |
+| `eqproxy-0.9.5-src.tar.gz` | `27a5b25298a854af6780becc8f3297afdfcda4cebd97f7e7aa35186f6cb1861a` |
+| `SHA256SUMS.txt` (the file itself) | `b07ff56c404ddd15992b94b9efd0f1fcf0cf0e843381f63de9d19a1c076707d0` |
 
 Those three lines are exactly what `SHA256SUMS.txt` checks; the SBOMs and the
 Scout reports are not listed in it.
 
 Both registries serve one OCI index, promoted by digest after the Scout scan:
-`sha256:d139f07b49f6829e354971ade4076512eae469cf40540c4e34add61fd0574ba8`
-for `ghcr.io/eqproxy/eqproxy:0.9.4`, `ghcr.io/eqproxy/eqproxy:latest`,
-`exyonq/eqproxy:0.9.4` and `exyonq/eqproxy:latest`. Its platform manifests are
-`sha256:265b3cd3734c1230e5b370b50d3e33127bfb32b002807df91c9831d56ba00b4d`
+`sha256:ec3413b8a2d871ae810e6cd81f6fbda679fc352a4b3659914a1977ecf5440bc0`
+for `ghcr.io/eqproxy/eqproxy:0.9.5`, `ghcr.io/eqproxy/eqproxy:latest`,
+`exyonq/eqproxy:0.9.5` and `exyonq/eqproxy:latest`. Its platform manifests are
+`sha256:332529054b914196861983628fea0a19e0b1b03487fa210b77607e3a24d1480e`
 (`linux/amd64`) and
-`sha256:234fe266bc45fe2e140b36154914176e7f1e0a04ade6e71eb8a5d523c42377e8`
-(`linux/arm64`); Docker Scout reports **0 critical / 0 high** on both. The
-release workflow re-pulled the published tags and verified `--version`,
-configuration and live traffic on both architectures. There is no Darwin
-asset: the release is Linux-only.
+`sha256:fcde9203219b1bdd411f615732df4cc2628bc33c52632be79ea00a162433e7d7`
+(`linux/arm64`), each reported **0 critical / 0 high** by Docker Scout. The
+release workflow re-pulled the published tags and replayed the journeys
+(`--version`, configuration and live proxied traffic) on both architectures
+before finishing `success`. There is no Darwin asset: the release is
+Linux-only.
 
 Only a `v*` tag publishes. The release workflow needs two repository secrets
 (Settings → Secrets and variables → Actions); neither belongs in the tree:

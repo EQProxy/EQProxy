@@ -1,11 +1,12 @@
-# Parity and evidence — what v0.9.2 ships and how it is proven
+# Parity and evidence — what v0.9.5 ships and how it is proven
 
 Language: **English**.
 
 **What this page answers:** the detailed capability and evidence record that
-used to open the README: what 0.9.2 adds, what the earlier lines added, the
-measured performance including the losses, and the release gates. Moved from
-the README on 2026-11-01; only link targets were adjusted for this directory.
+used to open the README: what 0.9.5 fixes, what the earlier 0.9.x lines added,
+the measured performance including the losses, and the release gates. Moved
+from the README on 2026-11-01; only link targets were adjusted for this
+directory.
 
 > **TLS material (2026-11-04).** Test TLS and mTLS private keys are generated
 > at build time into `OUT_DIR/fixtures`; they are not committed. The
@@ -20,11 +21,22 @@ the README on 2026-11-01; only link targets were adjusted for this directory.
 
 ## Release status
 
-**Status: v0.9.2 (2026-11-06) — released and published; artifact gate met.
-0.9.2 adds TLS 1.3 session resumption, the `Server: EQProxy` banner on every
-dataplane response, a 16 KiB HTTP/2 stream pipe, graceful shutdown on SIGTERM
-and a profiler on `inferno` that clears the `quick-xml` advisories. It builds
-on the v0.9.1 line — Unix-domain backends and per-server `source` bind,
+**Status: v0.9.5 (2026-11-11) — released and published on 2026-11-12 (tag
+`v0.9.5`); artifact gate met.** 0.9.5 is a security and dataplane patch: a
+revalidating `304` can no longer pollute a shared cache entry (AUD-01), client
+`Cache-Control` directives are honored per request (AUD-02), a bodyless
+response cannot declare body framing (ADV-01/P0-3), h2/h3 strip
+`Connection`-nominated headers (ADV-02/P0-4), trailers are bounded on h1, h2
+and h3 (AUD-03), a reused backend socket is checked for liveness at pool
+checkout, and the `rules` fuzz target builds again. Before it, v0.9.4
+normalized one URI and Host before rules and forwarding (H-01), fixed HTTP/1.0
+framing (M-01) and closed the CONNECT, upgrade-negotiation and
+proxy-credential residuals; v0.9.3 moved the published images to
+`ghcr.io/eqproxy/eqproxy` with a reproducible manifest checker. The earlier
+0.9.x line added TLS 1.3 session resumption, the `Server: EQProxy` banner on
+every dataplane response, a 16 KiB HTTP/2 stream pipe, graceful shutdown on
+SIGTERM and a profiler on `inferno` that clears the `quick-xml` advisories, and
+builds on the v0.9.1 line — Unix-domain backends and per-server `source` bind,
 custom error pages, the TLS version range and `errorloc`, the semantic
 reference and the complete 120-row parity matrix — which in turn built on
 v0.8.5: request-filter plugins as WASM with deny-by-default capabilities
@@ -73,9 +85,10 @@ renewal without a restart
 ([ADR-0025](adr/0025-certificate-renewal-without-restart.md)) and an
 **opt-in server-rendered panel** with bearer sessions, a per-session CSRF
 token and a write audit line, no JavaScript
-([ADR-0029](adr/0029-panel-sessions-and-csrf.md)), with **738 tests
+([ADR-0029](adr/0029-panel-sessions-and-csrf.md)), with **799 tests
 passed, 0 failed (2 declared `#[ignore]` Docker harnesses) across 36 targets**
-(`cargo test --workspace`, 2026-11-04) plus two Docker-gated
+(`cargo test --workspace --locked`, v0.9.5 tagged tree, 2026-11-11; the current
+tree runs 807) plus two Docker-gated
 harnesses: [differential corpus](differential-corpus.md) **31/31** cases
 against HAProxy 3.4.6, nginx, the ingress-nginx data plane and static
 Envoy v1.34.2 (full-corpus run 2026-11-04; the 2026-11-02
@@ -146,6 +159,11 @@ The v0.8 administration surface has its own pages:
 [backup pool](evidence/v08-allbackups.md).
 ## Releases, benchmarks and soak
 
+Release v0.9.5 (tag `v0.9.5`, release run 43232479817 green on the tag push,
+image index `sha256:ec3413b8…` served identically by GHCR and Docker Hub
+behind `:0.9.5` and `:latest`, both architectures scanned 0 critical / 0 high,
+published 2026-11-12 — [release record](release-0.9.5.md); Linux binaries for
+amd64 and arm64 verified against `SHA256SUMS.txt`, no Darwin asset).
 Release v0.9.2 (tag `v0.9.2`, release run 42281241472 green on all five
 jobs, image index `sha256:6392aa30…` scanned 0 critical / 0 high on both
 architectures and promoted unchanged to `:0.9.2` and `:latest` on GHCR and
@@ -176,11 +194,12 @@ Worse ([pool sizing](evidence/v07-h2-pool-sizing.md),
 
 ## Scope and non-goals
 
-**Scope honesty:** v0.9.2 is not declared production ready (Phase 9 gate
-pending); its publication gate is met: annotated tag over the release commit
-`6478f10`, all five tag-run jobs green, the scanned index promoted unchanged,
-and the published image re-pulled, run (`--version` answers `eqproxy 0.9.2`)
-and re-scanned ([publication record](release-0.9.2.md)). The v0.9.1 release
+**Scope honesty:** v0.9.5 is not declared production ready (Phase 9 gate
+pending); its publication gate is met: annotated tag `v0.9.5` over `3451c19`,
+the release run green on the tag push, the same scanned index digest served by
+both registries behind `:0.9.5` and `:latest`, and the published binaries
+verified against `SHA256SUMS.txt`. No re-pull or `docker run` of the image was
+executed here ([release record](release-0.9.5.md)). The v0.9.1 release
 was not declared production ready either; its own gate was met
 ([artifact gate](release-0.9.1.md#51-result-2026-11-01)).
 The v0.8.5 release was not declared production

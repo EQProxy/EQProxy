@@ -5,19 +5,21 @@ Language: **English**.
 Minimal-observability TCP/HTTP reverse proxy, written in safe Rust
 (`#![forbid(unsafe_code)]`).
 
-## Status — v0.9.2 «session resumption, banner and shutdown»
+## Status — v0.9.5 «cache, framing and trailer fixes»
 
-Current version: **v0.9.2** (2026-11-06), released and published: annotated tag
-over `6478f10`, release run 42281241472 green on all five jobs, the scanned
-image index `sha256:6392aa30…` promoted unchanged to `:0.9.2` and `:latest` on
-GHCR and mirrored to Docker Hub, 0 critical / 0 high on both architectures
-([publication record](docs/release-0.9.2.md)). It adds TLS 1.3 session
-resumption, the `Server: EQProxy` banner on every dataplane response, a
-16 KiB HTTP/2 stream pipe, graceful shutdown on SIGTERM and a profiler that
-clears the `quick-xml` advisories. It follows the v0.9.1 line, which added
-Unix-domain backends and per-server `source` bind, custom error pages, the TLS
-1.2/1.3 range with `errorloc`, the semantic reference and the complete
-120-row parity matrix. On top of v0.8.5, it is a
+Current version: **v0.9.5** (2026-11-11), released and published on
+2026-11-12: annotated tag `fd65bee…` over `3451c19`, release run 43232479817
+green, the scanned image index `sha256:ec3413b8…` served identically by GHCR
+and Docker Hub behind `:0.9.5` and `:latest`, 0 critical / 0 high on both
+architectures ([release record](docs/release-0.9.5.md)). It closes AUD-01 (a
+revalidating `304` can no longer pollute a shared cache entry), AUD-02 (client
+`Cache-Control` directives), ADV-01/P0-3 (bodyless framing), ADV-02/P0-4
+(`Connection`-nominated headers) and AUD-03 (bounded trailers on h1, h2 and
+h3), checks a reused backend socket for liveness at pool checkout and builds
+the `rules` fuzz target again. It follows v0.9.4, which normalized one URI and
+Host before rules and forwarding, fixed HTTP/1.0 framing and closed the
+CONNECT, upgrade-negotiation and proxy-credential residuals; v0.9.3 moved the
+published images to `ghcr.io/eqproxy/eqproxy`. On top of v0.8.5, it is a
 TCP/HTTP proxy — HTTP/1.1, HTTP/2
 and HTTP/3 — with TLS termination and verified backend TLS, typed routing rules
 per listener, weighted round-robin/leastconn/slow start, active health checks,
@@ -61,10 +63,11 @@ the full example lives in [eqproxy.toml.example](eqproxy.toml.example).
 
 ## Container
 
-Multi-architecture (linux/amd64, linux/arm64) at `ghcr.io/exyonq/eqproxy`:
+Multi-architecture (linux/amd64, linux/arm64) at `ghcr.io/eqproxy/eqproxy` and
+`exyonq/eqproxy`, with the same index digest in both:
 
 ```bash
-docker run --rm ghcr.io/exyonq/eqproxy:0.9.2 --help
+docker run --rm ghcr.io/eqproxy/eqproxy:0.9.5 --help
 ```
 
 ## Audit limitations (v0.5 audit; applicability policy in ADR-0030)

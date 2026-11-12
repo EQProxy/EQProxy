@@ -26,7 +26,10 @@ not available for the current commit; **0.9.6** is the next patch version.
 
 On 2026-11-11, `git ls-remote --tags origin refs/tags/v0.9.5
 refs/tags/v0.9.6` returned no rows and `gh release view v0.9.5` answered
-`release not found`. The pre-existing tag is local only.
+`release not found`. That observation no longer holds: on 2026-11-12 `v0.9.5`
+was published (tag `fd65bee…` → `3451c19`, release run `43232479817`), see
+[the v0.9.5 release record](release-0.9.5.md). **`v0.9.6` remains unpublished**
+on every count.
 
 ## Release claims
 
@@ -63,8 +66,10 @@ working tree is the corrected one.
 | Release workflow changelog extraction on current HEAD | finds `## [v0.9.6]` and emits the corrected section |
 | `git diff --check` | exit 0 |
 
-**Missing for publication:** push, remote tag, GitHub release, Docker Scout,
-cross-architecture amd64/arm64 E2E and a re-pull. P0-7 and the open P0/P1 work
-remain unclosed. The tag/version pair is consistent, but the tag target still
+**Missing for publication of 0.9.6:** the branch `release/v0.9.5` is on origin
+(`84e5eb3`), but there is no remote `v0.9.6` tag, no GitHub release for it, no
+Docker Scout gate, no cross-architecture amd64/arm64 E2E and no re-pull of an
+image built from this tree; the published release is still `v0.9.5`. P0-7 and
+the open P0/P1 work remain unclosed. The tag/version pair is consistent, but the tag target still
 contains the pre-correction release text; realigning it requires a tag move
 that was not performed. The verdict is **NOT PRODUCTION READY**.

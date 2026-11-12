@@ -55,3 +55,10 @@ the gate logs are `/tmp/v095-final-fmt.log`, `/tmp/v095-final-clippy.log`,
 No push, tag publication or workflow dispatch was performed. Docker Scout,
 cross-architecture image E2E and the remote release jobs remain the user's
 publication step; they are not claimed here.
+
+**2026-11-12 update.** Publication was executed after this record was
+written: the tag was set to `3451c19` (this tree plus the Wolfi base refresh
+in `docker/Dockerfile`) and the GitHub release `v0.9.5` was published
+(run `43232479817`). The paragraph above describes the state on 2026-11-11 and
+is kept as run; the published-artifact facts and the checks executed against
+them are in [the v0.9.5 release record](../release-0.9.5.md).

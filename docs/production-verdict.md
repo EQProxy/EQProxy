@@ -16,7 +16,7 @@ declaration.
 | Version | `0.9.6` in `Cargo.toml`; `CHANGELOG.md` has `## [v0.9.6]` |
 | Tag | annotated `v0.9.6` → `0f03bf4`, **local only**, not realigned to the later correction; `v0.9.5` remains at `a76f017`; no remote tag |
 | Release claims | only **M-01** and **P0-8**; P0-7, P0-10…P0-15 and P1-1…P1-10 remain open |
-| Published artifact | **none**: no push, GitHub release, registry image, digest promotion or re-pull |
+| Published artifact | **none for 0.9.6**: the branch is on origin (`release/v0.9.5` at `84e5eb3`), but no `v0.9.6` tag, GitHub release, registry image, digest promotion or re-pull; the published release is `v0.9.5` (2026-11-12) |
 | Final local suite | `cargo test --workspace --locked` → **807 passed, 0 failed, 2 ignored** (39 result blocks); see [P0-8/P0-9 evidence](evidence/v095-p0-8-p0-9.md) |
 
 ## What the evidence actually shows
@@ -59,8 +59,9 @@ declaration.
   and no native `linux/arm64` journey on `oracle-quasar` for this tree.
 - **Docker / Scout:** no image build, no native image E2E and no Docker Scout
   critical/high gate for v0.9.6. **NOT EXECUTED.**
-- **Publication:** no push, remote tag, GitHub release, image digest or
-  checksum verification of a published artifact exists.
+- **Publication:** no remote `v0.9.6` tag, GitHub release, image digest or
+  checksum of an artifact built from this tree exists. `v0.9.5` was published
+  from a different commit (`3451c19`), so it does not cover this tree.
 - **P1-4:** version and changelog exist, but the release is not closed; the
   local tag is not a publication.
 

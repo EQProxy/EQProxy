@@ -82,7 +82,7 @@ COPY --from=builder /opt/eqproxy /eqproxy
 # documented offline state commands used to fail with "Permission denied"
 # inside the container. It is created here and mounted as a volume by
 # operators that want it to survive a container replacement.
-FROM cgr.dev/chainguard/wolfi-base:latest@sha256:8509ee4351a2e501b7f98201f2e2642396e82020c61a589cacdcfe74b9de46c1 AS runtime
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:94fa13e26d449f7d78dbcd02d12ea37a0da80d24fcc3e1f17b95d515dec607a7 AS runtime
 RUN mkdir -p /var/lib/eqproxy \
     && chown 65532:65532 /var/lib/eqproxy
 COPY --from=builder /opt/eqproxy /opt/eqproxy

@@ -489,6 +489,13 @@ impl Conv {
         self.backends.insert(name, backend);
     }
 
+    /// Mutable access to a backend the importer already created, so a later
+    /// directive (`proxy_ssl_*`, EXT-H-04) can complete what `proxy_pass`
+    /// started without building a second copy of the backend.
+    fn backend_mut(&mut self, name: &str) -> Option<&mut Backend> {
+        self.backends.get_mut(name)
+    }
+
     fn add_listener(&mut self, name: String, listener: Listener) {
         self.listeners.insert(name, listener);
     }

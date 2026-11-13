@@ -1518,6 +1518,15 @@ fn location(
     }
     let mut length = path.len();
     let mut has_target = false;
+    // EXT-H-04: an `https://` target and the `proxy_ssl_*` directives that
+    // qualify it are collected here and applied after the loop, because nginx
+    // accepts them before or after `proxy_pass`. The tuple keeps the host (the
+    // SNI source) and the directive text (the report row) of that target.
+    let mut https_target: Option<(String, String)> = None;
+    let mut ssl_verify: Option<bool> = None;
+    let mut ssl_ca: Option<String> = None;
+    let mut ssl_sni: Option<bool> = None;
+    let mut ssl_name: Option<String> = None;
 
     for child in &node.children {
         let before = conv.notes.len();
@@ -1537,7 +1546,29 @@ fn location(
                     );
                     continue;
                 }
-                let without_scheme = target.split_once("//").map(|(_, rest)| rest).unwrap_or(target);
+                // The scheme is a security property, not decoration: dropping
+                // it turned nginx's TLS to the origin into plaintext with no
+                // word in the report (EXT-H-04).
+                let (scheme, without_scheme) = match target.split_once("://") {
+                    Some((scheme, rest)) => (Some(scheme.to_ascii_lowercase()), rest),
+                    None => (None, target.as_str()),
+                };
+                let https = match scheme.as_deref() {
+                    Some("https") => true,
+                    Some("http") | None => false,
+                    Some(other) => {
+                        conv.review(
+                            1,
+                            &text,
+                            &context,
+                            format!(
+                                "esquema «{other}://» sin equivalente: la regla no se emite \
+                                 (EQProxy habla HTTP/1.1, HTTP/2 y HTTP/3 hacia el backend)"
+                            ),
+                        );
+                        continue;
+                    }
+                };
                 // ADR-0043: `http://unix:/run/app.sock` (optionally followed
                 // by `:/uri`) is one target, not an authority plus a path.
                 let (authority, uri) = match without_scheme.strip_prefix("unix:") {
@@ -1563,8 +1594,12 @@ fn location(
                         ),
                     );
                 }
-                let backend_name = resolve_backend(conv, &authority, &context);
+                let backend_name =
+                    resolve_backend(conv, &authority, if https { 443 } else { 80 }, &context);
                 if let Some(backend_name) = backend_name {
+                    if https {
+                        https_target = Some((authority.clone(), text.clone()));
+                    }
                     rule.use_backend = Some(backend_name.clone());
                     has_target = true;
                     conv.done(
@@ -1575,6 +1610,38 @@ fn location(
                     );
                 }
             }
+            // EXT-H-04: the TLS qualifiers of `proxy_pass https://…`.
+            "proxy_ssl_verify" => {
+                let on = child.args.first().is_some_and(|arg| arg.trim() == "on");
+                ssl_verify = Some(on);
+                conv.done(1, &text, &context, format!("verify = {on}"));
+            }
+            "proxy_ssl_trusted_certificate" => match child.args.first() {
+                Some(path) => {
+                    let path = path.trim_matches(['"', '\'']).to_owned();
+                    conv.done(1, &text, &context, format!("ca_file = «{path}»"));
+                    ssl_ca = Some(path);
+                }
+                None => conv.review(
+                    1,
+                    &text,
+                    &context,
+                    "proxy_ssl_trusted_certificate sin ruta: se ignora",
+                ),
+            },
+            "proxy_ssl_server_name" => {
+                let on = child.args.first().is_some_and(|arg| arg.trim() == "on");
+                ssl_sni = Some(on);
+                conv.done(1, &text, &context, format!("SNI hacia el origen: {on}"));
+            }
+            "proxy_ssl_name" => match child.args.first() {
+                Some(name) => {
+                    let name = name.trim_matches(['"', '\'']).to_owned();
+                    conv.done(1, &text, &context, format!("server_name = «{name}»"));
+                    ssl_name = Some(name);
+                }
+                None => conv.review(1, &text, &context, "proxy_ssl_name vacío: se ignora"),
+            },
             "error_page" | "proxy_intercept_errors" => conv.review(
                 1,
                 &text,
@@ -1696,6 +1763,22 @@ fn location(
         conv.touch(&directive(child), &context, before)?;
     }
 
+    if let (Some((authority, text)), Some(name)) = (&https_target, &rule.use_backend) {
+        apply_backend_tls(
+            conv,
+            name,
+            &context,
+            text,
+            BackendTlsOptions {
+                authority: Some(authority),
+                verify: ssl_verify,
+                ca_file: ssl_ca,
+                sni: ssl_sni,
+                server_name: ssl_name,
+            },
+        );
+    }
+
     if !has_target {
         return Ok((None, length.max(1)));
     }
@@ -1705,7 +1788,12 @@ fn location(
 
 /// Resolves a `proxy_pass` authority: an upstream name, or a literal address
 /// that becomes a single-server backend.
-fn resolve_backend(conv: &mut Conv, authority: &str, context: &str) -> Option<String> {
+fn resolve_backend(
+    conv: &mut Conv,
+    authority: &str,
+    default_port: u16,
+    context: &str,
+) -> Option<String> {
     let cleaned = sanitize_name(authority);
     if conv.has_backend(&cleaned) {
         return Some(cleaned);
@@ -1716,7 +1804,7 @@ fn resolve_backend(conv: &mut Conv, authority: &str, context: &str) -> Option<St
     let addr = normalize_addr(
         conv,
         authority,
-        Some(80),
+        Some(default_port),
         &format!("proxy_pass {authority}"),
         context,
         true,
@@ -1737,6 +1825,118 @@ fn resolve_backend(conv: &mut Conv, authority: &str, context: &str) -> Option<St
         format!("origen literal convertido en backend «{name}» ({addr})"),
     );
     Some(name)
+}
+
+/// The TLS a location declares for its backend, gathered from
+/// `proxy_pass https://…` and the `proxy_ssl_*` directives that qualify it.
+/// `None` means the directive was absent, which is not the same as nginx's
+/// default `off`: the difference is what the idempotency check compares.
+#[derive(Default)]
+struct BackendTlsOptions<'a> {
+    /// Host of the `proxy_pass` authority; it is the SNI when the location sets
+    /// `proxy_ssl_server_name on` and no `proxy_ssl_name`.
+    authority: Option<&'a str>,
+    /// `proxy_ssl_verify` (nginx default: off).
+    verify: Option<bool>,
+    /// `proxy_ssl_trusted_certificate`.
+    ca_file: Option<String>,
+    /// `proxy_ssl_server_name` (nginx default: off, no SNI).
+    sni: Option<bool>,
+    /// `proxy_ssl_name`.
+    server_name: Option<String>,
+}
+
+/// EXT-H-04: a `proxy_pass https://…` target keeps TLS. nginx verifies
+/// nothing and sends no SNI by default; `proxy_ssl_verify`,
+/// `proxy_ssl_trusted_certificate`, `proxy_ssl_server_name` and
+/// `proxy_ssl_name` turn either on, so exactly those reach
+/// `[backend.<name>.tls]` and nothing is invented.
+fn apply_backend_tls(
+    conv: &mut Conv,
+    backend: &str,
+    context: &str,
+    directive: &str,
+    tls: BackendTlsOptions<'_>,
+) {
+    let BackendTlsOptions {
+        authority,
+        verify,
+        ca_file,
+        sni,
+        server_name,
+    } = tls;
+    let verify = verify.unwrap_or(false);
+    let server_name = server_name.or_else(|| {
+        if sni.unwrap_or(false) {
+            authority.and_then(sni_host).map(str::to_owned)
+        } else {
+            None
+        }
+    });
+    // A backend shared by several locations carries one TLS combination. The
+    // same one stays silent (several paths to one origin is the normal shape);
+    // only a real divergence is reported, because the model cannot hold two
+    // proxy_ssl_* sets for one backend. `None` = no TLS yet, `Some(true)` = the
+    // same combination, `Some(false)` = a divergence. Compared by reference, so
+    // the check costs no allocations.
+    let existing = conv.backend_mut(backend).and_then(|target| {
+        target.tls.as_ref().map(|tls| {
+            tls.verify == verify && tls.ca_file == ca_file && tls.server_name == server_name
+        })
+    });
+    match existing {
+        Some(true) => return,
+        Some(false) => {
+            conv.review(
+                1,
+                directive,
+                context,
+                format!(
+                    "el backend «{backend}» ya declara [backend.{backend}.tls] con otros valores: \
+                     revise a mano qué combinación de proxy_ssl_* aplica a cada location"
+                ),
+            );
+            return;
+        }
+        None => {}
+    }
+    // Built before the values move into the backend.
+    let mut fields = vec![format!("verify = {verify}")];
+    if let Some(ca) = &ca_file {
+        fields.push(format!("ca_file = «{ca}»"));
+    }
+    if let Some(name) = &server_name {
+        fields.push(format!("server_name = «{name}»"));
+    }
+    let detail = fields.join(", ");
+    if let Some(target) = conv.backend_mut(backend) {
+        target.tls = Some(super::BackendTls {
+            verify,
+            ca_file,
+            server_name,
+            alpn: Vec::new(),
+            min_version: None,
+        });
+    }
+    conv.info(
+        1,
+        directive,
+        context,
+        format!("TLS al backend en [backend.{backend}.tls]: {detail}"),
+    );
+}
+
+/// The host of an authority when it is a name: TLS SNI carries DNS names, so an
+/// IP literal (bracketed or not) never becomes `server_name`.
+fn sni_host(authority: &str) -> Option<&str> {
+    let host = match authority.strip_prefix('[') {
+        Some(rest) => rest.split_once(']').map_or(rest, |(inside, _)| inside),
+        None => authority.split(':').next().unwrap_or(authority),
+    };
+    if host.is_empty() || host.parse::<std::net::IpAddr>().is_ok() {
+        return None;
+    }
+    Some(host)
 }
 
 /// `10.9.9.9` → `10.9.9.9/32`, `::1` → `::1/128`; a CIDR is kept.
@@ -1852,7 +2052,9 @@ fn stream(conv: &mut Conv, stream: &Node) -> Result<(), ImportError> {
             conv.reject(1, "proxy_pass", &context, "proxy_pass vacío: se omite");
             continue;
         };
-        let backend = match resolve_backend(conv, target, &context) {
+        // A stream `proxy_pass` names an address, not a URL: there is no
+        // scheme to carry (nginx does not accept one there either).
+        let backend = match resolve_backend(conv, target, 80, &context) {
             Some(name) => name,
             None => continue,
         };
@@ -1985,6 +2187,144 @@ mod tests {
             outcome.report.contains("recortado a 1000000"),
             "and the clipping is named in the report:\n{}",
             outcome.report
+        );
+    }
+
+    #[test]
+    fn proxy_pass_https_keeps_tls_and_defaults_to_443() {
+        // EXT-H-04 / P0-13: the scheme used to be dropped, so nginx's TLS to
+        // the origin became plaintext with nothing in the report.
+        let https = "http {\n  server {\n    listen 80;\n    location / { proxy_pass https://backend.internal:8443; }\n  }\n}\n";
+        let outcome = super::super::convert(super::super::Source::Nginx, https).expect("convert");
+        assert!(
+            outcome
+                .toml
+                .contains("[backend.backend_backend_internal_8443.tls]"),
+            "https must reach [backend.*.tls]:\n{}",
+            outcome.toml
+        );
+        assert!(
+            outcome.toml.contains("server = \"backend.internal:8443\""),
+            "the port is kept:\n{}",
+            outcome.toml
+        );
+        assert!(
+            outcome.report.contains("TLS al backend"),
+            "the report must name the TLS mapping, not stay silent:\n{}",
+            outcome.report
+        );
+
+        // No port means 443, never 80.
+        let default_port = "http {\n  server {\n    listen 80;\n    location / { proxy_pass https://10.0.0.1; }\n  }\n}\n";
+        let outcome =
+            super::super::convert(super::super::Source::Nginx, default_port).expect("convert");
+        assert!(
+            outcome.toml.contains("server = \"10.0.0.1:443\""),
+            "https without a port is 443, never 80:\n{}",
+            outcome.toml
+        );
+        assert!(outcome.toml.contains(".tls]"), "\n{}", outcome.toml);
+
+        // Plain http keeps port 80 and gains no TLS.
+        let plain = "http {\n  server {\n    listen 80;\n    location / { proxy_pass http://10.0.0.2; }\n  }\n}\n";
+        let outcome = super::super::convert(super::super::Source::Nginx, plain).expect("convert");
+        assert!(
+            outcome.toml.contains("server = \"10.0.0.2:80\""),
+            "\n{}",
+            outcome.toml
+        );
+        assert!(
+            !outcome.toml.contains(".tls]"),
+            "plain http must not gain TLS:\n{}",
+            outcome.toml
+        );
+    }
+
+    #[test]
+    fn proxy_ssl_directives_fill_the_backend_tls_block() {
+        // nginx defaults: no verification of the origin certificate and no
+        // SNI; `proxy_ssl_*` is what turns either on, so the import must not
+        // invent them.
+        let source = "http {\n  server {\n    listen 80;\n    location / {\n      proxy_pass https://backend.internal:8443;\n      proxy_ssl_verify on;\n      proxy_ssl_trusted_certificate /etc/ca.pem;\n      proxy_ssl_server_name on;\n      proxy_ssl_name app.example;\n    }\n  }\n}\n";
+        let outcome = super::super::convert(super::super::Source::Nginx, source).expect("convert");
+        assert!(
+            outcome.toml.contains("verify = true"),
+            "proxy_ssl_verify on must verify:\n{}",
+            outcome.toml
+        );
+        assert!(
+            outcome.toml.contains("ca_file = \"/etc/ca.pem\""),
+            "proxy_ssl_trusted_certificate must become ca_file:\n{}",
+            outcome.toml
+        );
+        assert!(
+            outcome.toml.contains("server_name = \"app.example\""),
+            "proxy_ssl_name must become server_name:\n{}",
+            outcome.toml
+        );
+
+        // `proxy_ssl_server_name on` without `proxy_ssl_name` takes the SNI from
+        // the authority, and an IP literal (no DNS name to present) never
+        // becomes server_name.
+        let sni = "http {\n  server {\n    listen 80;\n    location / {\n      proxy_pass https://backend.internal:8443;\n      proxy_ssl_server_name on;\n    }\n  }\n}\n";
+        let outcome = super::super::convert(super::super::Source::Nginx, sni).expect("convert");
+        assert!(
+            outcome.toml.contains("server_name = \"backend.internal\""),
+            "SNI comes from the authority:\n{}",
+            outcome.toml
+        );
+
+        let ip_sni = "http {\n  server {\n    listen 80;\n    location / {\n      proxy_pass https://10.0.0.9:8443;\n      proxy_ssl_server_name on;\n    }\n  }\n}\n";
+        let outcome = super::super::convert(super::super::Source::Nginx, ip_sni).expect("convert");
+        assert!(
+            !outcome.toml.contains("server_name = "),
+            "an IP literal is never an SNI name:\n{}",
+            outcome.toml
+        );
+    }
+
+    #[test]
+    fn two_locations_to_the_same_https_backend_are_idempotent() {
+        // The same backend reached from two locations with the same
+        // proxy_ssl_* combination is one TLS configuration, not a conflict:
+        // the second location must not be reported for review.
+        let same = "http {\n  upstream app { server 10.0.0.1:8443; }\n  server {\n    listen 80;\n    location /a { proxy_pass https://app; }\n    location /b { proxy_pass https://app; }\n  }\n}\n";
+        let outcome = super::super::convert(super::super::Source::Nginx, same).expect("convert");
+        assert_eq!(
+            outcome.toml.matches("[backend.app.tls]").count(),
+            1,
+            "one TLS block for the shared backend:\n{}",
+            outcome.toml
+        );
+        assert!(
+            !outcome.report.contains("ya declara"),
+            "identical combinations must not be reviewed:\n{}",
+            outcome.report
+        );
+        assert_eq!(
+            outcome.report.matches("TLS al backend").count(),
+            1,
+            "the mapping is named once, for the first location:\n{}",
+            outcome.report
+        );
+
+        // A different combination for the same backend is the case the model
+        // cannot represent, and it stays a review that names the backend.
+        let diverging = "http {\n  upstream app { server 10.0.0.1:8443; }\n  server {\n    listen 80;\n    location /a { proxy_pass https://app; }\n    location /b {\n      proxy_pass https://app;\n      proxy_ssl_verify on;\n    }\n  }\n}\n";
+        let outcome =
+            super::super::convert(super::super::Source::Nginx, diverging).expect("convert");
+        assert!(
+            outcome
+                .report
+                .contains("ya declara [backend.app.tls] con otros valores"),
+            "a real divergence is still reported:\n{}",
+            outcome.report
+        );
+        assert_eq!(
+            outcome.toml.matches("[backend.app.tls]").count(),
+            1,
+            "\n{}",
+            outcome.toml
         );
     }
 

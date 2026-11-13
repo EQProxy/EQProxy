@@ -29,7 +29,7 @@ the differential corpus.
 cargo test -p eqproxy-cli --test migration -- --ignored --nocapture
 ```
 
-Last run (13/13 cases × 5 implementations = 65/65 checks): evidence and
+Last run (14/14 cases × 5 implementations = 70/70 checks): evidence and
 environment in [`docs/evidence/v06-migration/`](../evidence/v06-migration/README.md).
 
 ## Files
@@ -55,6 +55,12 @@ any path rewrite are both visible in the body:
 | `admin` | 172.24.0.13:80 | admin writes |
 | `canary` | 172.24.0.14:80 | storefront canary |
 | `fallback` | 172.24.0.15:80 | default backend |
+| `tls-origin` | 172.24.0.16:8443 (**HTTPS only**) | reporting origin, self-signed |
+
+`tls-origin` answers TLS only (`listen 8443 ssl`): a proxy that downgrades the
+scheme to cleartext gets `400 The plain HTTP request was sent to HTTPS port`
+instead of an echo. Its certificate is v3 with a SAN and is generated per run
+(no key is committed), because a v1 certificate is refused by rustls.
 
 Every implementation listens on `:8080`. The harness renders
 [eqproxy.toml](eqproxy.toml) with two declared substitutions — nothing else is
@@ -88,6 +94,7 @@ on each, with no exclusions.
 | m11 | `GET /healthz` | shop.example.com | `200 ok` (local answer) |
 | m12 | `GET /x` | other.example.com | `200 fallback /x` |
 | m13 | `GET /x` | api.example.com | `200 fallback /x` |
+| m14 | `GET /tls/x` | shop.example.com | `200 tls-origin /tls/x` (TLS to the origin) |
 
 ## Mapping
 
@@ -102,6 +109,7 @@ on each, with no exclusions.
 | prefix rewrite | `http-request set-path` | `rewrite … break` | `prefix_rewrite` | `rewrite-target` | `rewrite.path_prefix_rewrite` |
 | redirect | `http-request redirect` | `return 301` | `redirect` | snippet `return 301` | `redirect` |
 | local answer | `http-request return` | `return 200` | `direct_response` | snippet `return 200` | `direct_response` |
+| TLS to the origin | `server … ssl verify none` | `proxy_pass https://` + `proxy_ssl_verify` | `UpstreamTlsContext` | `backend-protocol: HTTPS` | `[backend.*.tls]` |
 | default | `default_backend` | `default_server` | `domains: ["*"]` | `defaultBackend` | listener `backend` |
 
 ## Declared limitations
@@ -121,8 +129,10 @@ on each, with no exclusions.
   atomic swap (ADR-0019), not an xDS control plane; the optional adapter and
   its constraints are recorded in
   [ADR-0027](../adr/0027-xds-bridge-decision.md) (E2).
-- **TLS, SNI, WebSocket upgrade and HTTP/2** are outside this matrix (they are
-  transport concerns covered by their own slices); all five run plain HTTP/1.1.
+- **TLS is covered in one direction only.** Case m14 proves that all five reach
+  an HTTPS-only origin over TLS (scheme preserved, verification off, no SNI).
+  TLS on the listening side, SNI, ALPN, WebSocket upgrade and HTTP/2 are outside
+  this matrix; all five accept plain HTTP/1.1 on `:8080`.
 - **Load balancing across several servers per pool** is out of scope here (one
   server per pool keeps "which pool served it" observable); the balancing
   algorithms are covered by the differential corpus and benchmarks.

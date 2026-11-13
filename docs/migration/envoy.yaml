@@ -44,6 +44,10 @@ static_resources:
                           route: { cluster: web }
                         - match: { prefix: "/reports/" }
                           route: { cluster: api }
+                        # HTTPS-only origin: an upstream TLS socket with no
+                        # validation context (Envoy skips verification then).
+                        - match: { prefix: "/tls/" }
+                          route: { cluster: tls_origin }
                         - match:
                             prefix: "/"
                             headers:
@@ -125,3 +129,19 @@ static_resources:
               - endpoint:
                   address:
                     socket_address: { address: 172.24.0.15, port_value: 80 }
+    - name: tls_origin
+      connect_timeout: 5s
+      type: STATIC
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+          common_tls_context:
+            alpn_protocols: ["http/1.1"]
+      load_assignment:
+        cluster_name: tls_origin
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: 172.24.0.16, port_value: 8443 }

@@ -118,6 +118,37 @@ spec:
                 port:
                   number: 80
 ---
+# The HTTPS-only reporting origin (port 8443, self-signed in the demo).
+apiVersion: v1
+kind: Service
+metadata:
+  name: tls-origin
+spec:
+  ports:
+    - port: 8443
+---
+# shop.example.com: the reporting origin speaks HTTPS only, so the controller
+# is told to talk TLS to its Service (`backend-protocol: HTTPS`).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: shop-tls
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: shop.example.com
+      http:
+        paths:
+          - path: /tls/
+            pathType: Prefix
+            backend:
+              service:
+                name: tls-origin
+                port:
+                  number: 8443
+---
 # shop.example.com: reports API.
 apiVersion: networking.k8s.io/v1
 kind: Ingress

@@ -4,9 +4,10 @@
 //!
 //! Runs HAProxy, operator nginx, the ingress-nginx data plane (controller-shaped
 //! generated config) and Envoy as containers, and the freshly built EQProxy
-//! binary natively, all in front of the same five echo backends; every case is
-//! sent to all five implementations and the declared outcome is asserted on
-//! each. The report is written to `$CARGO_TARGET_TMPDIR/migration-report.md`.
+//! binary natively, all in front of the same five echo backends and one
+//! HTTPS-only origin (case m14); every case is sent to all five
+//! implementations and the declared outcome is asserted on each. The report is
+//! written to `$CARGO_TARGET_TMPDIR/migration-report.md`.
 //!
 //! Ignored by default (needs Docker + the reference images):
 //! `cargo test -p eqproxy-cli --test migration -- --ignored --nocapture`
@@ -34,6 +35,11 @@ const POOLS: [(&str, &str); 5] = [
     ("canary", "172.24.0.14"),
     ("fallback", "172.24.0.15"),
 ];
+
+/// The HTTPS-only origin of case m14 (self-signed certificate, generated
+/// inside the container at start-up so no key is committed).
+const TLS_ORIGIN_IP: &str = "172.24.0.16";
+const TLS_ORIGIN_PORT: u16 = 8443;
 
 /// Declared outcome of one matrix case.
 struct Expect {
@@ -199,6 +205,18 @@ const CASES: &[Case] = &[
             status: 200,
             location: None,
             body: Some("fallback /x"),
+        },
+    },
+    Case {
+        id: "m14-tls-backend",
+        why: "an HTTPS-only origin is reached over TLS, not in cleartext",
+        request_line: "GET /tls/x HTTP/1.1",
+        host: "shop.example.com",
+        headers: &[],
+        expect: Expect {
+            status: 200,
+            location: None,
+            body: Some("tls-origin /tls/x"),
         },
     },
     Case {
@@ -472,6 +490,50 @@ fn backend_conf(id: &str) -> String {
     )
 }
 
+/// The HTTPS-only origin of case m14: same echo shape, but reachable only on
+/// 8443 with a certificate issued to nobody in particular.
+fn tls_origin_conf() -> String {
+    "server {\n    listen 8443 ssl;\n    server_name _;\n    ssl_certificate /etc/nginx/tls/cert.pem;\n    ssl_certificate_key /etc/nginx/tls/key.pem;\n    location / {\n        return 200 \"tls-origin $request_uri\";\n    }\n}\n".to_owned()
+}
+
+/// Self-signed certificate for the m14 origin, generated into the work dir on
+/// the host (`nginx:alpine` ships no openssl) so no key is ever committed.
+fn generate_tls_origin_cert(work: &std::path::Path) -> (PathBuf, PathBuf) {
+    let cert = work.join("tls-origin.crt");
+    let key = work.join("tls-origin.key");
+    let out = Command::new("openssl")
+        .args([
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-sha256",
+            "-days",
+            "2",
+            "-subj",
+            "/CN=tls-origin",
+            // Any certificate a real origin serves is v3; LibreSSL's bare
+            // `req -x509` emits v1, which rustls refuses (EQProxy answers 502
+            // while the other four accept it), so the SAN extension is what
+            // makes the case test the routing and not a v1 quirk.
+            "-addext",
+            "subjectAltName=DNS:tls-origin",
+            "-keyout",
+        ])
+        .arg(&key)
+        .arg("-out")
+        .arg(&cert)
+        .output()
+        .expect("run openssl (the m14 TLS origin needs a certificate)");
+    assert!(
+        out.status.success(),
+        "openssl req failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (cert, key)
+}
+
 // --- the gate -------------------------------------------------------------
 
 #[cfg_attr(
@@ -541,6 +603,39 @@ fn migration_matrix_same_routing_as_the_originals() {
             .map(|(_, port)| *port)
             .unwrap_or_else(|| panic!("no published port for {pool}"))
     };
+
+    // The HTTPS-only origin of case m14. It refuses cleartext (listen 8443
+    // ssl), so a proxy that downgrades the scheme fails the case instead of
+    // silently succeeding.
+    let tls_conf = work.join("tls-origin.conf");
+    std::fs::write(&tls_conf, tls_origin_conf()).expect("write tls origin conf");
+    let (tls_cert, tls_key) = generate_tls_origin_cert(&work);
+    let tls_name = format!("eqmig-tls-{}", std::process::id());
+    scope.run(
+        &tls_name,
+        BACKEND_IMAGE,
+        &[
+            "--ip",
+            TLS_ORIGIN_IP,
+            "--expose",
+            &TLS_ORIGIN_PORT.to_string(),
+            "-p",
+            &format!("127.0.0.1::{TLS_ORIGIN_PORT}"),
+            "-v",
+            &format!("{}:/etc/nginx/conf.d/default.conf:ro", tls_conf.display()),
+            "-v",
+            &format!("{}:/etc/nginx/tls/cert.pem:ro", tls_cert.display()),
+            "-v",
+            &format!("{}:/etc/nginx/tls/key.pem:ro", tls_key.display()),
+        ],
+        &[],
+    );
+    let tls_port = published_port(&tls_name, TLS_ORIGIN_PORT);
+    wait_tcp(
+        &format!("127.0.0.1:{tls_port}"),
+        "tls origin",
+        &container_logs(&tls_name),
+    );
 
     // The four originals, each with its own checked-in source config.
     let hap_name = format!("eqmig-hap-{}", std::process::id());
@@ -651,6 +746,9 @@ fn migration_matrix_same_routing_as_the_originals() {
         assert!(rendered.contains(&from), "translation lost {from}");
         rendered = rendered.replace(&from, &to);
     }
+    let tls_from = format!("server = \"{TLS_ORIGIN_IP}:{TLS_ORIGIN_PORT}\"");
+    assert!(rendered.contains(&tls_from), "translation lost {tls_from}");
+    rendered = rendered.replace(&tls_from, &format!("server = \"127.0.0.1:{tls_port}\""));
     assert!(
         !rendered.contains("172.24."),
         "rendered translation still points at container addresses"
@@ -784,8 +882,12 @@ fn migration_matrix_same_routing_as_the_originals() {
         "- backends: {BACKEND_IMAGE} ({})\n",
         image_id(BACKEND_IMAGE)
     ));
+    report.push_str(&format!(
+        "- tls origin (case m14): {BACKEND_IMAGE} ({}) on {TLS_ORIGIN_IP}:{TLS_ORIGIN_PORT}, self-signed\n",
+        image_id(BACKEND_IMAGE)
+    ));
     report.push_str(
-        "- substitutions on the EQProxy translation (declared): free local listen\n  address, and the five pools reached through their published host ports\n  instead of the fixed container addresses.\n\n",
+        "- substitutions on the EQProxy translation (declared): free local listen\n  address, and the five pools plus the TLS origin reached through their\n  published host ports instead of the fixed container addresses.\n\n",
     );
     report.push_str("| case | semantics | eqproxy | haproxy | nginx | ingress-nginx | envoy |\n");
     report.push_str("|---|---|---|---|---|---|---|\n");

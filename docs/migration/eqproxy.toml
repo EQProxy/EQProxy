@@ -51,6 +51,14 @@ host = "shop.example.com"
 path_prefix = "/reports/"
 use_backend = "api"
 
+# /tls/: the reporting origin speaks HTTPS only (self-signed in the demo), so
+# the backend declares TLS instead of being reached in cleartext.
+[[listener.web.rules]]
+name = "tls-origin"
+host = "shop.example.com"
+path_prefix = "/tls/"
+use_backend = "tls_origin"
+
 # Canary of shop.example.com: flagged by cookie or by header.
 [[listener.web.rules]]
 name = "canary-cookie"
@@ -105,3 +113,9 @@ server = "172.24.0.14:80"
 
 [backend.fallback]
 server = "172.24.0.15:80"
+
+[backend.tls_origin]
+server = "172.24.0.16:8443"
+
+[backend.tls_origin.tls]
+verify = false

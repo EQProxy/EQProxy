@@ -107,10 +107,17 @@ impl Source {
     }
 }
 
-/// Severity of one classification. The three outcomes of the report are
-/// [`Self::Done`] (convertido), [`Self::Info`]/[`Self::Review`] (revisar) and
+/// Severity of one classification. The outcomes of the report are
+/// [`Self::Done`] (convertido), [`Self::Degraded`] (convertido, pero con menos
+/// seguridad que la fuente), [`Self::Info`]/[`Self::Review`] (revisar) and
 /// [`Self::Gap`]/[`Self::Rejected`] (rechazado).
+///
+/// `#[non_exhaustive]` because the classification is a contract that grows: a
+/// future importer learns to name a new outcome and adds a variant. Readers
+/// outside this crate must leave a wildcard arm; within it, matches stay
+/// exhaustive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum Severity {
     /// Converted into a schema field.
     Done,
@@ -122,6 +129,48 @@ pub enum Severity {
     Gap,
     /// The source value cannot be translated as written.
     Rejected,
+    /// The conversion keeps the directive's effect, but with weaker semantics
+    /// than the source declared. Always carries a [`Degradation`], so a lost
+    /// security property never reads as `Done`.
+    ///
+    /// Appended after the older variants so their discriminants and their
+    /// `Ord` positions do not move (N-2).
+    Degraded,
+}
+
+/// The security property a conversion kept from its source and the one it did
+/// not: the mandatory reason of a [`Severity::Degraded`] classification.
+///
+/// The reason is a closed type rather than free text, so a degraded directive
+/// cannot be filed without naming what was lost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Degradation {
+    /// The source authenticated itself to the origin with a client
+    /// certificate; `[backend.*.tls]` has no field for one.
+    ClientCertificate,
+    /// The source fixed the TLS versions of the origin connection.
+    ProtocolPolicy,
+    /// The source fixed the cipher suites of the origin connection.
+    CipherPolicy,
+    /// The source bounded the length of the certificate chain it accepts.
+    VerifyDepth,
+    /// Two paths share one backend with different TLS identities: one of them
+    /// now verifies a name its own source never declared.
+    IdentityRelaxed,
+}
+
+impl std::fmt::Display for Degradation {
+    /// The lost property, as the label a report row starts with.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::ClientCertificate => "certificado de cliente (mTLS)",
+            Self::ProtocolPolicy => "política de versiones TLS",
+            Self::CipherPolicy => "política de cifrados",
+            Self::VerifyDepth => "profundidad de verificación",
+            Self::IdentityRelaxed => "identidad TLS compartida",
+        })
+    }
 }
 
 /// One classified source directive.
@@ -142,9 +191,10 @@ pub struct Note {
 pub struct Counts {
     /// Directives with an equivalent field.
     pub converted: usize,
-    /// Non-blocking notes: `Review` (approximation, cosmetic, global) **and**
-    /// `Info` (walked, no translation needed). The report header prints this
-    /// as «con aviso» and the detail sections break it down per severity.
+    /// Non-blocking notes: `Review` (approximation, cosmetic, global),
+    /// `Info` (walked, no translation needed) **and** `Degraded` (kept with
+    /// less security than the source). This is the report's «revisar» column;
+    /// the header prints the `Degraded` subtotal apart from the rest.
     pub review: usize,
     /// Directives EQProxy cannot serve today.
     pub rejected: usize,
@@ -411,6 +461,36 @@ impl Conv {
         self.note(Severity::Review, directive, context, message);
     }
 
+    /// Records a conversion that is weaker than its source.
+    ///
+    /// `lost` names the security property that did not survive, so the note
+    /// always carries a reason; `detail` says which source values were lost.
+    fn degraded(
+        &mut self,
+        units: usize,
+        directive: impl Into<String>,
+        context: &str,
+        lost: Degradation,
+        detail: impl Into<String>,
+    ) {
+        self.walked += units;
+        let detail = detail.into();
+        self.note(
+            Severity::Degraded,
+            directive,
+            context,
+            format!("{lost}: {detail}"),
+        );
+    }
+
+    /// Directives emitted with less security than their source declared.
+    fn degraded_count(&self) -> usize {
+        self.notes
+            .iter()
+            .filter(|note| note.severity == Severity::Degraded)
+            .count()
+    }
+
     fn gap(
         &mut self,
         units: usize,
@@ -452,7 +532,7 @@ impl Conv {
         for note in &self.notes {
             match note.severity {
                 Severity::Done => counts.converted += 1,
-                Severity::Info | Severity::Review => counts.review += 1,
+                Severity::Info | Severity::Review | Severity::Degraded => counts.review += 1,
                 Severity::Gap | Severity::Rejected => counts.rejected += 1,
             }
         }
@@ -805,6 +885,18 @@ fn toml_key(name: &str) -> String {
 /// listener, or when the generated document does not pass this crate's own
 /// parser and validator. Nothing partial is ever returned.
 pub fn convert(source: Source, text: &str) -> Result<Outcome, ImportError> {
+    convert_with_degraded(source, text).map(|(outcome, _)| outcome)
+}
+
+/// Like [`convert`], plus the directives classified as degraded.
+///
+/// The names come from the same notes the report is rendered from, so a caller
+/// that summarizes the conversion never has to parse its Markdown. They are
+/// one line each, in report order.
+pub fn convert_with_degraded(
+    source: Source,
+    text: &str,
+) -> Result<(Outcome, Vec<String>), ImportError> {
     if text.len() > crate::MAX_CONFIG_BYTES {
         return Err(ImportError::new(format!(
             "source configuration too large: {} bytes (maximum {})",
@@ -852,12 +944,16 @@ pub fn convert(source: Source, text: &str) -> Result<Outcome, ImportError> {
         )));
     }
     let counts = conv.classify();
+    let degraded = report::degraded_directives(&conv);
     let report = report::render(source, &conv, counts);
-    Ok(Outcome {
-        toml,
-        report,
-        counts,
-    })
+    Ok((
+        Outcome {
+            toml,
+            report,
+            counts,
+        },
+        degraded,
+    ))
 }
 
 #[cfg(test)]
@@ -1002,6 +1098,49 @@ mod tests {
         let before = conv.notes.len();
         conv.touch("forgotten", "http", before)
             .expect_err("an unclassified directive must fail the import");
+    }
+
+    #[test]
+    fn the_classifier_counts_every_severity_and_degraded_stays_in_review() {
+        let mut conv = Conv::new();
+        conv.done(1, "a", "x", "convertido");
+        conv.info(1, "b", "x", "informativo");
+        conv.review(1, "c", "x", "revisar");
+        conv.degraded(
+            1,
+            "proxy_ssl_protocols TLSv1.3",
+            "x",
+            Degradation::ProtocolPolicy,
+            "sin min_version en el TOML",
+        );
+        conv.gap(1, "e", "x", "sin equivalente");
+        conv.reject(1, "f", "x", "no traducible");
+
+        let counts = conv.classify();
+        assert_eq!(counts.converted, 1, "only `Done` is a conversion");
+        assert_eq!(
+            counts.review, 3,
+            "`Degraded` belongs to the «revisar» column with `Info`/`Review`"
+        );
+        assert_eq!(counts.rejected, 2, "`Gap` and `Rejected` are refusals");
+        assert_eq!(conv.walked, 6);
+        assert_eq!(
+            conv.notes.len(),
+            conv.walked,
+            "every walked directive produced one classification"
+        );
+        assert_eq!(conv.degraded_count(), 1);
+
+        let degraded = conv
+            .notes
+            .iter()
+            .find(|note| note.severity == Severity::Degraded)
+            .expect("the degraded note is kept");
+        assert!(
+            degraded.message.contains("TLS") && degraded.message.contains("sin min_version"),
+            "a degraded note names the lost property and the detail: {}",
+            degraded.message
+        );
     }
 
     #[test]

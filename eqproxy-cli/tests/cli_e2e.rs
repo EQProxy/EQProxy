@@ -494,6 +494,10 @@ fn config_import_converts_and_names_what_it_refuses() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(output.status.code(), Some(0), "stdout: {stdout}");
     assert!(stdout.contains("0 rejected"), "stdout:\n{stdout}");
+    assert!(
+        stdout.contains("0 degraded"),
+        "a clean conversion says so in the same line:\n{stdout}"
+    );
     let converted = std::fs::read_to_string(&output_path).expect("read converted file");
     assert!(
         converted.contains("maxconn = 50"),
@@ -535,6 +539,85 @@ fn config_import_converts_and_names_what_it_refuses() {
         "the valid file is still written, so the operator can start from it"
     );
 
+    // N-2: a directive the schema can only carry with less security than the
+    // source declared is not a note. The file is still written, but the
+    // one-line summary names the directive — a CI log must not have to open
+    // the report to learn that the TLS it emitted is weaker — and the exit
+    // code is 2, like a refusal, because the conversion is not equivalent.
+    //
+    // The source is the exact shape that used to be checked by hand: an
+    // `https://` origin that also authenticates itself (client certificate)
+    // and pins the version policy, neither of which has a schema field. If a
+    // regression classifies either one as converted, the exit code, the
+    // summary and the TOML assertions below fail on their own.
+    let degraded = temp_config(
+        "import-degraded",
+        "http {\n  upstream app {\n    server 10.0.0.1:8443;\n  }\n  server {\n    listen 80;\n    location / {\n      proxy_pass https://app;\n      proxy_ssl_certificate /etc/client.pem;\n      proxy_ssl_protocols TLSv1.3;\n    }\n  }\n}\n",
+    );
+    let degraded_out = degraded.with_extension("converted.toml");
+    let degraded_report = degraded.with_extension("report.md");
+    let output = bin()
+        .args(["config", "import", "--input"])
+        .arg(&degraded)
+        .arg("--output")
+        .arg(&degraded_out)
+        .arg("--report")
+        .arg(&degraded_report)
+        .output()
+        .expect("run eqproxy config import");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "a conversion that lost a security property exits 2; stdout: {stdout}"
+    );
+    let summary = stdout
+        .lines()
+        .find(|line| line.starts_with("import: "))
+        .unwrap_or_else(|| panic!("config import must print its summary:\n{stdout}"));
+    let degraded_directives = [
+        "proxy_ssl_certificate /etc/client.pem",
+        "proxy_ssl_protocols TLSv1.3",
+    ];
+    assert!(
+        summary.contains(" 2 degraded"),
+        "the summary must count both degraded directives:\n{summary}"
+    );
+    for directive in degraded_directives {
+        assert!(
+            summary.contains(directive),
+            "the summary must name {directive}:\n{summary}"
+        );
+    }
+    assert!(
+        summary.contains(" 0 rejected"),
+        "nothing was refused: the reason for exit 2 is the degradation:\n{summary}"
+    );
+    let converted = std::fs::read_to_string(&degraded_out).expect("read converted file");
+    assert!(
+        converted.contains("[backend.app.tls]"),
+        "the TLS that does map is emitted, which is why it is degraded and not rejected:\n{converted}"
+    );
+    assert!(
+        !converted.contains("/etc/client.pem"),
+        "the client certificate has no field, so it must not be invented:\n{converted}"
+    );
+    assert!(
+        !converted.contains("min_version"),
+        "the pinned TLS version has no backend field either, so the emitted TLS must not claim it:\n{converted}"
+    );
+    let report = std::fs::read_to_string(&degraded_report).expect("read report");
+    assert!(
+        report.contains("## Convertido con degradación"),
+        "the report carries the same loss:\n{report}"
+    );
+    for directive in degraded_directives {
+        assert!(
+            report.contains(directive),
+            "the report detail names {directive}:\n{report}"
+        );
+    }
+
     // Failures are exit 1 and write nothing.
     let missing_out = std::env::temp_dir().join(format!(
         "eqproxy-cli-e2e-{}-import-missing.toml",
@@ -563,6 +646,9 @@ fn config_import_converts_and_names_what_it_refuses() {
         report_path,
         gappy,
         gappy_out,
+        degraded,
+        degraded_out,
+        degraded_report,
         missing_out,
     ] {
         remove_temp(&path);

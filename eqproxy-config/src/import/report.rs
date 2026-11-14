@@ -342,17 +342,22 @@ pub fn render(source: Source, conv: &Conv, counts: Counts) -> String {
         conv.listeners.len(),
         conv.backends.len()
     );
+    let degraded = conv.degraded_count();
     let _ = writeln!(
         out,
-        "- Directivas leídas: **{}** · clasificadas: **{}** — convertidas **{}** · con aviso **{}** · rechazadas **{}**",
+        "- Directivas leídas: **{}** · clasificadas: **{}** — convertidas **{}** · con degradación **{}** · con aviso **{}** · rechazadas **{}**",
         conv.walked,
         conv.notes.len(),
         counts.converted,
-        counts.review,
+        degraded,
+        counts.review - degraded,
         counts.rejected
     );
     out.push_str(
         "\n«Nunca se descarta en silencio»: cada directiva del origen aparece abajo. \
+         «Con degradación» son directivas que sí están en el TOML pero con menos \
+         seguridad que la que declaraba el origen; junto con «con aviso» forman la \
+         columna «revisar». \
          El fichero generado se ha parseado y validado con el propio parser de EQProxy \
          (`schema_version = 1`) antes de escribirlo. La conversión es estática: no se ha \
          ejecutado nada de la configuración de origen ni se ha medido tráfico.\n",
@@ -429,6 +434,10 @@ pub fn render(source: Source, conv: &Conv, counts: Counts) -> String {
     for (severity, title) in [
         (Severity::Rejected, "❌ no traducible"),
         (Severity::Gap, "⛔ rechazado (sin equivalente en EQProxy)"),
+        (
+            Severity::Degraded,
+            "⚠️ convertido con degradación (revisar)",
+        ),
         (Severity::Review, "⚠️ revisar"),
         (Severity::Info, "ℹ️ informativo"),
         (Severity::Done, "✅ convertido"),
@@ -474,6 +483,29 @@ pub fn render(source: Source, conv: &Conv, counts: Counts) -> String {
         );
     }
 
+    // N-2: a loss of security is a loss too, and it gets its own summary. The
+    // detail section lists it above, but this is the paragraph an operator
+    // reads before switching.
+    let mut losses: BTreeMap<&str, usize> = BTreeMap::new();
+    for note in conv
+        .notes
+        .iter()
+        .filter(|note| note.severity == Severity::Degraded)
+    {
+        *losses.entry(note.message.as_str()).or_insert(0) += 1;
+    }
+    if !losses.is_empty() {
+        out.push_str("\n## Convertido con degradación\n\n");
+        for (message, count) in losses {
+            let _ = writeln!(out, "- {} ({count})", single_line(message));
+        }
+        out.push_str(
+            "\nEstas directivas **sí** están en el TOML, pero sin la garantía que declaraba el \
+             origen. Hasta que se corrijan (o se acepten por escrito), la configuración no es \
+             equivalente en seguridad.\n",
+        );
+    }
+
     let _ = writeln!(
         out,
         "\n## Siguiente paso\n\n1. `eqproxy config validate --config <salida>` — el mismo gate que usa el binario.\n\
@@ -481,6 +513,20 @@ pub fn render(source: Source, conv: &Conv, counts: Counts) -> String {
          3. `eqproxy config diff --help` para comparar con la configuración actual antes de `config apply`."
     );
     out
+}
+
+/// The degraded directives, one line each, in classification order.
+///
+/// `config import` summarizes these names directly instead of parsing the
+/// Markdown it just wrote: both the summary and the report read the same
+/// notes, so a security loss can neither be summarized as zero nor depend on
+/// the report's layout.
+pub(super) fn degraded_directives(conv: &Conv) -> Vec<String> {
+    conv.notes
+        .iter()
+        .filter(|note| note.severity == Severity::Degraded)
+        .map(|note| single_line(&note.directive))
+        .collect()
 }
 
 /// Keeps one source note on one Markdown line. A directive can contain a
@@ -512,6 +558,7 @@ pub fn report_with_paths(report: &str, input: &str, output: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::import::Degradation;
 
     #[test]
     fn paths_are_substituted_once_and_untouched_when_absent() {
@@ -524,6 +571,42 @@ mod tests {
         assert_eq!(
             report_with_paths("sin marcadores", "x", "y"),
             "sin marcadores"
+        );
+    }
+
+    #[test]
+    fn the_summary_names_exactly_the_degraded_directives() {
+        let mut conv = Conv::new();
+        conv.done(1, "proxy_pass https://app", "location /", "regla emitida");
+        conv.degraded(
+            1,
+            "proxy_ssl_certificate /etc/client.pem",
+            "location /",
+            Degradation::ClientCertificate,
+            "el backend no lo presenta",
+        );
+        conv.degraded(
+            1,
+            "proxy_ssl_protocols TLSv1.3",
+            "location /",
+            Degradation::ProtocolPolicy,
+            "se negocia con otra política",
+        );
+        conv.review(1, "gzip on", "http", "por listener");
+        assert_eq!(
+            degraded_directives(&conv),
+            vec![
+                "proxy_ssl_certificate /etc/client.pem".to_owned(),
+                "proxy_ssl_protocols TLSv1.3".to_owned()
+            ],
+            "the summary names the degraded directives, not the reviewed ones"
+        );
+
+        let mut clean = Conv::new();
+        clean.done(1, "proxy_pass http://app", "location /", "regla emitida");
+        assert!(
+            degraded_directives(&clean).is_empty(),
+            "a clean conversion has no degraded directive"
         );
     }
 

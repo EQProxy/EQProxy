@@ -175,8 +175,8 @@ enum ConfigCommand {
     /// Converts a reference-proxy configuration (Phase 8, CE6/Q9/CE8):
     /// nginx, HAProxy, ingress-nginx or Envoy → eqproxy.toml plus a report
     /// that classifies every source directive. Exit 0 = clean conversion,
-    /// 2 = converted with rejected directives (read the report), 1 = the
-    /// source could not be read or produced an invalid configuration
+    /// 2 = converted with rejected or degraded directives (read the report),
+    /// 1 = the source could not be read or produced an invalid configuration
     Import {
         /// Source dialect; omit to detect it from the file
         #[arg(long, value_name = "nginx|haproxy|ingress|envoy")]
@@ -1184,10 +1184,11 @@ fn absolute_base(path: &Path) -> PathBuf {
 /// Converts a reference-proxy configuration (Phase 8, CE6/Q9/CE8).
 ///
 /// Exit codes: 0 = the generated `eqproxy.toml` passed this crate's parser
-/// and validator and no source directive was rejected; 2 = the file is valid
-/// but at least one directive has no equivalent (the report names it); 1 =
-/// unreadable source, failed conversion or unwritable destination, and then
-/// nothing is written.
+/// and validator, no source directive was rejected and none was degraded;
+/// 2 = the file is valid but at least one directive has no equivalent or was
+/// converted with less security than the source declared (the report names
+/// it); 1 = unreadable source, failed conversion or unwritable destination,
+/// and then nothing is written.
 fn import(from: Option<&str>, input: &Path, output: &Path, report_path: Option<&Path>) -> u8 {
     let text = match std::fs::read_to_string(input) {
         Ok(text) => text,
@@ -1208,8 +1209,8 @@ fn import(from: Option<&str>, input: &Path, output: &Path, report_path: Option<&
         },
         None => eqproxy_config::import::Source::detect(&text),
     };
-    let outcome = match eqproxy_config::import::convert(source, &text) {
-        Ok(outcome) => outcome,
+    let (outcome, degraded) = match eqproxy_config::import::convert_with_degraded(source, &text) {
+        Ok(converted) => converted,
         Err(err) => {
             eprintln!(
                 "error: {} is not a convertible {} configuration: {err}",
@@ -1219,15 +1220,18 @@ fn import(from: Option<&str>, input: &Path, output: &Path, report_path: Option<&
             return 1;
         }
     };
-    if let Err(e) = std::fs::write(output, &outcome.toml) {
-        eprintln!("error: cannot write {}: {e}", output.display());
-        return 1;
-    }
     let report = eqproxy_config::import::report_with_paths(
         &outcome.report,
         &input.display().to_string(),
         &output.display().to_string(),
     );
+    // A degradation is a security loss, not a note: name it and let the exit
+    // code say so, so a CI log cannot read the conversion as clean.
+    let counts = outcome.counts;
+    if let Err(e) = std::fs::write(output, &outcome.toml) {
+        eprintln!("error: cannot write {}: {e}", output.display());
+        return 1;
+    }
     match report_path {
         Some(path) => {
             if let Err(e) = std::fs::write(path, &report) {
@@ -1237,14 +1241,29 @@ fn import(from: Option<&str>, input: &Path, output: &Path, report_path: Option<&
         }
         None => print!("{report}"),
     }
-    let counts = outcome.counts;
+    let named = if degraded.is_empty() {
+        String::new()
+    } else {
+        let shown = degraded
+            .iter()
+            .take(3)
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(", ");
+        match degraded.len().saturating_sub(3) {
+            0 => format!(" ({shown})"),
+            extra => format!(" ({shown}, +{extra} more)"),
+        }
+    };
     println!(
-        "import: {} ({}) → {}: {} converted, {} with notes, {} rejected",
+        "import: {} ({}) → {}: {} converted, {} degraded{}, {} with notes, {} rejected",
         input.display(),
         source.as_str(),
         output.display(),
         counts.converted,
-        counts.review,
+        degraded.len(),
+        named,
+        counts.review.saturating_sub(degraded.len()),
         counts.rejected
     );
     if counts.rejected > 0 {
@@ -1252,6 +1271,14 @@ fn import(from: Option<&str>, input: &Path, output: &Path, report_path: Option<&
             "  the generated file is valid; {} directive(s) have no EQProxy equivalent yet (see the report)",
             counts.rejected
         );
+    }
+    if !degraded.is_empty() {
+        println!(
+            "  {} directive(s) were converted with less security than the source declared (see the report)",
+            degraded.len()
+        );
+    }
+    if counts.rejected > 0 || !degraded.is_empty() {
         return 2;
     }
     0

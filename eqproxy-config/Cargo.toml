@@ -17,3 +17,9 @@ toml = { workspace = true }
 [lints]
 workspace = true
 
+# One-release transition: the v0.9.1 baseline predates Severity's
+# #[non_exhaustive]. Delete this when the baseline moves to a tag that carries
+# it; tests/semver_contract.rs enforces the pairing (ADR-0050).
+[package.metadata.cargo-semver-checks.lints]
+enum_marked_non_exhaustive = "allow"
+

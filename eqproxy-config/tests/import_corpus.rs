@@ -151,6 +151,13 @@ fn haproxy_frontend_backend_and_httpchk_convert() {
         outcome.report.contains("ejemplocpuerta.local"),
         "the hostname server must appear in the report"
     );
+    // N-2: this file declares no TLS policy EQProxy cannot express, so the
+    // report gains no degradation it cannot justify.
+    assert!(
+        !outcome.report.contains("Convertido con degradación"),
+        "haproxy.cfg loses no security property:\n{}",
+        outcome.report
+    );
 }
 
 #[test]

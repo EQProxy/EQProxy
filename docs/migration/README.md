@@ -7,9 +7,10 @@ eqproxy config import --input haproxy.cfg --output eqproxy.toml --report report.
 ```
 
 It reads nginx, HAProxy, ingress-nginx and Envoy (detected, or `--from`),
-classifies every directive as converted / to-review / rejected, and validates
-the result with the product's own parser. Exit `0` clean, `2` valid with
-refused directives named in the report, `1` nothing written. What the matrix
+classifies every directive as converted / to-review / degraded / rejected, and
+validates the result with the product's own parser. Exit `0` clean, `2` valid
+with refused or degraded directives named in the summary and the report, `1`
+nothing written. What the matrix
 below proves is a different, stronger claim: that the four hand-written
 translations route traffic identically. See
 [docs/evidence/v085-config-import.md](../evidence/v085-config-import.md).

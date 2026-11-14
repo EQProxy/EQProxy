@@ -10,8 +10,8 @@
 use std::collections::BTreeMap;
 
 use super::{
-    Conv, HeaderOp, ImportError, Listener, ListenerTls, Rule, convert_duration, normalize_addr,
-    parse_size, sanitize_name,
+    Conv, Degradation, HeaderOp, ImportError, Listener, ListenerTls, Rule, convert_duration,
+    normalize_addr, parse_size, sanitize_name,
 };
 
 /// Global directives that do not affect `eqproxy.toml`.
@@ -1518,6 +1518,19 @@ fn location(
     }
     let mut length = path.len();
     let mut has_target = false;
+    // N-2: whether the backend connection is TLS decides what a `proxy_ssl_*`
+    // directive means, and nginx accepts those before or after `proxy_pass`,
+    // so the target is read first. `false` covers a plaintext target, a
+    // variable and no `proxy_pass`: there is no TLS block to qualify.
+    let tls_target = node
+        .children
+        .iter()
+        .find(|child| child.name == "proxy_pass")
+        .and_then(|child| child.args.first())
+        .filter(|target| !target.contains('$'))
+        .and_then(|target| target.split_once("://"))
+        .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("https"));
+
     // EXT-H-04: an `https://` target and the `proxy_ssl_*` directives that
     // qualify it are collected here and applied after the loop, because nginx
     // accepts them before or after `proxy_pass`. The tuple keeps the host (the
@@ -1610,16 +1623,16 @@ fn location(
                     );
                 }
             }
-            // EXT-H-04: the TLS qualifiers of `proxy_pass https://…`.
+            // EXT-H-04/N-2: the TLS qualifiers of `proxy_pass https://…`.
             "proxy_ssl_verify" => {
                 let on = child.args.first().is_some_and(|arg| arg.trim() == "on");
                 ssl_verify = Some(on);
-                conv.done(1, &text, &context, format!("verify = {on}"));
+                tls_mapped(conv, &text, &context, tls_target, format!("verify = {on}"));
             }
             "proxy_ssl_trusted_certificate" => match child.args.first() {
                 Some(path) => {
                     let path = path.trim_matches(['"', '\'']).to_owned();
-                    conv.done(1, &text, &context, format!("ca_file = «{path}»"));
+                    tls_mapped(conv, &text, &context, tls_target, format!("ca_file = «{path}»"));
                     ssl_ca = Some(path);
                 }
                 None => conv.review(
@@ -1632,16 +1645,60 @@ fn location(
             "proxy_ssl_server_name" => {
                 let on = child.args.first().is_some_and(|arg| arg.trim() == "on");
                 ssl_sni = Some(on);
-                conv.done(1, &text, &context, format!("SNI hacia el origen: {on}"));
+                tls_mapped(
+                    conv,
+                    &text,
+                    &context,
+                    tls_target,
+                    format!("SNI hacia el origen: {on}"),
+                );
             }
             "proxy_ssl_name" => match child.args.first() {
                 Some(name) => {
                     let name = name.trim_matches(['"', '\'']).to_owned();
-                    conv.done(1, &text, &context, format!("server_name = «{name}»"));
+                    tls_mapped(
+                        conv,
+                        &text,
+                        &context,
+                        tls_target,
+                        format!("server_name = «{name}»"),
+                    );
                     ssl_name = Some(name);
                 }
                 None => conv.review(1, &text, &context, "proxy_ssl_name vacío: se ignora"),
             },
+            // N-2: TLS policy the schema cannot express. On a TLS target the
+            // backend still gets `[backend.*.tls]`, so losing the client
+            // identity, the version policy, the ciphers or the chain depth is
+            // a degradation — never a conversion.
+            "proxy_ssl_certificate" | "proxy_ssl_certificate_key" => tls_lost(
+                conv,
+                &text,
+                &context,
+                tls_target,
+                Degradation::ClientCertificate,
+            ),
+            "proxy_ssl_protocols" => tls_lost(
+                conv,
+                &text,
+                &context,
+                tls_target,
+                Degradation::ProtocolPolicy,
+            ),
+            "proxy_ssl_ciphers" => tls_lost(
+                conv,
+                &text,
+                &context,
+                tls_target,
+                Degradation::CipherPolicy,
+            ),
+            "proxy_ssl_verify_depth" => tls_lost(
+                conv,
+                &text,
+                &context,
+                tls_target,
+                Degradation::VerifyDepth,
+            ),
             "error_page" | "proxy_intercept_errors" => conv.review(
                 1,
                 &text,
@@ -1827,6 +1884,40 @@ fn resolve_backend(
     Some(name)
 }
 
+/// N-2: a `proxy_ssl_*` directive only means something when the location
+/// proxies over TLS. On a plaintext (or unresolvable) target nothing is lost,
+/// so the row says that instead of claiming a conversion. Returns whether the
+/// directive reaches `[backend.*.tls]`.
+fn tls_applies(conv: &mut Conv, text: &str, context: &str, tls_target: bool) -> bool {
+    if tls_target {
+        return true;
+    }
+    conv.info(
+        1,
+        text,
+        context,
+        "sin destino https literal en la location: la directiva no llega al TOML",
+    );
+    false
+}
+
+/// EXT-H-04: a qualifier `[backend.*.tls]` can hold as written.
+fn tls_mapped(conv: &mut Conv, text: &str, context: &str, tls_target: bool, mapped: String) {
+    if tls_applies(conv, text, context, tls_target) {
+        conv.done(1, text, context, mapped);
+    }
+}
+
+/// N-2: a policy the schema cannot express. TLS is still emitted for the
+/// backend, so losing it is a degradation, never a conversion. The row already
+/// carries the directive and its value verbatim, so the summary groups by the
+/// lost property instead of repeating the value in every message.
+fn tls_lost(conv: &mut Conv, text: &str, context: &str, tls_target: bool, lost: Degradation) {
+    if tls_applies(conv, text, context, tls_target) {
+        conv.degraded(1, text, context, lost, "no llega a [backend.*.tls]");
+    }
+}
+
 /// The TLS a location declares for its backend, gathered from
 /// `proxy_pass https://…` and the `proxy_ssl_*` directives that qualify it.
 /// `None` means the directive was absent, which is not the same as nginx's
@@ -1887,13 +1978,17 @@ fn apply_backend_tls(
     match existing {
         Some(true) => return,
         Some(false) => {
-            conv.review(
+            // N-2: one backend holds one TLS identity, so the second location
+            // silently inherits the first one's — it verifies a name its own
+            // source never declared. That is a relaxation, not a review note.
+            conv.degraded(
                 1,
                 directive,
                 context,
+                Degradation::IdentityRelaxed,
                 format!(
                     "el backend «{backend}» ya declara [backend.{backend}.tls] con otros valores: \
-                     revise a mano qué combinación de proxy_ssl_* aplica a cada location"
+                     revise qué combinación aplica a cada location"
                 ),
             );
             return;
@@ -2280,6 +2375,65 @@ mod tests {
             !outcome.toml.contains("server_name = "),
             "an IP literal is never an SNI name:\n{}",
             outcome.toml
+        );
+    }
+
+    #[test]
+    fn tls_policy_the_schema_cannot_express_is_degraded_not_converted() {
+        // N-2: the origin authenticates itself with a client certificate and
+        // pins the version policy and the chain depth. The import emits TLS but
+        // none of those, so those rows must never read as converted.
+        let source = "http {\n  server {\n    listen 80;\n    location / {\n      proxy_pass https://backend.internal:8443;\n      proxy_ssl_verify on;\n      proxy_ssl_certificate /etc/client.pem;\n      proxy_ssl_certificate_key /etc/client.key;\n      proxy_ssl_protocols TLSv1.3;\n      proxy_ssl_verify_depth 1;\n    }\n  }\n}\n";
+        let (outcome, degraded) =
+            super::super::convert_with_degraded(super::super::Source::Nginx, source)
+                .expect("convert");
+        assert!(
+            outcome.toml.contains("verify = true"),
+            "the TLS that does map is still emitted:\n{}",
+            outcome.toml
+        );
+        assert!(
+            outcome.report.contains("## Convertido con degradación"),
+            "a lost security property must have its own summary:\n{}",
+            outcome.report
+        );
+        assert!(
+            outcome.report.contains("· con degradación **4** ·"),
+            "certificate, its key, version policy and depth are four losses:\n{}",
+            outcome.report
+        );
+        assert!(
+            outcome.report.contains("certificado de cliente")
+                && outcome.report.contains("versiones TLS")
+                && outcome.report.contains("profundidad de verificación"),
+            "every degradation names the property that was lost:\n{}",
+            outcome.report
+        );
+        assert!(
+            outcome.report.contains("equivalente en seguridad"),
+            "the summary must say the result is not security-equivalent:\n{}",
+            outcome.report
+        );
+        assert_eq!(
+            degraded.len(),
+            4,
+            "certificate, its key, version policy and depth are four losses: {degraded:?}"
+        );
+
+        // The same directives on a plaintext origin do nothing in nginx either:
+        // nothing is lost, so nothing is degraded.
+        let plaintext = "http {\n  upstream app { server 10.0.0.1:8080; }\n  server {\n    listen 80;\n    location / {\n      proxy_pass http://app;\n      proxy_ssl_certificate /etc/client.pem;\n      proxy_ssl_protocols TLSv1.3;\n    }\n  }\n}\n";
+        let outcome =
+            super::super::convert(super::super::Source::Nginx, plaintext).expect("convert");
+        assert!(
+            !outcome.report.contains("## Convertido con degradación"),
+            "a directive nginx ignores loses nothing:\n{}",
+            outcome.report
+        );
+        assert!(
+            outcome.report.contains("la directiva no llega al TOML"),
+            "the report says why it did not apply:\n{}",
+            outcome.report
         );
     }
 

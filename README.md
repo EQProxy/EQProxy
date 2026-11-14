@@ -11,8 +11,8 @@ static Envoy 1.34.2 · **31/31** differential cases · **the full workspace
 suite** across 36 targets · a single static Linux binary (musl).
 
 ```bash
-# 1. Translate the config you already have. The report names every directive
-#    that was converted, needs review or was refused.
+# 1. Translate the config you already have. The summary and the report name
+#    every directive that was converted, needs review, was degraded or refused.
 docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/w" -w /w \
   exyonq/eqproxy:latest \
   config import --input haproxy.cfg --output eqproxy.toml --report report.md
@@ -27,8 +27,9 @@ docker run --rm -p 8080:8080 -v "$PWD/eqproxy.toml:/etc/eqproxy.toml:ro" \
 ```
 
 `config import` exits **0** on a clean conversion, **2** when the file is valid
-but directives were refused (the report names them), and **1** when nothing was
-written.
+but a directive was refused or converted with less security than the source
+declared (the one-line summary names the degraded directives and the report
+explains each one), and **1** when nothing was written.
 
 ## Why you'd try this
 

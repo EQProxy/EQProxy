@@ -165,6 +165,10 @@ impl AccessLog {
     ///
     /// Opening the file happens once, before any listener serves: a sink the
     /// process cannot open is a startup error (ADR-0020).
+    ///
+    ///# Errors
+    ///
+    ///Returns the I/O error when the sink cannot be opened.
     pub async fn start(
         config: &AccessLogSettings,
         metrics: Arc<Metrics>,
@@ -194,6 +198,10 @@ impl AccessLog {
     /// deliberately not inferred: a check running as one user cannot prove
     /// the service user's permissions, and creating the file during
     /// validation is exactly what ADR-0020 forbids.
+    ///
+    ///# Errors
+    ///
+    ///Returns the I/O error when the probe line cannot be written.
     pub fn probe(config: &AccessLogSettings) -> io::Result<()> {
         let Some(path) = &config.path else {
             return Ok(());
@@ -255,7 +263,7 @@ async fn writer_task(
     let mut out = BufWriter::new(writer);
     loop {
         tokio::select! {
-            _ = log.close.notified() => {
+            () = log.close.notified() => {
                 // Whatever is already queued belongs to requests that were
                 // answered before shutdown; write it, then flush and stop.
                 while let Ok(entry) = rx.try_recv() {
@@ -268,19 +276,16 @@ async fn writer_task(
                 }
                 return;
             }
-            item = rx.recv() => match item {
-                Some(entry) => {
-                    if let Err(err) = write_line(&mut out, format, &entry).await {
-                        eprintln!("ERROR access log write failed: {err}; sink stopped");
-                        return;
-                    }
-                }
-                None => {
-                    if let Err(err) = out.flush().await {
-                        eprintln!("WARN access log flush failed: {err}");
-                    }
+            item = rx.recv() => if let Some(entry) = item {
+                if let Err(err) = write_line(&mut out, format, &entry).await {
+                    eprintln!("ERROR access log write failed: {err}; sink stopped");
                     return;
                 }
+            } else {
+                if let Err(err) = out.flush().await {
+                    eprintln!("WARN access log flush failed: {err}");
+                }
+                return;
             }
         }
     }
@@ -436,8 +441,9 @@ impl AccessRecord {
     ) -> Self {
         let time_unix_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
-            .unwrap_or(0);
+            .map_or(0, |elapsed| {
+                u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+            });
         Self {
             log,
             started: Instant::now(),

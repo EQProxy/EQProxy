@@ -118,7 +118,7 @@ pub async fn run(balancer: Arc<Balancer>, check: HealthCheck, mut shutdown: Shut
     loop {
         tokio::select! {
             _ = shutdown.wait() => return,
-            _ = tokio::time::sleep(check.interval) => {}
+            () = tokio::time::sleep(check.interval) => {}
         }
 
         let mut attempts = JoinSet::new();

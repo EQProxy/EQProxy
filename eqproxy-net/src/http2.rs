@@ -1,7 +1,7 @@
 //! HTTP/2 client termination (B-H1/B-N1/B-I1/B-E2): h2 in, HTTP/1.1 out.
 //!
 //! Scope of this slice: a client negotiates `h2` (ALPN on TLS, or the h2c
-//! connection preface on a plaintext listener) and EQProxy terminates HTTP/2
+//! connection preface on a plaintext listener) and `EQProxy` terminates HTTP/2
 //! on its side while speaking HTTP/1.1 to the backend — the "downgrade to
 //! h1" half of the roadmap, done as a **real translation**, never a reply
 //! shaped like h2.
@@ -126,15 +126,17 @@ pub(crate) enum StreamError {
     TrailerLimit,
 }
 
+// A converter handed straight to `map_err(copy_error)`: by-value is the
+// signature that fits the call sites.
+#[allow(clippy::needless_pass_by_value)]
 pub(crate) fn copy_error(err: CopyError) -> StreamError {
     match err {
         CopyError::Truncated => StreamError::Truncated,
         CopyError::Idle | CopyError::Io => StreamError::Io,
-        CopyError::Framing(_) => StreamError::Framing,
+        CopyError::Framing(_) | CopyError::TooLarge => StreamError::Framing,
         // Only a request body can cross `max_body_bytes`, and the h1 engine
         // answers that with a 413 before relaying it here; if it ever
         // reaches the relay, cutting the stream is the only safe answer.
-        CopyError::TooLarge => StreamError::Framing,
         CopyError::TrailerLimit => StreamError::TrailerLimit,
     }
 }
@@ -292,16 +294,13 @@ async fn exchange(
             Err(pair) => *pair,
         };
     let body_empty = request.body().is_end_stream();
-    let translated = match build_request_head(&method, request.uri(), request.headers(), body_empty)
-    {
-        Ok(translated) => translated,
-        Err(()) => {
-            metrics
-                .http_requests_rejected
-                .fetch_add(1, Ordering::Relaxed);
-            refuse(&mut respond, StatusCode::BAD_REQUEST);
-            return;
-        }
+    let Ok(translated) = build_request_head(&method, request.uri(), request.headers(), body_empty)
+    else {
+        metrics
+            .http_requests_rejected
+            .fetch_add(1, Ordering::Relaxed);
+        refuse(&mut respond, StatusCode::BAD_REQUEST);
+        return;
     };
     let head_request = method == Method::HEAD;
 
@@ -536,6 +535,7 @@ where
 }
 
 /// Reads the h1 answer and writes it back as h2 frames.
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn relay_response<R>(
     mut reader: BufReader<R>,
     respond: &mut h2::server::SendResponse<Bytes>,
@@ -555,15 +555,14 @@ where
             pos: 0,
             inner: &mut reader,
         };
-        let (head, rest) = match read_head(
+        let Ok((head, rest)) = read_head(
             &mut source,
             cfg.server_header_timeout,
             cfg.limits.max_head_bytes,
         )
         .await
-        {
-            Ok(pair) => pair,
-            Err(_) => return Err(StreamError::Io),
+        else {
+            return Err(StreamError::Io);
         };
         carry = rest;
         carry.extend(source.prefix.split_off(source.pos));
@@ -610,9 +609,8 @@ where
     *out.status_mut() = status;
     *out.headers_mut() = response_headers(&head);
     let end_of_stream = response.framing == BodyFraming::None;
-    let mut send = match respond.send_response(out, end_of_stream) {
-        Ok(send) => send,
-        Err(_) => return Err(StreamError::H2),
+    let Ok(mut send) = respond.send_response(out, end_of_stream) else {
+        return Err(StreamError::H2);
     };
     if end_of_stream {
         return Ok(());
@@ -629,7 +627,9 @@ where
             let mut remaining = len;
             while remaining > 0 {
                 let capacity = capacity(&mut send, DATA_CHUNK, idle).await?;
-                let want = capacity.min(DATA_CHUNK).min(remaining as usize);
+                let want = capacity.min(DATA_CHUNK).min(
+                    usize::try_from(remaining).expect("the value fits in the destination type"),
+                );
                 let got = read_some(&mut body, &mut buf[..want], idle).await?;
                 if got == 0 {
                     send.send_reset(h2::Reason::INTERNAL_ERROR);
@@ -720,7 +720,9 @@ where
         let mut remaining = size;
         while remaining > 0 {
             let capacity = capacity(send, DATA_CHUNK, idle).await?;
-            let want = capacity.min(DATA_CHUNK).min(remaining as usize);
+            let want = capacity
+                .min(DATA_CHUNK)
+                .min(usize::try_from(remaining).expect("the value fits in the destination type"));
             let got = read_some(body, &mut buf[..want], idle).await?;
             if got == 0 {
                 return Err(StreamError::Truncated);
@@ -759,8 +761,8 @@ pub(crate) async fn capacity(
         match polled {
             Err(_) => return Err(StreamError::Io),
             Ok(Some(Ok(capacity))) if capacity > 0 => return Ok(capacity),
-            Ok(Some(Ok(_))) => continue,
-            Ok(Some(Err(_))) | Ok(None) => return Err(StreamError::H2),
+            Ok(Some(Ok(_))) => {}
+            Ok(Some(Err(_)) | None) => return Err(StreamError::H2),
         }
     }
 }
@@ -771,8 +773,7 @@ async fn read_some<R: AsyncRead + Unpin>(
     idle: Duration,
 ) -> Result<usize, StreamError> {
     match tokio::time::timeout(idle, reader.read(buf)).await {
-        Err(_) => Err(StreamError::Io),
-        Ok(Err(_)) => Err(StreamError::Io),
+        Err(_) | Ok(Err(_)) => Err(StreamError::Io),
         Ok(Ok(got)) => Ok(got),
     }
 }

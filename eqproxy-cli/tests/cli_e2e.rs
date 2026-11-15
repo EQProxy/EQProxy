@@ -1,6 +1,7 @@
 //! E2E tests through the **real** `eqproxy` binary (the interface the
 //! operator will use), with real sockets and real process signals.
 
+use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -87,13 +88,12 @@ fn validate_accepts_a_good_config() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(stdout.contains("config OK"), "stdout: {stdout}");
-    assert!(
-        stdout.contains("1 listener(s), 1 backend(s)"),
-        "stdout: {stdout}"
-    );
+    let summary = summary_line(&stdout, "config OK:");
+    assert_eq!(summary_count(summary, "listener(s)"), 1, "stdout: {stdout}");
+    assert_eq!(summary_count(summary, "backend(s)"), 1, "stdout: {stdout}");
 }
 
-/// A `raw` page file is bounded like an inline body: an oversized HAProxy
+/// A `raw` page file is bounded like an inline body: an oversized `HAProxy`
 /// `errorfile` must reject the snapshot before a listener binds, not be read
 /// into memory and served.
 #[cfg_attr(
@@ -461,7 +461,7 @@ fn validate_reports_syntax_errors_with_line() {
         stderr.contains("configuration error in"),
         "stderr:\n{stderr}"
     );
-    assert!(stderr.contains(":2"), "must locate line 2:\n{stderr}");
+    assert!(stderr.contains(":2:"), "must locate line 2:\n{stderr}");
     assert!(stderr.contains("example:"), "stderr:\n{stderr}");
 }
 
@@ -473,6 +473,7 @@ fn validate_reports_syntax_errors_with_line() {
     ignore = "needs processes and files: miri does not support them (rust-lang/miri#3449)"
 )]
 #[test]
+#[allow(clippy::too_many_lines)]
 fn config_import_converts_and_names_what_it_refuses() {
     // Clean source: exit 0, the file carries the translated cap, and the
     // report is written where it was asked for.
@@ -493,9 +494,11 @@ fn config_import_converts_and_names_what_it_refuses() {
         .expect("run eqproxy config import");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(output.status.code(), Some(0), "stdout: {stdout}");
-    assert!(stdout.contains("0 rejected"), "stdout:\n{stdout}");
-    assert!(
-        stdout.contains("0 degraded"),
+    let summary = summary_line(&stdout, "import:");
+    assert_eq!(summary_count(summary, "rejected"), 0, "stdout:\n{stdout}");
+    assert_eq!(
+        summary_count(summary, "degraded"),
+        0,
         "a clean conversion says so in the same line:\n{stdout}"
     );
     let converted = std::fs::read_to_string(&output_path).expect("read converted file");
@@ -507,6 +510,16 @@ fn config_import_converts_and_names_what_it_refuses() {
     assert!(
         report.contains("Directivas leídas:"),
         "the report must show its completeness counters:\n{report}"
+    );
+    assert_eq!(
+        report_count(&report, "con degradación"),
+        0,
+        "a clean report must declare zero losses in the summary:\n{report}"
+    );
+    assert_eq!(
+        report_heading_count(&report, "convertido con degradación"),
+        0,
+        "the detail header at (0) must not be mistaken for a loss:\n{report}"
     );
 
     // A source with a directive EQProxy cannot express: the file is still
@@ -571,16 +584,14 @@ fn config_import_converts_and_names_what_it_refuses() {
         Some(2),
         "a conversion that lost a security property exits 2; stdout: {stdout}"
     );
-    let summary = stdout
-        .lines()
-        .find(|line| line.starts_with("import: "))
-        .unwrap_or_else(|| panic!("config import must print its summary:\n{stdout}"));
+    let summary = summary_line(&stdout, "import:");
     let degraded_directives = [
         "proxy_ssl_certificate /etc/client.pem",
         "proxy_ssl_protocols TLSv1.3",
     ];
-    assert!(
-        summary.contains(" 2 degraded"),
+    assert_eq!(
+        summary_count(summary, "degraded"),
+        2,
         "the summary must count both degraded directives:\n{summary}"
     );
     for directive in degraded_directives {
@@ -589,8 +600,9 @@ fn config_import_converts_and_names_what_it_refuses() {
             "the summary must name {directive}:\n{summary}"
         );
     }
-    assert!(
-        summary.contains(" 0 rejected"),
+    assert_eq!(
+        summary_count(summary, "rejected"),
+        0,
         "nothing was refused: the reason for exit 2 is the degradation:\n{summary}"
     );
     let converted = std::fs::read_to_string(&degraded_out).expect("read converted file");
@@ -608,8 +620,15 @@ fn config_import_converts_and_names_what_it_refuses() {
     );
     let report = std::fs::read_to_string(&degraded_report).expect("read report");
     assert!(
-        report.contains("## Convertido con degradación"),
+        report
+            .lines()
+            .any(|line| line.starts_with("## ") && line.contains("Convertido con degradación")),
         "the report carries the same loss:\n{report}"
+    );
+    assert_eq!(
+        report_count(&report, "con degradación"),
+        2,
+        "the summary must count the two losses, not the detail header:\n{report}"
     );
     for directive in degraded_directives {
         assert!(
@@ -640,6 +659,27 @@ fn config_import_converts_and_names_what_it_refuses() {
         "nothing may be written when the source cannot be read"
     );
 
+    // A source that parses but yields no listener is a conversion failure, not
+    // a partial export: it must fail before the output path is opened. This is
+    // a real conversion error, not a mutated report vector.
+    let no_listener = temp_config(
+        "import-no-listener",
+        "http {\n  server {\n    listen 8080;\n  }\n}\n",
+    );
+    let no_listener_out = no_listener.with_extension("converted.toml");
+    let output = bin()
+        .args(["config", "import", "--input"])
+        .arg(&no_listener)
+        .arg("--output")
+        .arg(&no_listener_out)
+        .output()
+        .expect("run eqproxy config import");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        !no_listener_out.exists(),
+        "a conversion failure must not leave a partial output file"
+    );
+
     for path in [
         source,
         output_path,
@@ -650,6 +690,8 @@ fn config_import_converts_and_names_what_it_refuses() {
         degraded_out,
         degraded_report,
         missing_out,
+        no_listener,
+        no_listener_out,
     ] {
         remove_temp(&path);
     }
@@ -863,8 +905,14 @@ fn plan_inventories_what_run_would_activate() {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let plan = summary_line(&stdout, "plan:");
+    assert_eq!(summary_count(plan, "listener(s)"), 1, "stdout: {stdout}");
+    assert_eq!(summary_count(plan, "backend(s)"), 1, "stdout: {stdout}");
+    assert!(
+        plan.contains("nothing started (dry run)"),
+        "stdout: {stdout}"
+    );
     for expected in [
-        "plan: 1 listener(s), 1 backend(s) — nothing started (dry run)",
         "listener \"web\": bind 127.0.0.1:0 mode=http",
         "backend=\"api\"",
         "backend \"api\": servers=2 tls=no proxy_protocol=none health_check=none",
@@ -1167,6 +1215,7 @@ fn run_http_mode_strips_hop_by_hop_before_the_backend_and_rejects_nomination() {
     ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
 )]
 #[test]
+#[allow(clippy::too_many_lines)]
 fn run_http_mode_normalizes_target_and_host_before_rules_and_forwarding() {
     let (protected, protected_seen) = start_head_recording_backend("protected");
     let (fallback, fallback_seen) = start_head_recording_backend("fallback");
@@ -1357,6 +1406,7 @@ fn run_http_mode_normalizes_target_and_host_before_rules_and_forwarding() {
     ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
 )]
 #[test]
+#[allow(clippy::too_many_lines)]
 fn run_connect_normalizes_authority_before_rules_and_forwarding() {
     let (backend, seen) = start_head_recording_backend("tunnel");
     let config = temp_config(
@@ -1677,6 +1727,7 @@ fn run_applies_imported_hdr_and_hdr_dom_with_distinct_semantics() {
     ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
 )]
 #[test]
+#[allow(clippy::too_many_lines)]
 fn run_routes_by_rules_first_match_wins_with_default_fallback() {
     let api = start_identity_backend("api");
     let mgmt = start_identity_backend("mgmt");
@@ -1815,7 +1866,7 @@ fn run_routes_by_rules_first_match_wins_with_default_fallback() {
             .args(args)
             .output()
             .expect("run eqproxy config explain");
-        assert!(out.status.success(), "explain exits 0: {:?}", out);
+        assert!(out.status.success(), "explain exits 0: {out:?}");
         String::from_utf8_lossy(&out.stdout).into_owned()
     };
 
@@ -1938,6 +1989,7 @@ fn start_auth_service() -> std::net::SocketAddr {
     ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
 )]
 #[test]
+#[allow(clippy::too_many_lines)]
 fn run_auth_basic_and_subrequest_gate_requests() {
     let backend = start_identity_backend("api");
     let auth = start_auth_service();
@@ -2046,7 +2098,7 @@ fn run_auth_basic_and_subrequest_gate_requests() {
             .args(["--host", "x", "--path", path])
             .output()
             .expect("run eqproxy config explain");
-        assert!(out.status.success(), "explain exits 0: {:?}", out);
+        assert!(out.status.success(), "explain exits 0: {out:?}");
         String::from_utf8_lossy(&out.stdout).into_owned()
     };
     let report = explain("/private/x");
@@ -2219,6 +2271,7 @@ fn start_recording_backend(
     ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
 )]
 #[test]
+#[allow(clippy::too_many_lines)]
 fn run_rule_actions_rewrite_redirect_and_direct_response() {
     let (api, seen) = start_recording_backend("api");
     let config = temp_config(
@@ -2336,7 +2389,7 @@ server = "{api}"
             .args(args)
             .output()
             .expect("run eqproxy config explain");
-        assert!(out.status.success(), "explain exits 0: {:?}", out);
+        assert!(out.status.success(), "explain exits 0: {out:?}");
         String::from_utf8_lossy(&out.stdout).into_owned()
     };
 
@@ -2404,6 +2457,7 @@ server = "{api}"
     ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
 )]
 #[test]
+#[allow(clippy::too_many_lines)]
 fn validate_names_rule_action_fields_actionably() {
     let reject = |rule: &str, want_field: &str, want_why: &str| {
         let config = temp_config(
@@ -2756,10 +2810,9 @@ fn validate_accepts_phase2b_config_with_tls_servers_and_health_checks() {
         "the full 2b config must validate; stderr: {stderr}"
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("config OK: 1 listener(s), 1 backend(s)"),
-        "stdout: {stdout}"
-    );
+    let summary = summary_line(&stdout, "config OK:");
+    assert_eq!(summary_count(summary, "listener(s)"), 1, "stdout: {stdout}");
+    assert_eq!(summary_count(summary, "backend(s)"), 1, "stdout: {stdout}");
 }
 
 #[cfg_attr(
@@ -3316,16 +3369,15 @@ fn apply_stores_first_configuration_with_inventory() {
         output.status.success(),
         "apply must exit 0; stderr: {stderr}"
     );
-    for expected in [
-        "applied:",
-        "(no previous configuration)",
-        "plan: 1 listener(s), 1 backend(s)",
-    ] {
+    for expected in ["applied:", "(no previous configuration)"] {
         assert!(
             stdout.contains(expected),
             "missing {expected:?} in: {stdout}"
         );
     }
+    let plan = summary_line(&stdout, "plan:");
+    assert_eq!(summary_count(plan, "listener(s)"), 1, "stdout: {stdout}");
+    assert_eq!(summary_count(plan, "backend(s)"), 1, "stdout: {stdout}");
     assert_eq!(
         std::fs::read(state.join("current.toml")).expect("current stored"),
         APPLY_V1.as_bytes(),
@@ -3333,7 +3385,7 @@ fn apply_stores_first_configuration_with_inventory() {
     );
     let history: Vec<_> = std::fs::read_dir(state.join("history"))
         .expect("history dir")
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .collect();
     assert!(history.is_empty(), "first apply records no backup");
     remove_temp(&config);
@@ -3374,7 +3426,7 @@ fn apply_reports_diff_and_keeps_backup() {
     );
     let history: Vec<_> = std::fs::read_dir(state.join("history"))
         .expect("history dir")
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .collect();
     assert_eq!(history.len(), 1, "one backup for one superseded current");
     remove_temp(&v1);
@@ -3400,7 +3452,7 @@ fn apply_is_idempotent_for_identical_bytes() {
     );
     let history: Vec<_> = std::fs::read_dir(state.join("history"))
         .expect("history dir")
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .collect();
     assert!(history.is_empty(), "idempotent re-apply records no backup");
     remove_temp(&config);
@@ -3435,7 +3487,7 @@ fn apply_gate_leaves_state_untouched() {
     );
     let history: Vec<_> = std::fs::read_dir(state.join("history"))
         .expect("history dir")
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .collect();
     assert!(history.is_empty(), "failed apply records no backup");
     // Missing file: exit 1 without creating any state.
@@ -3492,7 +3544,7 @@ fn rollback_restores_previous_current() {
     );
     let history: Vec<_> = std::fs::read_dir(state.join("history"))
         .expect("history dir")
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .collect();
     assert!(history.is_empty(), "rollback pops the spent backup");
     remove_temp(&v1);
@@ -3783,7 +3835,7 @@ fn start_gated_backend(body: &'static str) -> (std::net::SocketAddr, std::sync::
                 let mut total = 0usize;
                 loop {
                     match stream.read(&mut buf[total..]) {
-                        Ok(0) => return,
+                        Ok(0) | Err(_) => return,
                         Ok(n) => {
                             total += n;
                             if buf[..total].windows(4).any(|w| w == b"\r\n\r\n")
@@ -3792,7 +3844,6 @@ fn start_gated_backend(body: &'static str) -> (std::net::SocketAddr, std::sync::
                                 break;
                             }
                         }
-                        Err(_) => return,
                     }
                 }
                 gate.reached();
@@ -3910,8 +3961,12 @@ fn sighup_reloads_the_config_under_traffic() {
     .expect("write v2");
     send_signal(&child, "-HUP");
     let applied = wait_for_stderr(&mut stderr, "INFO config reload applied");
-    assert!(
-        applied.contains("listeners kept=1 added=0 removed=0"),
+    assert!(applied.contains("listeners "), "swap summary: {applied}");
+    assert_eq!(keyed_count(&applied, "kept"), 1, "swap summary: {applied}");
+    assert_eq!(keyed_count(&applied, "added"), 0, "swap summary: {applied}");
+    assert_eq!(
+        keyed_count(&applied, "removed"),
+        0,
         "swap summary: {applied}"
     );
     assert_eq!(
@@ -3938,12 +3993,25 @@ fn sighup_reloads_the_config_under_traffic() {
     wait_for_sigint_shutdown(&mut child, &config);
     let mut rest = String::new();
     let _ = stderr.read_to_string(&mut rest);
-    // Format updated for PP-04/05: the metrics line now also reports the
-    // measured swap latency (`last_swap_us`), so the exact-format assertion
-    // includes the new field.
+    // PP-04/05: the final metrics line reports both reload counters and the
+    // measured swap latency.
+    let cfg = rest.rsplit_once("cfg[").map_or_else(
+        || panic!("final METRICS must report cfg counters: {rest}"),
+        |(_, tail)| tail,
+    );
+    assert_eq!(
+        keyed_count(cfg, "reloads"),
+        1,
+        "final METRICS must show the reload counter: {rest}"
+    );
+    assert_eq!(
+        keyed_count(cfg, "reload_failures"),
+        1,
+        "final METRICS must show the failed reload counter: {rest}"
+    );
     assert!(
-        rest.contains("cfg[reloads=1 reload_failures=1 last_swap_us="),
-        "final METRICS must show the reload counters and the swap latency: {rest}"
+        cfg.contains("last_swap_us="),
+        "final METRICS must show the measured swap latency: {rest}"
     );
 }
 
@@ -4130,9 +4198,9 @@ fn run_leastconn_sends_new_requests_to_the_idle_server() {
         .trim()
         .to_owned();
 
-    // First request: both servers idle (tie) -> A (config order), held.
+    // First request: both servers idle (tie) -> A (config order), holder.
     let held_proxy = proxy_addr.clone();
-    let held = std::thread::spawn(move || marker_body(&held_proxy));
+    let holder = std::thread::spawn(move || marker_body(&held_proxy));
     let deadline = Instant::now() + Duration::from_secs(10);
     while served_a.load(Ordering::SeqCst) != 1 {
         assert!(
@@ -4156,8 +4224,8 @@ fn run_leastconn_sends_new_requests_to_the_idle_server() {
 
     // Release A: its exchange completes and the load slot frees up.
     release.store(true, Ordering::SeqCst);
-    let body = held.join().expect("held exchange thread");
-    assert_eq!(body, "a", "the held exchange was served by A");
+    let body = holder.join().expect("holder exchange thread");
+    assert_eq!(body, "a", "the holder exchange was served by A");
 
     wait_for_sigint_shutdown(&mut child, &config);
 }
@@ -4170,6 +4238,7 @@ fn run_leastconn_sends_new_requests_to_the_idle_server() {
     ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
 )]
 #[test]
+#[allow(clippy::too_many_lines)]
 fn run_slow_start_ramps_the_recovered_server_up() {
     use std::sync::atomic::Ordering;
     let served_a = std::sync::Arc::new(AtomicUsize::new(0));
@@ -4313,6 +4382,7 @@ fn run_slow_start_ramps_the_recovered_server_up() {
     ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
 )]
 #[test]
+#[allow(clippy::too_many_lines)]
 fn run_backup_server_covers_a_failed_primary_and_returns_on_recovery() {
     use std::sync::atomic::Ordering;
     let served_a = std::sync::Arc::new(AtomicUsize::new(0));
@@ -4458,6 +4528,7 @@ fn run_backup_server_covers_a_failed_primary_and_returns_on_recovery() {
     ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
 )]
 #[test]
+#[allow(clippy::too_many_lines)]
 fn run_priority_ladder_fails_over_between_backups_and_back() {
     use std::sync::atomic::Ordering;
     let served = || std::sync::Arc::new(AtomicUsize::new(0));
@@ -4592,6 +4663,7 @@ fn run_priority_ladder_fails_over_between_backups_and_back() {
     ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
 )]
 #[test]
+#[allow(clippy::too_many_lines)]
 fn run_all_backups_spreads_traffic_across_the_backup_pool() {
     use std::sync::atomic::Ordering;
     let served = || std::sync::Arc::new(AtomicUsize::new(0));
@@ -4688,10 +4760,10 @@ fn run_all_backups_spreads_traffic_across_the_backup_pool() {
             Instant::now() < deadline,
             "the backup pool never took over after the primary failed"
         );
-        if marker_body(&proxy_addr) != "a" {
-            streak += 1;
-        } else {
+        if marker_body(&proxy_addr) == "a" {
             streak = 0;
+        } else {
+            streak += 1;
         }
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -4810,6 +4882,7 @@ fn run_all_backups_spreads_traffic_across_the_backup_pool() {
     ignore = "needs processes and the filesystem: miri does not support them (rust-lang/miri#3449)"
 )]
 #[test]
+#[allow(clippy::too_many_lines)]
 fn run_document_put_flips_the_backup_pool_live() {
     use std::sync::atomic::{AtomicU64, Ordering};
     let served = || std::sync::Arc::new(AtomicUsize::new(0));
@@ -5044,10 +5117,10 @@ fn run_document_put_flips_the_backup_pool_live() {
             Instant::now() < deadline,
             "the pool written by PUT never took over after the primary failed"
         );
-        if marker_body(&proxy_addr) != "a" {
-            streak += 1;
-        } else {
+        if marker_body(&proxy_addr) == "a" {
             streak = 0;
+        } else {
+            streak += 1;
         }
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -5163,6 +5236,7 @@ fn run_document_put_flips_the_backup_pool_live() {
     ignore = "needs processes and the filesystem: miri does not support them (rust-lang/miri#3449)"
 )]
 #[test]
+#[allow(clippy::too_many_lines)]
 fn run_panel_applies_a_table_and_drains_a_server() {
     use std::sync::atomic::Ordering;
     let served = || std::sync::Arc::new(AtomicUsize::new(0));
@@ -5338,8 +5412,13 @@ fn run_panel_applies_a_table_and_drains_a_server() {
     );
     let (code, head, _) = admin_exchange(&admin_addr, &request);
     assert_eq!(code, 303, "panel apply: {head}");
-    assert!(
-        head.contains("location: /panel?applied=1"),
+    let location = head
+        .lines()
+        .find_map(|line| line.strip_prefix("location: "))
+        .expect("panel redirect location");
+    assert_eq!(
+        location.trim_end_matches('\r'),
+        "/panel?applied=1",
         "the browser is sent back to the page: {head}"
     );
 
@@ -5638,7 +5717,7 @@ fn metric_value(rest: &str, cluster: &str, key: &str) -> u64 {
 }
 
 /// Accept loop for one bound listener: `200` + `marker` (keep-alive).
-fn serve_origin_loop(listener: std::net::TcpListener, marker: &'static str) {
+fn serve_origin_loop(listener: &std::net::TcpListener, marker: &'static str) {
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { break };
         std::thread::spawn(move || {
@@ -5677,15 +5756,15 @@ fn serve_origin_loop(listener: std::net::TcpListener, marker: &'static str) {
 }
 
 /// Real origin on ONE port bound on both loopback families: the OS
-/// resolver may hand `localhost` as 127.0.0.1 or ::1 (multi-A reality),
+/// resolver may hand `localhost` as 127.0.0.1 or `::1` (multi-A reality),
 /// and the origin must answer whatever comes.
 fn start_dual_stack_origin(marker: &'static str) -> u16 {
     let v4 = std::net::TcpListener::bind("127.0.0.1:0").expect("bind v4 origin");
     let port = v4.local_addr().expect("addr v4 origin").port();
     let v6_addr = std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port));
     let v6 = std::net::TcpListener::bind(v6_addr).expect("bind v6 origin");
-    std::thread::spawn(move || serve_origin_loop(v4, marker));
-    std::thread::spawn(move || serve_origin_loop(v6, marker));
+    std::thread::spawn(move || serve_origin_loop(&v4, marker));
+    std::thread::spawn(move || serve_origin_loop(&v6, marker));
     port
 }
 
@@ -5998,8 +6077,7 @@ fn keepalive_roundtrip(stream: &mut TcpStream, head: &str) -> String {
             let len: usize = head_text
                 .lines()
                 .find_map(|line| line.strip_prefix("content-length:"))
-                .map(|value| value.trim().parse().expect("content-length"))
-                .unwrap_or(0);
+                .map_or(0, |value| value.trim().parse().expect("content-length"));
             if buf.len() >= pos + 4 + len {
                 return String::from_utf8_lossy(&buf).into_owned();
             }
@@ -6017,6 +6095,7 @@ fn keepalive_roundtrip(stream: &mut TcpStream, head: &str) -> String {
     ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
 )]
 #[test]
+#[allow(clippy::too_many_lines)]
 fn run_canary_split_routes_by_weight_with_header_and_cookie_overrides() {
     let stable = start_identity_backend("stable");
     let canary = start_identity_backend("canary");
@@ -6130,7 +6209,7 @@ fn run_canary_split_routes_by_weight_with_header_and_cookie_overrides() {
             .args(args)
             .output()
             .expect("run eqproxy config explain");
-        assert!(out.status.success(), "explain exits 0: {:?}", out);
+        assert!(out.status.success(), "explain exits 0: {out:?}");
         String::from_utf8_lossy(&out.stdout).into_owned()
     };
     let report = explain(&["--path", "/s"]);
@@ -6224,9 +6303,9 @@ fn await_log_line(
         let left = deadline.saturating_duration_since(Instant::now());
         match rx.recv_timeout(left) {
             Ok(line) if line.contains(need) => return line,
-            Ok(_) => continue,
+            Ok(_) => {}
             Err(_) => {
-                let log = log.lock().map(|l| l.clone()).unwrap_or_default();
+                let log = log.lock().map_or_default(|l| l.clone());
                 panic!("{what} within {budget:?}: {log}");
             }
         }
@@ -6236,7 +6315,7 @@ fn await_log_line(
 /// Hot data maps through the **real** binary (C10 / PP-02): a 100 000
 /// entry map updates under traffic **without a config reload** and
 /// without losing any other state — the modified entries change, the
-/// untouched ones keep working and a held keep-alive connection
+/// untouched ones keep working and a holder keep-alive connection
 /// survives the swap. A malformed update is rejected once (counted) and
 /// the last good data keeps serving.
 #[cfg_attr(
@@ -6244,6 +6323,7 @@ fn await_log_line(
     ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
 )]
 #[test]
+#[allow(clippy::too_many_lines)]
 fn run_hot_maps_swap_under_traffic_without_config_reload() {
     fn map_file(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("eqproxy-cli-e2e-{}-{name}", std::process::id()))
@@ -6349,9 +6429,9 @@ fn run_hot_maps_swap_under_traffic_without_config_reload() {
 
     // One keep-alive connection held across the whole update (PP-02:
     // live state survives the data swap).
-    let mut held = TcpStream::connect(proxy_addr.as_str()).expect("connect keepalive");
+    let mut holder = TcpStream::connect(proxy_addr.as_str()).expect("connect keepalive");
     let response = keepalive_roundtrip(
-        &mut held,
+        &mut holder,
         "GET / HTTP/1.1\r\nHost: x\r\nx-user: user-99999\r\n\r\n",
     );
     assert_eq!(body_of(&response), "vip", "{response}");
@@ -6390,7 +6470,7 @@ fn run_hot_maps_swap_under_traffic_without_config_reload() {
         assert!(
             Instant::now() < deadline,
             "the reloaded map did not reach traffic (last response: {response}; log: {})",
-            log.lock().map(|l| l.clone()).unwrap_or_default()
+            log.lock().map_or_default(|l| l.clone())
         );
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -6403,7 +6483,7 @@ fn run_hot_maps_swap_under_traffic_without_config_reload() {
     assert_eq!(body_of(&response), "vip", "{response}");
     // The held connection survived the swap and still routes.
     let response = keepalive_roundtrip(
-        &mut held,
+        &mut holder,
         "GET / HTTP/1.1\r\nHost: x\r\nx-user: user-77777\r\n\r\n",
     );
     assert_eq!(body_of(&response), "vip", "{response}");
@@ -6420,7 +6500,7 @@ fn run_hot_maps_swap_under_traffic_without_config_reload() {
     );
 
     // Close the held connection so the drain is immediate, then stop.
-    drop(held);
+    drop(holder);
     let pid = child.id();
     let kill = Command::new("kill")
         .args(["-INT", &pid.to_string()])
@@ -6441,7 +6521,7 @@ fn run_hot_maps_swap_under_traffic_without_config_reload() {
     // The process has exited: the reader thread hits EOF and the log is
     // complete (including the final METRICS line) once it is joined.
     reader.join().expect("stderr reader thread");
-    let log = log.lock().map(|l| l.clone()).unwrap_or_default();
+    let log = log.lock().map_or_default(|l| l.clone());
     remove_temp(&config);
     let _ = std::fs::remove_file(&mapfile);
     assert_eq!(status.code(), Some(0), "clean shutdown must exit with 0");
@@ -6453,12 +6533,27 @@ fn run_hot_maps_swap_under_traffic_without_config_reload() {
         log.contains("map \"tiers\" reloaded: 100001 entries"),
         "the hot reload must be logged: {log}"
     );
-    assert!(
-        log.contains("maps[reloads=1 failures=1]"),
+    let maps = log.rsplit_once("maps[").map_or_else(
+        || panic!("final METRICS must report map counters: {log}"),
+        |(_, tail)| tail,
+    );
+    assert_eq!(
+        keyed_count(maps, "reloads"),
+        1,
         "one good swap and one rejected bad update: {log}"
     );
-    assert!(
-        log.contains("cfg[reloads=0"),
+    assert_eq!(
+        keyed_count(maps, "failures"),
+        1,
+        "one good swap and one rejected bad update: {log}"
+    );
+    let cfg = log.rsplit_once("cfg[").map_or_else(
+        || panic!("final METRICS must report config counters: {log}"),
+        |(_, tail)| tail,
+    );
+    assert_eq!(
+        keyed_count(cfg, "reloads"),
+        0,
         "no config reload may happen (PP-02: no state rebuilt): {log}"
     );
 }
@@ -6571,6 +6666,7 @@ fn validate_rejects_misconfigured_splits_maps_and_missing_files() {
     ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
 )]
 #[test]
+#[allow(clippy::too_many_lines)]
 fn run_hash_policy_and_request_mirror_end_to_end() {
     let api_a = start_static_backend("alpha");
     let api_b = start_static_backend("beta");
@@ -6839,12 +6935,12 @@ fn start_compression_origin() -> std::net::SocketAddr {
                                 .collect::<Vec<_>>()
                                 .join(",")
                         );
-                        respond_content_length(&mut stream, "application/json", body.as_bytes())
+                        respond_content_length(&mut stream, "application/json", body.as_bytes());
                     }
                     "/png" => {
                         let mut body = vec![0x89u8, b'P', b'N', b'G'];
                         body.extend((0..4092u32).map(|i| (i % 251) as u8));
-                        respond_content_length(&mut stream, "image/png", &body)
+                        respond_content_length(&mut stream, "image/png", &body);
                     }
                     "/encoded" => {
                         let response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: br\r\nContent-Length: 18\r\nConnection: close\r\n\r\nnot-really-brotli!";
@@ -6967,7 +7063,8 @@ fn gunzip(body: &[u8]) -> Vec<u8> {
 fn get_with_encoding(proxy: &str, path: &str, accept_encoding: Option<&str>) -> Vec<u8> {
     let mut request = format!("GET {path} HTTP/1.1\r\nHost: t\r\nConnection: close\r\n");
     if let Some(accept) = accept_encoding {
-        request.push_str(&format!("Accept-Encoding: {accept}\r\n"));
+        write!(request, "Accept-Encoding: {accept}\r\n")
+            .expect("writing into a String cannot fail");
     }
     request.push_str("\r\n");
     proxied_bytes(proxy, request.as_bytes())
@@ -6978,6 +7075,7 @@ fn get_with_encoding(proxy: &str, path: &str, accept_encoding: Option<&str>) -> 
     ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
 )]
 #[test]
+#[allow(clippy::too_many_lines)]
 fn run_compresses_gzip_and_respects_every_refusal_case() {
     let origin = start_compression_origin();
     let config = temp_config(
@@ -7433,7 +7531,7 @@ fn run_serves_gzip_over_h2c_to_a_real_client() {
             proxy = addr.trim().to_owned();
         }
     }
-    assert!(!proxy.is_empty());
+    assert_ne!(proxy, "");
 
     // curl with h2 prior knowledge and `--compressed`: it negotiates gzip,
     // decodes it and prints the decoded body, while `-D -` shows the headers
@@ -7492,6 +7590,7 @@ fn unbrotli(body: &[u8]) -> Vec<u8> {
     ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
 )]
 #[test]
+#[allow(clippy::too_many_lines)]
 fn run_compresses_brotli_and_prefers_it_over_gzip() {
     let origin = start_compression_origin();
     let config = temp_config(
@@ -7787,7 +7886,7 @@ fn form_encode(value: &str) -> String {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
                 out.push(*byte as char);
             }
-            byte => out.push_str(&format!("%{byte:02X}")),
+            byte => write!(out, "%{byte:02X}").expect("writing into a String cannot fail"),
         }
     }
     out
@@ -7797,7 +7896,7 @@ fn form_encode(value: &str) -> String {
 fn admin_get_with(addr: &str, path: &str, header_line: Option<&str>) -> (u16, String, String) {
     let mut head = format!("GET {path} HTTP/1.1\r\nhost: admin\r\n");
     if let Some(line) = header_line {
-        head.push_str(&format!("{line}\r\n"));
+        write!(head, "{line}\r\n").expect("writing into a String cannot fail");
     }
     head.push_str("\r\n");
     admin_exchange(addr, &head)
@@ -7806,7 +7905,7 @@ fn admin_get_with(addr: &str, path: &str, header_line: Option<&str>) -> (u16, St
 fn admin_get(addr: &str, path: &str, authorization: Option<&str>) -> (u16, String, String) {
     let mut head = format!("GET {path} HTTP/1.1\r\nhost: admin\r\n");
     if let Some(value) = authorization {
-        head.push_str(&format!("authorization: {value}\r\n"));
+        write!(head, "authorization: {value}\r\n").expect("writing into a String cannot fail");
     }
     head.push_str("\r\n");
     admin_exchange(addr, &head)
@@ -7833,6 +7932,7 @@ fn prometheus_value(text: &str, name: &str) -> u64 {
     ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
 )]
 #[test]
+#[allow(clippy::too_many_lines)]
 fn run_admin_plane_serves_status_and_metrics_with_a_bearer_token() {
     let backend = start_static_backend("hello-admin");
     let token = "3f9a1c0d7b2e4f6a8c5d1e0b9a7c3f2d";
@@ -8052,7 +8152,7 @@ fn run_admin_plane_serves_status_and_metrics_with_a_bearer_token() {
         status.code(),
         Some(0),
         "clean shutdown with the admin plane up; log:\n{}",
-        log.lock().map(|l| l.clone()).unwrap_or_default()
+        log.lock().map_or_default(|l| l.clone())
     );
 }
 
@@ -8074,6 +8174,7 @@ fn admin_put(addr: &str, path: &str, token: &str, body: &str) -> (u16, String, S
     ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
 )]
 #[test]
+#[allow(clippy::too_many_lines)]
 fn run_admin_plane_drains_a_server_with_the_write_token() {
     let backend = start_static_backend("hello-write");
     let read_token = "3f9a1c0d7b2e4f6a8c5d1e0b9a7c3f2d";
@@ -8227,7 +8328,7 @@ fn run_admin_plane_drains_a_server_with_the_write_token() {
         log.lock()
             .is_ok_and(|log| log.contains("config reload applied")),
         "the SIGHUP reload must land: {:?}",
-        log.lock().map(|l| l.clone()).unwrap_or_default()
+        log.lock().map_or_default(|l| l.clone())
     );
     let (status, _, body) = admin_get(
         &admin_addr,
@@ -8286,7 +8387,7 @@ fn run_admin_plane_drains_a_server_with_the_write_token() {
     remove_temp(&config);
     let _ = std::fs::remove_file(&read_path);
     let _ = std::fs::remove_file(&write_path);
-    let log = log.lock().map(|l| l.clone()).unwrap_or_default();
+    let log = log.lock().map_or_default(|l| l.clone());
     assert_eq!(status.code(), Some(0), "clean shutdown; log:\n{log}");
     assert!(
         log.contains("AUDIT ") && log.contains("\"to\":\"drain\""),
@@ -8312,6 +8413,7 @@ fn run_admin_plane_drains_a_server_with_the_write_token() {
     ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
 )]
 #[test]
+#[allow(clippy::too_many_lines)]
 fn run_admin_plane_reports_drain_progress_and_completion() {
     let (backend, gate) = start_gated_backend("held-exchange");
     let read_token = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d";
@@ -8536,7 +8638,7 @@ fn run_admin_plane_reports_drain_progress_and_completion() {
     remove_temp(&config);
     let _ = std::fs::remove_file(&read_path);
     let _ = std::fs::remove_file(&write_path);
-    let log = log.lock().map(|l| l.clone()).unwrap_or_default();
+    let log = log.lock().map_or_default(|l| l.clone());
     assert_eq!(status.code(), Some(0), "clean shutdown; log:\n{log}");
     assert_eq!(
         log.matches("INFO server drained:").count(),
@@ -8566,7 +8668,7 @@ fn admin_put_toml(
         body.len()
     );
     if let Some(revision) = if_match {
-        request.push_str(&format!("if-match: \"{revision}\"\r\n"));
+        write!(request, "if-match: \"{revision}\"\r\n").expect("writing into a String cannot fail");
     }
     request.push_str("\r\n");
     request.push_str(body);
@@ -8620,6 +8722,7 @@ fn admin_status(addr: &str, token: &str) -> (serde_json::Value, String) {
     ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
 )]
 #[test]
+#[allow(clippy::too_many_lines)]
 fn run_admin_plane_applies_backend_config_under_traffic() {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -8841,7 +8944,11 @@ fn run_admin_plane_applies_backend_config_under_traffic() {
     assert_eq!(code, 200, "backend update: {head}\n{body}");
     let applied: serde_json::Value = serde_json::from_str(&body).expect("apply json");
     assert_eq!(applied["revision"], "v2");
-    assert_eq!(applied["summary"], "listeners kept=1 added=0 removed=0");
+    let summary = applied["summary"].as_str().expect("swap summary");
+    assert!(summary.starts_with("listeners "), "{summary}");
+    assert_eq!(keyed_count(summary, "kept"), 1, "{summary}");
+    assert_eq!(keyed_count(summary, "added"), 0, "{summary}");
+    assert_eq!(keyed_count(summary, "removed"), 0, "{summary}");
     assert!(
         applied["elapsed_ms"].as_u64().expect("measured commit") < 1000,
         "the roadmap gate is a swap under one second: {applied}"
@@ -8923,7 +9030,11 @@ fn run_admin_plane_applies_backend_config_under_traffic() {
     assert_eq!(code, 200, "listener update: {body}");
     let applied: serde_json::Value = serde_json::from_str(&body).expect("apply json");
     assert_eq!(applied["revision"], "v4");
-    assert_eq!(applied["summary"], "listeners kept=1 added=0 removed=0");
+    let summary = applied["summary"].as_str().expect("swap summary");
+    assert!(summary.starts_with("listeners "), "{summary}");
+    assert_eq!(keyed_count(summary, "kept"), 1, "{summary}");
+    assert_eq!(keyed_count(summary, "added"), 0, "{summary}");
+    assert_eq!(keyed_count(summary, "removed"), 0, "{summary}");
     assert!(
         applied["elapsed_ms"].as_u64().expect("measured commit") < 1000,
         "repointing a listener is a sub-second swap: {applied}"
@@ -8953,8 +9064,8 @@ fn run_admin_plane_applies_backend_config_under_traffic() {
     );
 
     // 5. A bind conflict is refused atomically: the old generation serves.
-    let held = TcpListener::bind("127.0.0.1:0").expect("hold a port");
-    let held_addr = held.local_addr().expect("held addr");
+    let holder = TcpListener::bind("127.0.0.1:0").expect("hold a port");
+    let held_addr = holder.local_addr().expect("held addr");
     let conflict = format!("listen = \"{held_addr}\"\nmode = \"http\"\nbackend = \"green\"\n");
     let (code, _, body) = admin_put_toml(
         &admin_addr,
@@ -8966,7 +9077,7 @@ fn run_admin_plane_applies_backend_config_under_traffic() {
     assert_eq!(code, 409, "a bind conflict is refused: {body}");
     let rejected: serde_json::Value = serde_json::from_str(&body).expect("rejected json");
     assert_eq!(rejected["error"], "swap_rejected");
-    drop(held);
+    drop(holder);
     let (status, _) = admin_status(&admin_addr, read_token);
     assert_eq!(status["revision"], "v4");
     assert_eq!(status["listeners"][0]["listen"], proxy_addr);
@@ -8992,7 +9103,7 @@ fn run_admin_plane_applies_backend_config_under_traffic() {
         status["revision"],
         "v5",
         "the SIGHUP reload must commit a new revision: {status}\nlog:\n{}",
-        log.lock().map(|l| l.clone()).unwrap_or_default()
+        log.lock().map_or_default(|l| l.clone())
     );
     assert_eq!(status["listeners"][0]["backend"], "api");
     assert_eq!(
@@ -9077,7 +9188,7 @@ fn run_admin_plane_applies_backend_config_under_traffic() {
     remove_temp(&config);
     let _ = std::fs::remove_file(&read_path);
     let _ = std::fs::remove_file(&write_path);
-    let log = log.lock().map(|l| l.clone()).unwrap_or_default();
+    let log = log.lock().map_or_default(|l| l.clone());
     assert_eq!(status.code(), Some(0), "clean shutdown; log:\n{log}");
     assert!(
         log.contains("\"status\":200"),
@@ -9388,6 +9499,7 @@ fn run_admin_plane_enforces_group_mode_and_uid_allowlist() {
     ignore = "needs processes and Unix sockets: miri does not support them (rust-lang/miri#3449)"
 )]
 #[test]
+#[allow(clippy::too_many_lines)]
 fn run_admin_plane_reloads_unix_socket_policy_on_sighup() {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::os::unix::net::UnixStream;
@@ -9567,7 +9679,7 @@ fn spawn_run_and_wait(
             "eqproxy closed stderr without announcing the listener"
         );
         if let Some(found) = line.split(&needle).nth(1) {
-            addr = found.trim().to_owned();
+            found.trim().clone_into(&mut addr);
         }
     }
     assert!(!addr.is_empty(), "listener {listener} was not announced");
@@ -9769,4 +9881,1866 @@ fn run_refuses_to_start_when_the_access_log_cannot_be_opened() {
         stderr.contains("access log cannot be opened"),
         "stderr: {stderr}"
     );
+}
+
+fn codings(head: &str) -> usize {
+    head.to_ascii_lowercase()
+        .matches("content-encoding:")
+        .count()
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs processes and files: miri does not support them (rust-lang/miri#3449)"
+)]
+#[test]
+fn config_import_drops_a_secondary_vhost_without_exact_server_name() {
+    // nginx selects a server block before evaluating locations. A secondary
+    // vhost with no exact names is therefore not a catch-all for unknown
+    // Hosts; only the default_server serves them. Emitting the secondary's
+    // hostless rule would silently turn it into a catch-all on EQProxy.
+    let source = temp_config(
+        "import-secondary-no-name",
+        "http {\n  server {\n    listen 443 ssl default_server;\n    server_name a.example;\n    ssl_certificate /etc/a.pem;\n    ssl_certificate_key /etc/a.key;\n    location / { proxy_pass http://127.0.0.1:9000; }\n  }\n  server {\n    listen 443 ssl;\n    ssl_certificate /etc/catchall.pem;\n    ssl_certificate_key /etc/catchall.key;\n    location / { proxy_pass http://127.0.0.1:9001; }\n  }\n}\n",
+    );
+    let converted = source.with_extension("converted.toml");
+    let report_path = source.with_extension("report.md");
+    let output = bin()
+        .args(["config", "import", "--input"])
+        .arg(&source)
+        .arg("--output")
+        .arg(&converted)
+        .arg("--report")
+        .arg(&report_path)
+        .output()
+        .expect("run eqproxy config import");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a review-only secondary vhost must convert; stdout: {stdout}\nstderr: {stderr}"
+    );
+
+    let toml = std::fs::read_to_string(&converted).expect("read converted file");
+    assert_eq!(
+        toml.lines()
+            .filter(|line| line.starts_with("[[listener.") && line.contains(".rules]]"))
+            .count(),
+        1,
+        "only the named default vhost may contribute a rule:\n{toml}"
+    );
+    assert!(
+        toml.contains("host = \"a.example\"")
+            && toml.contains("use_backend = \"backend_127_0_0_1_9000\""),
+        "the default vhost keeps its host-scoped rule:\n{toml}"
+    );
+    assert!(
+        !toml.contains("use_backend = \"backend_127_0_0_1_9001\""),
+        "the unnamed secondary vhost must not become a catch-all:\n{toml}"
+    );
+
+    let report = std::fs::read_to_string(&report_path).expect("read report");
+    assert!(
+        report.contains("vhost sin server_name exacto")
+            && report.contains("no se convierten en catch-all"),
+        "the report must explain the nginx semantics and the drop:\n{report}"
+    );
+    assert!(
+        report.lines().all(|line| {
+            !line.contains("regla con use_backend = «backend_127_0_0_1_9001»")
+                || line.contains("no se emite")
+        }),
+        "the report must not claim the dropped rule was emitted:\n{report}"
+    );
+
+    for path in [source, converted, report_path] {
+        remove_temp(&path);
+    }
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs processes and files: miri does not support them (rust-lang/miri#3449)"
+)]
+#[test]
+fn config_import_inherits_listener_tls_from_http() {
+    fn import_case(
+        label: &str,
+        http_tls: &str,
+        server_tls: &str,
+    ) -> (std::process::Output, String) {
+        let source = temp_config(
+            &format!("import-listener-tls-{label}"),
+            &format!(
+                "http {{\n  {http_tls}\n  server {{\n    listen 443 ssl;\n    server_name localhost;\n    {server_tls}\n    location / {{ proxy_pass http://127.0.0.1:8080; }}\n  }}\n}}\n"
+            ),
+        );
+        let converted = source.with_extension("converted.toml");
+        let report_path = source.with_extension("report.md");
+        let output = bin()
+            .args(["config", "import", "--input"])
+            .arg(&source)
+            .arg("--output")
+            .arg(&converted)
+            .arg("--report")
+            .arg(&report_path)
+            .output()
+            .expect("run eqproxy config import");
+        let toml = std::fs::read_to_string(&converted).unwrap_or_default();
+        remove_temp(&source);
+        remove_temp(&converted);
+        remove_temp(&report_path);
+        (output, toml)
+    }
+
+    // The reported regression: http-level TLS1.3 used to be a review row and
+    // the listener silently accepted the TLS1.2 default.
+    let (output, toml) = import_case(
+        "protocols",
+        "ssl_protocols TLSv1.3;",
+        "ssl_certificate /etc/server.crt;\n    ssl_certificate_key /etc/server.key;",
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "http ssl_protocols must convert; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        toml.contains("[listener.web_localhost.tls]")
+            && toml.contains("min_version = \"1.3\"")
+            && toml.contains("max_version = \"1.3\""),
+        "http ssl_protocols must reach the listener TLS block:\n{toml}"
+    );
+
+    // Certificate and key are inherited independently from http; a server
+    // with only `listen 443 ssl` must not be rejected for missing them.
+    let (output, toml) = import_case(
+        "certificates",
+        "ssl_certificate /etc/http.crt;\n  ssl_certificate_key /etc/http.key;",
+        "",
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "http ssl_certificate/key must be inherited; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        toml.contains("cert = \"/etc/http.crt\"") && toml.contains("key = \"/etc/http.key\""),
+        "http certificate/key must reach the listener TLS block:\n{toml}"
+    );
+
+    // A server-level declaration replaces only its own directive; the http
+    // value remains the default for the other fields and servers.
+    let (output, toml) = import_case(
+        "override",
+        "ssl_protocols TLSv1.3;\n  ssl_certificate /etc/http.crt;\n  ssl_certificate_key /etc/http.key;",
+        "ssl_protocols TLSv1.2;\n    ssl_certificate /etc/server.crt;\n    ssl_certificate_key /etc/server.key;",
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "server overrides must convert cleanly; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        toml.contains("cert = \"/etc/server.crt\"")
+            && toml.contains("key = \"/etc/server.key\"")
+            && toml.contains("min_version = \"1.2\"")
+            && toml.contains("max_version = \"1.2\"")
+            && !toml.contains("min_version = \"1.3\""),
+        "each server directive must win over its http default:\n{toml}"
+    );
+
+    // mTLS is inherited as a pair: ssl_client_certificate supplies the CA and
+    // ssl_verify_client activates it; without inheritance client_ca is absent.
+    let (output, toml) = import_case(
+        "mtls",
+        "ssl_certificate /etc/server.crt;\n  ssl_certificate_key /etc/server.key;\n  ssl_client_certificate /etc/clients.pem;\n  ssl_verify_client on;",
+        "",
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "http client CA must be inherited; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        toml.contains("client_ca = \"/etc/clients.pem\""),
+        "http ssl_client_certificate must reach listener client_ca:\n{toml}"
+    );
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs processes and files: miri does not support them (rust-lang/miri#3449)"
+)]
+#[test]
+#[allow(clippy::too_many_lines)]
+fn config_import_inherits_proxy_ssl_from_http_and_server() {
+    fn import_case(
+        label: &str,
+        http_tls: &str,
+        server_tls: &str,
+        location_tls: &str,
+    ) -> (std::process::Output, String, String) {
+        let source = temp_config(
+            &format!("import-ssl-{label}"),
+            &format!(
+                "http {{\n  {http_tls}\n  upstream app {{ server 10.0.0.1:8443; }}\n\
+                 server {{\n    listen 80;\n    {server_tls}\n\
+                 location / {{\n      proxy_pass https://app;\n      {location_tls}\n    }}\n  }}\n}}\n"
+            ),
+        );
+        let converted = source.with_extension("converted.toml");
+        let report_path = source.with_extension("report.md");
+        let output = bin()
+            .args(["config", "import", "--input"])
+            .arg(&source)
+            .arg("--output")
+            .arg(&converted)
+            .arg("--report")
+            .arg(&report_path)
+            .output()
+            .expect("run eqproxy config import");
+        let toml = std::fs::read_to_string(&converted).unwrap_or_default();
+        let report = std::fs::read_to_string(&report_path).unwrap_or_default();
+        remove_temp(&source);
+        remove_temp(&converted);
+        remove_temp(&report_path);
+        (output, toml, report)
+    }
+
+    // Nginx inheritance is per directive: the http-level verify and SNI reach
+    // the backend; the server-level CA is added; the location has no override.
+    let (output, toml, report) = import_case(
+        "http",
+        "proxy_ssl_verify on; proxy_ssl_server_name on;",
+        "proxy_ssl_trusted_certificate /etc/ca.pem;",
+        "",
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "inherited TLS options must convert cleanly; stderr: {}\nreport:\n{report}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        toml.contains("[backend.app.tls]")
+            && toml.contains("verify = true")
+            && toml.contains("ca_file = \"/etc/ca.pem\"")
+            && toml.contains("server_name = \"app\""),
+        "http/server proxy_ssl_* must reach [backend.app.tls]:\n{toml}"
+    );
+
+    // The exact regression: server-level `proxy_ssl_verify on` used to be a
+    // review-only row while the generated backend kept verify = false.
+    let (output, toml, report) = import_case(
+        "server",
+        "",
+        "proxy_ssl_verify on; proxy_ssl_name origin.internal;",
+        "",
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "server-level verification must not be reported as a manual decision; \
+         stderr: {}\nreport:\n{report}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        toml.contains("[backend.app.tls]")
+            && toml.contains("verify = true")
+            && toml.contains("server_name = \"origin.internal\"")
+            && !toml.contains("verify = false"),
+        "server-level proxy_ssl_verify/name must reach the backend TLS block:\n{toml}"
+    );
+
+    // A location-level declaration overrides only its own directive; it must
+    // not inherit the server's on value on top of its explicit off.
+    let (output, toml, report) = import_case(
+        "override",
+        "",
+        "proxy_ssl_verify on;",
+        "proxy_ssl_verify off;",
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a supported location override is a clean conversion; stderr: {}\nreport:\n{report}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        toml.contains("[backend.app.tls]") && toml.contains("verify = false"),
+        "the location's proxy_ssl_verify off must win over the server default:\n{toml}"
+    );
+
+    // Unsupported TLS policy is not silently converted: the TOML keeps what
+    // maps, but the export is degraded and exits 2. The same applies when the
+    // directive is inherited from http or server rather than written in the
+    // location.
+    for (label, http_tls, server_tls, lost) in [
+        (
+            "http-degraded",
+            "proxy_ssl_verify on; proxy_ssl_certificate /etc/client.pem;",
+            "",
+            "proxy_ssl_certificate /etc/client.pem",
+        ),
+        (
+            "server-degraded",
+            "",
+            "proxy_ssl_verify on; proxy_ssl_protocols TLSv1.3;",
+            "proxy_ssl_protocols TLSv1.3",
+        ),
+    ] {
+        let (output, toml, report) = import_case(label, http_tls, server_tls, "");
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "an inherited TLS property without a schema field must degrade; stderr: {}\nreport:\n{report}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let summary = summary_line(&stdout, "import:");
+        assert_eq!(
+            summary_count(summary, "degraded"),
+            1,
+            "the summary must count the inherited loss {lost}:\n{stdout}"
+        );
+        assert!(
+            summary.contains(lost),
+            "the summary must name the inherited loss {lost}:\n{stdout}"
+        );
+        assert!(
+            toml.contains("[backend.app.tls]") && toml.contains("verify = true"),
+            "the rest of the TLS conversion must still be emitted:\n{toml}"
+        );
+        assert!(
+            report
+                .lines()
+                .any(|line| line.starts_with("## ") && line.contains("Convertido con degradación")),
+            "the report must carry the inherited degradation:\n{report}"
+        );
+        assert!(
+            report.contains(lost),
+            "the report must name the inherited loss {lost}:\n{report}"
+        );
+        assert!(
+            !toml.contains("/etc/client.pem") && !toml.contains("min_version"),
+            "an unsupported inherited property must not be invented in the TOML:\n{toml}"
+        );
+    }
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs processes and files: miri does not support them (rust-lang/miri#3449)"
+)]
+#[test]
+fn config_import_rejects_optional_client_verification_once() {
+    for mode in ["optional", "optional_no_ca"] {
+        let source = temp_config(
+            &format!("import-optional-{mode}"),
+            &format!(
+                "http {{\n  ssl_certificate /etc/server.crt;\n  ssl_certificate_key /etc/server.key;\n  ssl_client_certificate /etc/clients.pem;\n  server {{\n    listen 443 ssl;\n    server_name localhost;\n    ssl_verify_client {mode};\n    location / {{ proxy_pass http://127.0.0.1:8080; }}\n  }}\n}}\n"
+            ),
+        );
+        let converted = source.with_extension("converted.toml");
+        let report_path = source.with_extension("report.md");
+        let output = bin()
+            .args(["config", "import", "--input"])
+            .arg(&source)
+            .arg("--output")
+            .arg(&converted)
+            .arg("--report")
+            .arg(&report_path)
+            .output()
+            .expect("run eqproxy config import");
+        let toml = std::fs::read_to_string(&converted).unwrap_or_default();
+        let report = std::fs::read_to_string(&report_path).unwrap_or_default();
+        remove_temp(&source);
+        remove_temp(&converted);
+        remove_temp(&report_path);
+
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{mode} must be an explicit rejection; stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !toml.contains("client_ca"),
+            "{mode} must not emit a client CA that would require a certificate:\n{toml}"
+        );
+        assert!(
+            report.contains("no es expresable") && report.contains("se rechaza"),
+            "the report must explain why {mode} is refused:\n{report}"
+        );
+        let row = format!("- `ssl_verify_client {mode}`");
+        assert_eq!(
+            report.lines().filter(|line| line.starts_with(&row)).count(),
+            1,
+            "{mode} must have exactly one report row:\n{report}"
+        );
+        assert_eq!(
+            report.matches(&format!("ssl_verify_client {mode}")).count(),
+            1,
+            "{mode} must not be repeated in the report body:\n{report}"
+        );
+    }
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs processes and files: miri does not support them (rust-lang/miri#3449)"
+)]
+#[test]
+fn config_import_report_keeps_malicious_path_names_inside_one_line() {
+    // A path can legally contain a newline and backticks on Unix. Inline code
+    // needs a delimiter longer than any backtick run, and the newline must not
+    // reach Markdown as a real line break; otherwise this label becomes a
+    // forged `##` section in the report.
+    let label = "import-report-escape\n## SECCIÓN FALSA ``";
+    let source = temp_config(
+        label,
+        "http {\n  server {\n    listen 8080;\n    location / { proxy_pass http://127.0.0.1:9000; }\n  }\n}\n",
+    );
+    let output_path = source.with_extension("converted.toml");
+    let report_path = source.with_extension("report.md");
+    let output = bin()
+        .args(["config", "import", "--input"])
+        .arg(&source)
+        .arg("--output")
+        .arg(&output_path)
+        .arg("--report")
+        .arg(&report_path)
+        .output()
+        .expect("run eqproxy config import");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(output_path.exists(), "the real output path must be written");
+
+    let report = std::fs::read_to_string(&report_path).expect("read report");
+    assert!(
+        !report
+            .lines()
+            .any(|line| line.starts_with("## SECCIÓN FALSA")),
+        "a path must not forge a Markdown section:\n{report}"
+    );
+    let input_line = report
+        .lines()
+        .find(|line| line.starts_with("- Entrada: "))
+        .expect("the report names its input");
+    let output_line = report
+        .lines()
+        .find(|line| line.starts_with("- Salida: "))
+        .expect("the report names its output");
+    for line in [input_line, output_line] {
+        assert!(
+            line.contains("import-report-escape\\n## SECCIÓN FALSA ``"),
+            "the path must be escaped on one line: {line}"
+        );
+        assert!(
+            line.contains("```"),
+            "the two backticks in the path need a three-backtick delimiter: {line}"
+        );
+    }
+
+    for path in [source, output_path, report_path] {
+        remove_temp(&path);
+    }
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs processes and files: miri does not support them (rust-lang/miri#3449)"
+)]
+#[test]
+#[allow(clippy::too_many_lines)]
+fn config_import_tls_divergence_corpus_names_three_degradations() {
+    // A shared listener applies the default_server's TLS policy to every
+    // name. The corpus declares a second vhost with another TLS version,
+    // another cipher list and mTLS; the real binary must convert it, keep the
+    // default policy and report exactly those three security losses.
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../docs/evidence/v085-config-import/raw/nginx-tls-divergence/nginx.conf");
+    assert!(source.is_file(), "missing corpus file {}", source.display());
+    let converted = std::env::temp_dir().join(format!(
+        "eqproxy-cli-e2e-{}-tls-divergence.toml",
+        std::process::id()
+    ));
+    let report_path = std::env::temp_dir().join(format!(
+        "eqproxy-cli-e2e-{}-tls-divergence.report.md",
+        std::process::id()
+    ));
+    let output = bin()
+        .args(["config", "import", "--input"])
+        .arg(&source)
+        .arg("--output")
+        .arg(&converted)
+        .arg("--report")
+        .arg(&report_path)
+        .output()
+        .expect("run eqproxy config import");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "three security losses must make the import exit 2; stdout: {stdout}\nstderr: {stderr}"
+    );
+
+    let directives = [
+        "ssl_protocols TLSv1.2",
+        "ssl_ciphers ECDHE-RSA-AES128-GCM-SHA256",
+        "ssl_client_certificate /etc/nginx/tls/clients.pem",
+    ];
+    let summary = summary_line(&stdout, "import:");
+    assert_eq!(
+        summary_count(summary, "degraded"),
+        3,
+        "the summary must count all three losses:\n{summary}"
+    );
+    assert_eq!(
+        summary_count(summary, "rejected"),
+        0,
+        "the corpus is convertible, so nothing is rejected:\n{summary}"
+    );
+    for directive in directives {
+        assert!(
+            summary.contains(directive),
+            "the summary must name {directive}:\n{summary}"
+        );
+    }
+
+    let report = std::fs::read_to_string(&report_path).expect("read report");
+    assert_eq!(
+        report_count(&report, "con degradación"),
+        3,
+        "the report summary must count the three losses, not its detail heading:\n{report}"
+    );
+    assert_eq!(
+        report_heading_count(&report, "convertido con degradación"),
+        3,
+        "the degraded section must list exactly three directives:\n{report}"
+    );
+    for expected in directives {
+        assert!(
+            report.contains(expected),
+            "the report must name {expected}:\n{report}"
+        );
+    }
+    for loss in [
+        "política de versiones TLS",
+        "política de cifrados",
+        "certificado de cliente (mTLS)",
+    ] {
+        assert!(
+            report.contains(loss),
+            "the report must state the lost {loss}:\n{report}"
+        );
+    }
+
+    let toml = std::fs::read_to_string(&converted).expect("read converted file");
+    assert!(
+        toml.contains("min_version = \"1.3\"")
+            && toml.contains("max_version = \"1.3\"")
+            && !toml.contains("min_version = \"1.2\"")
+            && !toml.contains("TLSv1.2"),
+        "the default_server's TLS 1.3 policy must be the listener policy:\n{toml}"
+    );
+    assert!(
+        !toml.contains("client_ca")
+            && !toml.contains("ECDHE-RSA-AES128-GCM-SHA256")
+            && !toml.contains("HIGH:!aNULL"),
+        "the listener must not claim the mTLS or cipher policy it lost:\n{toml}"
+    );
+    for needle in [
+        "host = \"a.example\"",
+        "host = \"b.example\"",
+        "names = [\"b.example\"]",
+        "cert = \"/etc/nginx/tls/b.example.pem\"",
+        "use_backend = \"backend_127_0_0_1_9100\"",
+        "use_backend = \"backend_127_0_0_1_9101\"",
+    ] {
+        assert!(
+            toml.contains(needle),
+            "the converted shared listener must keep {needle}:\n{toml}"
+        );
+    }
+
+    for path in [converted, report_path] {
+        remove_temp(&path);
+    }
+}
+
+/// Leaf DER of a PEM fixture, the bytes a TLS handshake actually serves.
+fn fixture_leaf(path: &str) -> Vec<u8> {
+    let pem = std::fs::read(path).expect("read certificate fixture");
+    eqproxy_net::tls::parse_certs(&pem).expect("parse certificate fixture")[0]
+        .as_ref()
+        .to_vec()
+}
+
+fn header_of(head: &str, name: &str) -> Option<String> {
+    head.lines().skip(1).find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        key.trim()
+            .eq_ignore_ascii_case(name)
+            .then(|| value.trim().to_owned())
+    })
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
+)]
+#[test]
+fn healthcheck_probes_the_live_admin_plane_and_listener_fallback() {
+    let token = "healthcheck-token-0123456789abcdef";
+    let running = temp_config(
+        "healthcheck-running",
+        &format!(
+            "schema_version = 1\n\
+             [listener.web]\nlisten = \"127.0.0.1:0\"\nmode = \"http\"\nbackend = \"api\"\n\
+             [backend.api]\nserver = \"127.0.0.1:9\"\n\
+             [admin]\nlisten = \"127.0.0.1:0\"\ntoken = \"{token}\"\n"
+        ),
+    );
+    let (child, proxy_addr, mut stderr) = spawn_run_and_wait(&running, "web");
+    let mut child = ReapOnDrop(child);
+    let admin_line = wait_for_stderr(&mut stderr, "admin listening on ");
+    let admin_addr = admin_line
+        .split("admin listening on ")
+        .nth(1)
+        .expect("admin address")
+        .split_whitespace()
+        .next()
+        .expect("admin address token")
+        .to_owned();
+
+    let admin_config = temp_config(
+        "healthcheck-admin",
+        &format!(
+            "schema_version = 1\n\
+             [listener.web]\nlisten = \"127.0.0.1:0\"\nmode = \"http\"\nbackend = \"api\"\n\
+             [backend.api]\nserver = \"127.0.0.1:9\"\n\
+             [admin]\nlisten = \"{admin_addr}\"\ntoken = \"{token}\"\n"
+        ),
+    );
+    let output = run_healthcheck(&admin_config, 1000);
+    assert!(
+        output.status.success(),
+        "admin healthcheck must pass; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let listener_config = temp_config(
+        "healthcheck-listener",
+        &format!(
+            "schema_version = 1\n\
+             [listener.web]\nlisten = \"{proxy_addr}\"\nmode = \"http\"\nbackend = \"api\"\n\
+             [backend.api]\nserver = \"127.0.0.1:9\"\n"
+        ),
+    );
+    let output = run_healthcheck(&listener_config, 1000);
+    assert!(
+        output.status.success(),
+        "listener fallback must pass; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    wait_for_sigint_shutdown(&mut child, &running);
+    for config in [&admin_config, &listener_config] {
+        let output = run_healthcheck(config, 300);
+        assert!(
+            !output.status.success(),
+            "a stopped process must fail the healthcheck: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+    remove_temp(&admin_config);
+    remove_temp(&listener_config);
+}
+
+/// Complete HTTPS exchange through the proxy: TLS with `sni`, then one request
+/// whose `Host` decides the vhost. Returns everything the client read.
+fn https_exchange(addr: &str, sni: &str, host: &str) -> String {
+    https_exchange_path(addr, sni, host, "/")
+}
+
+/// Complete HTTPS exchange through the proxy for one path: TLS with `sni`,
+/// then one request whose `Host` and path decide the vhost and location.
+fn https_exchange_path(addr: &str, sni: &str, host: &str, path: &str) -> String {
+    use std::io::Write;
+    let mut client = Command::new("openssl")
+        .args([
+            "s_client",
+            "-connect",
+            addr,
+            "-servername",
+            sni,
+            "-quiet",
+            "-ign_eof",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn openssl s_client");
+    client
+        .stdin
+        .take()
+        .expect("TLS client stdin")
+        .write_all(
+            format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes(),
+        )
+        .expect("write TLS request");
+    let output = client.wait_with_output().expect("wait for s_client");
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs processes, the filesystem and TCP sockets: miri does not support them"
+)]
+#[test]
+fn imported_nginx_include_root_keeps_globbed_and_nested_vhosts_serving() {
+    let alpha = start_identity_backend("include-alpha");
+    let beta = start_identity_backend("include-beta");
+    let root = std::env::temp_dir().join(format!(
+        "eqproxy-cli-e2e-{}-nginx-includes",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("conf.d")).expect("create conf.d");
+    std::fs::create_dir_all(root.join("snippets")).expect("create snippets");
+    let source = root.join("nginx.conf");
+    let config = root.join("eqproxy.toml");
+    let report = root.join("report.md");
+    std::fs::write(&source, "http {\n  include conf.d/*.conf;\n}\n")
+        .expect("write include nginx.conf");
+    // Write beta first: the 10/20 file names, not the creation order, must
+    // decide which vhost is expanded first.
+    std::fs::write(
+        root.join("conf.d/20-beta.conf"),
+        format!(
+            "server {{\n\
+               listen 127.0.0.1:0 ssl;\n\
+               server_name include.beta.example.test;\n\
+               ssl_certificate {FIXTURE_BETA_CERT};\n\
+               ssl_certificate_key {FIXTURE_BETA_KEY};\n\
+               location / {{ proxy_pass http://{beta}; }}\n\
+             }}\n"
+        ),
+    )
+    .expect("write beta include");
+    std::fs::write(
+        root.join("conf.d/10-alpha.conf"),
+        format!(
+            "server {{\n\
+               listen 127.0.0.1:0 ssl default_server;\n\
+               server_name include.alpha.example.test;\n\
+               ssl_certificate {FIXTURE_ALPHA_CERT};\n\
+               ssl_certificate_key {FIXTURE_ALPHA_KEY};\n\
+               include snippets/alpha-location.conf;\n\
+             }}\n"
+        ),
+    )
+    .expect("write alpha include");
+    std::fs::write(
+        root.join("snippets/alpha-location.conf"),
+        format!("location / {{ proxy_pass http://{alpha}; }}\n"),
+    )
+    .expect("write nested location include");
+
+    let out = bin()
+        .args(["config", "import", "--from", "nginx", "--input"])
+        .arg(&source)
+        .args(["--include-root"])
+        .arg(&root)
+        .args(["--output"])
+        .arg(&config)
+        .args(["--report"])
+        .arg(&report)
+        .output()
+        .expect("run config import with include root");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "import stderr: {stderr}");
+    let toml = std::fs::read_to_string(&config).expect("read included config");
+    for needle in [
+        "host = \"include.alpha.example.test\"",
+        "host = \"include.beta.example.test\"",
+    ] {
+        assert!(
+            toml.contains(needle),
+            "both included vhosts must be emitted ({needle}):\n{toml}"
+        );
+    }
+    assert_eq!(
+        toml.lines()
+            .filter(|line| line.starts_with("[[listener.") && line.contains(".rules]]"))
+            .count(),
+        2,
+        "one rule for each included vhost:\n{toml}"
+    );
+    assert!(
+        toml.find("host = \"include.alpha.example.test\"")
+            < toml.find("host = \"include.beta.example.test\""),
+        "the 10-alpha glob match must be expanded before 20-beta:\n{toml}"
+    );
+    let report_text = std::fs::read_to_string(&report).expect("read include report");
+    assert!(
+        report_text.contains("include expandido: 2 fichero(s)")
+            && report_text.contains("include expandido: 1 fichero(s)"),
+        "the glob include and the nested include must both be classified:\n{report_text}"
+    );
+
+    let out = bin()
+        .args(["config", "validate", "--config"])
+        .arg(&config)
+        .output()
+        .expect("run config validate");
+    assert!(
+        out.status.success(),
+        "included config must validate: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let listener = toml
+        .lines()
+        .find(|line| {
+            line.starts_with("[listener.")
+                && line.ends_with(']')
+                && line[1..line.len() - 1].matches('.').count() == 1
+        })
+        .expect("one top-level listener")
+        .trim_matches(|c| c == '[' || c == ']')
+        .trim_start_matches("listener.")
+        .to_owned();
+    let (mut child, addr, _stderr) = spawn_run_and_wait(&config, &listener);
+    let alpha_body = https_exchange(
+        &addr,
+        "include.alpha.example.test",
+        "include.alpha.example.test",
+    );
+    assert!(
+        alpha_body.contains("include-alpha") && !alpha_body.contains("include-beta"),
+        "alpha included vhost must reach alpha's backend; got: {alpha_body}"
+    );
+    let beta_body = https_exchange(
+        &addr,
+        "include.beta.example.test",
+        "include.beta.example.test",
+    );
+    assert!(
+        beta_body.contains("include-beta") && !beta_body.contains("include-alpha"),
+        "beta included vhost must reach beta's backend; got: {beta_body}"
+    );
+    wait_for_sigint_shutdown(&mut child, &config);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs processes, the filesystem and TCP sockets: miri does not support them"
+)]
+#[test]
+#[allow(clippy::too_many_lines)]
+fn imported_nginx_one_vhost_with_two_server_names_serves_both_locations() {
+    let root = start_identity_backend("alpha-root");
+    let api = start_identity_backend("beta-api");
+    let dir = std::env::temp_dir().join(format!(
+        "eqproxy-cli-e2e-{}-nginx-one-vhost",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).expect("create nginx e2e dir");
+    let source = dir.join("nginx.conf");
+    let config = dir.join("eqproxy.toml");
+    let report = dir.join("report.md");
+    std::fs::write(
+        &source,
+        format!(
+            "http {{\n\
+               server {{\n\
+                 listen 127.0.0.1:0 ssl default_server;\n\
+                 server_name alpha.example.test beta.example.test;\n\
+                 ssl_certificate {FIXTURE_ALPHA_CERT};\n\
+                 ssl_certificate_key {FIXTURE_ALPHA_KEY};\n\
+                 location / {{ proxy_pass http://{root}; }}\n\
+                 location /api {{ proxy_pass http://{api}; }}\n\
+               }}\n\
+             }}\n"
+        ),
+    )
+    .expect("write nginx.conf");
+
+    // Real import: one server block with two exact names and two locations.
+    let out = bin()
+        .args(["config", "import", "--from", "nginx", "--input"])
+        .arg(&source)
+        .args(["--output"])
+        .arg(&config)
+        .args(["--report"])
+        .arg(&report)
+        .output()
+        .expect("run config import");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "import stderr: {stderr}");
+    let toml = std::fs::read_to_string(&config).expect("read generated config");
+    for host in ["alpha.example.test", "beta.example.test"] {
+        assert!(
+            toml.contains(&format!("host = \"{host}\"")),
+            "{host} must reach the routing rules:\n{toml}"
+        );
+    }
+    assert_eq!(
+        toml.lines()
+            .filter(|line| line.starts_with("[[listener.") && line.contains(".rules]]"))
+            .count(),
+        4,
+        "two locations for each of the two names:\n{toml}"
+    );
+    let rule_names: Vec<&str> = toml
+        .lines()
+        .filter_map(|line| line.strip_prefix("name = \""))
+        .filter_map(|line| line.strip_suffix('"'))
+        .collect();
+    assert_eq!(rule_names.len(), 4, "one name per rule:\n{toml}");
+    let mut unique_names = rule_names.clone();
+    unique_names.sort_unstable();
+    unique_names.dedup();
+    assert_eq!(
+        unique_names.len(),
+        rule_names.len(),
+        "rule names must not repeat across the copies of one vhost:\n{toml}"
+    );
+
+    // The generated file validates and runs as-is.
+    let out = bin()
+        .args(["config", "validate", "--config"])
+        .arg(&config)
+        .output()
+        .expect("run config validate");
+    assert!(
+        out.status.success(),
+        "imported config must validate: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let listener = toml
+        .lines()
+        .find(|line| {
+            line.starts_with("[listener.")
+                && line.ends_with(']')
+                && line[1..line.len() - 1].matches('.').count() == 1
+        })
+        .expect("one top-level listener")
+        .trim_matches(|c| c == '[' || c == ']')
+        .trim_start_matches("listener.")
+        .to_owned();
+    let (mut child, addr, _stderr) = spawn_run_and_wait(&config, &listener);
+
+    // Both exact names reach both locations of the one vhost.
+    for host in ["alpha.example.test", "beta.example.test"] {
+        let root_body = https_exchange_path(&addr, host, host, "/");
+        assert!(
+            root_body.contains("alpha-root") && !root_body.contains("beta-api"),
+            "{host} / must reach the root backend; got: {root_body}"
+        );
+        let api_body = https_exchange_path(&addr, host, host, "/api/items");
+        assert!(
+            api_body.contains("beta-api") && !api_body.contains("alpha-root"),
+            "{host} /api/items must reach the API backend; got: {api_body}"
+        );
+    }
+
+    wait_for_sigint_shutdown(&mut child, &config);
+    let _ = std::fs::remove_file(&source);
+    let _ = std::fs::remove_file(&config);
+    let _ = std::fs::remove_file(&report);
+    let _ = std::fs::remove_dir(&dir);
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs processes, the filesystem and TCP sockets: miri does not support them"
+)]
+#[test]
+#[allow(clippy::too_many_lines)]
+fn imported_nginx_vhosts_serve_two_certificates_and_two_backends() {
+    let alpha = start_identity_backend("alpha-only");
+    let beta = start_identity_backend("beta-only");
+    let dir = std::env::temp_dir().join(format!(
+        "eqproxy-cli-e2e-{}-nginx-vhosts",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).expect("create nginx e2e dir");
+    let source = dir.join("nginx.conf");
+    let config = dir.join("eqproxy.toml");
+    let report = dir.join("report.md");
+    std::fs::write(
+        &source,
+        format!(
+            "http {{\n\
+               server {{\n\
+                 listen 127.0.0.1:0 ssl default_server;\n\
+                 server_name alpha.example.test;\n\
+                 ssl_certificate {FIXTURE_ALPHA_CERT};\n\
+                 ssl_certificate_key {FIXTURE_ALPHA_KEY};\n\
+                 location / {{ proxy_pass http://{alpha}; }}\n\
+               }}\n\
+               server {{\n\
+                 listen 127.0.0.1:0 ssl;\n\
+                 server_name app.beta.example.test;\n\
+                 ssl_certificate {FIXTURE_BETA_CERT};\n\
+                 ssl_certificate_key {FIXTURE_BETA_KEY};\n\
+                 location / {{ proxy_pass http://{beta}; }}\n\
+               }}\n\
+             }}\n"
+        ),
+    )
+    .expect("write nginx.conf");
+
+    // Real import: two vhosts of one address must become one listener.
+    let out = bin()
+        .args(["config", "import", "--from", "nginx", "--input"])
+        .arg(&source)
+        .args(["--output"])
+        .arg(&config)
+        .args(["--report"])
+        .arg(&report)
+        .output()
+        .expect("run config import");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "import stderr: {stderr}");
+    let toml = std::fs::read_to_string(&config).expect("read generated config");
+    assert!(
+        toml.contains(".tls.certs]]")
+            && toml.contains("names = [\"app.beta.example.test\"]")
+            && toml.contains("host = \"alpha.example.test\"")
+            && toml.contains("host = \"app.beta.example.test\""),
+        "the second vhost must land in certs[] with host rules:\n{toml}"
+    );
+    let listener = toml
+        .lines()
+        .find(|line| {
+            line.starts_with("[listener.")
+                && line.ends_with(']')
+                && line[1..line.len() - 1].matches('.').count() == 1
+        })
+        .expect("one top-level listener")
+        .trim_matches(|c| c == '[' || c == ']')
+        .trim_start_matches("listener.")
+        .to_owned();
+    assert_eq!(
+        toml.lines()
+            .filter(|line| line.starts_with("[[listener.") && line.contains(".rules]]"))
+            .count(),
+        2,
+        "one rule per vhost:\n{toml}"
+    );
+
+    // The generated file validates and runs as-is.
+    let out = bin()
+        .args(["config", "validate", "--config"])
+        .arg(&config)
+        .output()
+        .expect("run config validate");
+    assert!(
+        out.status.success(),
+        "imported config must validate: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let (mut child, addr, _stderr) = spawn_run_and_wait(&config, &listener);
+
+    // Two SNI certificates from one listener; no SNI gets the default one.
+    let alpha_subject = served_certificate_subject(&addr, Some("alpha.example.test"));
+    assert!(
+        alpha_subject.contains("alpha.example.test"),
+        "alpha SNI must get alpha's certificate; got {alpha_subject:?}"
+    );
+    let beta_subject = served_certificate_subject(&addr, Some("app.beta.example.test"));
+    assert!(
+        beta_subject.contains("beta.example.test"),
+        "beta SNI must get beta's certificate; got {beta_subject:?}"
+    );
+    let default_subject = served_certificate_subject(&addr, None);
+    assert!(
+        default_subject.contains("alpha.example.test"),
+        "a client without SNI must get the default_server certificate; got {default_subject:?}"
+    );
+
+    // And the `host` on each rule picks the vhost's backend.
+    let alpha_body = https_exchange(&addr, "alpha.example.test", "alpha.example.test");
+    assert!(
+        alpha_body.contains("alpha-only") && !alpha_body.contains("beta-only"),
+        "alpha.example.test must reach alpha's backend; got: {alpha_body}"
+    );
+    let beta_body = https_exchange(&addr, "app.beta.example.test", "app.beta.example.test");
+    assert!(
+        beta_body.contains("beta-only") && !beta_body.contains("alpha-only"),
+        "app.beta.example.test must reach beta's backend; got: {beta_body}"
+    );
+
+    wait_for_sigint_shutdown(&mut child, &config);
+    let _ = std::fs::remove_file(&source);
+    let _ = std::fs::remove_file(&report);
+    let _ = std::fs::remove_dir(&dir);
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
+)]
+#[test]
+#[allow(clippy::too_many_lines)]
+fn imported_redirect_only_listener_serves_301_without_a_backend() {
+    let source = temp_config(
+        "redirect-import",
+        "http {\n  server {\n    listen 80;\n    server_name redirect.test;\n    return 301 https://$host$request_uri;\n  }\n}\n",
+    );
+    let converted = source.with_extension("converted.toml");
+    let report = source.with_extension("report.md");
+    let _ = std::fs::remove_file(&converted);
+    let _ = std::fs::remove_file(&report);
+    let output = bin()
+        .args(["config", "import", "--from", "nginx", "--input"])
+        .arg(&source)
+        .arg("--output")
+        .arg(&converted)
+        .arg("--report")
+        .arg(&report)
+        .output()
+        .expect("run eqproxy config import");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a redirect-only server must convert; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let toml = std::fs::read_to_string(&converted).expect("read converted file");
+    assert!(
+        toml.contains(".redirect]") && toml.contains("location = \"https://$host$request_uri\""),
+        "the generated listener must carry the redirect:\n{toml}"
+    );
+    assert!(
+        !toml.contains("backend ="),
+        "a redirect-only listener must not invent a backend:\n{toml}"
+    );
+
+    let explain = bin()
+        .args(["config", "explain", "--config"])
+        .arg(&converted)
+        .args(["--host", "redirect.test", "--path", "/old/path?x=1"])
+        .output()
+        .expect("run eqproxy config explain");
+    assert_eq!(
+        explain.status.code(),
+        Some(0),
+        "explain a redirect-only listener; stderr: {}",
+        String::from_utf8_lossy(&explain.stderr)
+    );
+    let explained = String::from_utf8_lossy(&explain.stdout);
+    assert!(
+        explained.contains(
+            "route_decision: no rule matched -> redirect 301 -> \"https://redirect.test/old/path?x=1\""
+        ) && explained.contains("action: local response (no backend contacted)"),
+        "{explained}"
+    );
+
+    // Rewrite only the bind address: the redirect location and status stay
+    // exactly what the importer produced.
+    let runnable = toml.replace("listen = \"0.0.0.0:80\"", "listen = \"127.0.0.1:0\"");
+    assert_ne!(runnable, toml, "the generated listener must bind port 80");
+    let config = source.with_extension("run.toml");
+    std::fs::write(&config, runnable).expect("write runnable config");
+
+    let mut child = bin()
+        .args(["run", "--config"])
+        .arg(&config)
+        .args(["--metrics-interval", "1h"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn eqproxy run (redirect)");
+    let mut stderr = BufReader::new(child.stderr.take().expect("stderr piped"));
+    let mut proxy_addr = String::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut line = String::new();
+    while Instant::now() < deadline {
+        line.clear();
+        let read = stderr.read_line(&mut line).expect("read stderr");
+        assert!(read > 0, "eqproxy closed stderr without announcing bind");
+        if let Some(addr) = line.split("listening on ").nth(1) {
+            proxy_addr = addr.trim().to_owned();
+            break;
+        }
+    }
+    assert!(!proxy_addr.is_empty(), "the address was not announced");
+
+    let response = proxied(
+        proxy_addr.as_str(),
+        b"GET /old/path?x=1 HTTP/1.1\r\nHost: redirect.test\r\nConnection: close\r\n\r\n",
+    );
+    assert!(
+        response.starts_with("HTTP/1.1 301 moved permanently"),
+        "{response}"
+    );
+    assert!(
+        response.contains("location: https://redirect.test/old/path?x=1\r\n"),
+        "the Location must be rendered from Host and the original target: {response}"
+    );
+
+    let pid = child.id();
+    let kill = Command::new("kill")
+        .args(["-INT", &pid.to_string()])
+        .status()
+        .expect("run kill");
+    assert!(kill.success(), "kill -INT must be accepted");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("try_wait") {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("eqproxy did not finish after SIGINT");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    for path in [&source, &converted, &report, &config] {
+        remove_temp(path);
+    }
+    assert_eq!(status.code(), Some(0), "clean shutdown must exit with 0");
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
+)]
+#[test]
+#[allow(clippy::too_many_lines)]
+fn imported_wildcard_and_regex_server_names_route_and_select_sni() {
+    let exact_backend = start_static_backend("exact-backend");
+    let wild_backend = start_static_backend("wild-backend");
+    let regex_backend = start_static_backend("regex-backend");
+    let prefix_backend = start_static_backend("prefix-backend");
+    let nginx = format!(
+        "http {{\n  server {{\n    listen 443 ssl default_server;\n    server_name api-7.example.test;\n    ssl_certificate {FIXTURE_ALPHA_CERT};\n    ssl_certificate_key {FIXTURE_ALPHA_KEY};\n    location / {{ proxy_pass http://{exact_backend}; }}\n  }}\n  server {{\n    listen 443 ssl;\n    server_name *.wild.example.test;\n    ssl_certificate {FIXTURE_WILD_CERT};\n    ssl_certificate_key {FIXTURE_WILD_KEY};\n    location / {{ proxy_pass http://{wild_backend}; }}\n  }}\n  server {{\n    listen 443 ssl;\n    server_name ~^api-[0-9]+\\.example\\.test$;\n    ssl_certificate {FIXTURE_CERT};\n    ssl_certificate_key {FIXTURE_KEY};\n    location / {{ proxy_pass http://{regex_backend}; }}\n  }}\n  server {{\n    listen 443 ssl;\n    server_name mail.*;\n    ssl_certificate {FIXTURE_CERT};\n    ssl_certificate_key {FIXTURE_KEY};\n    location / {{ proxy_pass http://{prefix_backend}; }}\n  }}\n}}\n"
+    );
+    let source = temp_config("server-name-import", &nginx);
+    let converted = source.with_extension("converted.toml");
+    let report = source.with_extension("report.md");
+    let _ = std::fs::remove_file(&converted);
+    let _ = std::fs::remove_file(&report);
+    let output = bin()
+        .args(["config", "import", "--from", "nginx", "--input"])
+        .arg(&source)
+        .arg("--output")
+        .arg(&converted)
+        .arg("--report")
+        .arg(&report)
+        .output()
+        .expect("run eqproxy config import");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "wildcard/regex server_name must convert; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let toml = std::fs::read_to_string(&converted).expect("read converted file");
+    let parsed = eqproxy_config::parse_str(&toml, Path::new("imported-server-names"))
+        .expect("generated TOML parses");
+    let listener = parsed.listener.values().next().expect("listener");
+    let regexes: Vec<&str> = listener
+        .rules
+        .iter()
+        .filter_map(|rule| rule.host_regex.as_deref())
+        .collect();
+    assert!(
+        listener
+            .rules
+            .iter()
+            .any(|rule| rule.host.as_deref() == Some("api-7.example.test")),
+        "the exact name must stay exact even though the regex also matches it:\n{toml}"
+    );
+    assert!(
+        regexes.contains(&r"^[^.]+(?:\.[^.]+)*\.wild\.example\.test$")
+            && regexes.contains(&r"^api-[0-9]+\.example\.test$"),
+        "the importer must emit both host conditions:\n{toml}"
+    );
+    assert!(
+        listener
+            .rules
+            .iter()
+            .any(|rule| rule.host_prefix.as_deref() == Some("mail.")),
+        "a trailing wildcard must become host_prefix:\n{toml}"
+    );
+    assert!(
+        listener.tls.as_ref().expect("TLS").certs[0].names == ["*.wild.example.test"],
+        "the wildcard certificate must be announced by SNI:\n{toml}"
+    );
+    let report_text = std::fs::read_to_string(&report).expect("read report");
+    assert!(
+        report_text.contains("vhost sin nombre expresable") && report_text.contains("api-[0-9]+"),
+        "a regex name cannot be a certs[].names entry and must be reported:\n{report_text}"
+    );
+
+    // Rewrite only the bind address; certificates and routing stay as
+    // imported. Port 0 lets the test read the kernel-assigned TLS port.
+    let runnable = toml.replace("listen = \"0.0.0.0:443\"", "listen = \"127.0.0.1:0\"");
+    assert_ne!(runnable, toml, "the generated listener must bind port 443");
+    let config = source.with_extension("run.toml");
+    std::fs::write(&config, runnable).expect("write runnable config");
+
+    let mut child = bin()
+        .args(["run", "--config"])
+        .arg(&config)
+        .args(["--metrics-interval", "1h"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn eqproxy run (server_name)");
+    let mut stderr = BufReader::new(child.stderr.take().expect("stderr piped"));
+    let mut proxy_addr = String::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut line = String::new();
+    while Instant::now() < deadline {
+        line.clear();
+        let read = stderr.read_line(&mut line).expect("read stderr");
+        assert!(read > 0, "eqproxy closed stderr without announcing bind");
+        if let Some(addr) = line.split("listening on ").nth(1) {
+            proxy_addr = addr.trim().to_owned();
+            break;
+        }
+    }
+    assert!(!proxy_addr.is_empty(), "the address was not announced");
+    let addr: std::net::SocketAddr = proxy_addr.parse().expect("listener address");
+    let alpha_leaf = fixture_leaf(FIXTURE_ALPHA_CERT);
+    let wild_leaf = fixture_leaf(FIXTURE_WILD_CERT);
+
+    let (leaf, response) = tls_http_request(addr, "api-7.example.test", "/exact");
+    assert_eq!(leaf, alpha_leaf, "the exact name gets the default leaf");
+    assert!(
+        response.contains("exact-backend"),
+        "exact routing must win over the overlapping regex: {response}"
+    );
+
+    let (leaf, response) = tls_http_request(addr, "x.wild.example.test", "/wild");
+    assert_eq!(
+        leaf, wild_leaf,
+        "the wildcard SNI certificate must answer its one-label name"
+    );
+    assert!(
+        response.contains("wild-backend"),
+        "wildcard routing: {response}"
+    );
+
+    let (leaf, response) = tls_http_request(addr, "api-8.example.test", "/regex");
+    assert_eq!(
+        leaf, alpha_leaf,
+        "a regex name has no certs[].names entry; the default leaf answers"
+    );
+    assert!(
+        response.contains("regex-backend"),
+        "regex routing: {response}"
+    );
+
+    let (leaf, response) = tls_http_request(addr, "mail.example.org", "/prefix");
+    assert_eq!(leaf, alpha_leaf, "the prefix name has no extra certificate");
+    assert!(
+        response.contains("prefix-backend"),
+        "host_prefix routing: {response}"
+    );
+
+    let (leaf, response) = tls_http_request(addr, "unknown.example.test", "/fallback");
+    assert_eq!(leaf, alpha_leaf, "unknown SNI gets the default leaf");
+    assert!(
+        response.contains("exact-backend"),
+        "an unmatched host must use the default_server fallback: {response}"
+    );
+
+    let pid = child.id();
+    let kill = Command::new("kill")
+        .args(["-INT", &pid.to_string()])
+        .status()
+        .expect("run kill");
+    assert!(kill.success(), "kill -INT must be accepted");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("try_wait") {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("eqproxy did not finish after SIGINT");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    for path in [&source, &converted, &report, &config] {
+        remove_temp(path);
+    }
+    assert_eq!(status.code(), Some(0), "clean shutdown must exit with 0");
+}
+
+/// Reads a `key=<decimal>` value from a compact swap summary.
+fn keyed_count(summary: &str, key: &str) -> usize {
+    let marker = format!("{key}=");
+    let start = summary.find(&marker).map_or_else(
+        || panic!("summary must carry {key}=N: {summary}"),
+        |index| index + marker.len(),
+    );
+    let digits: String = summary[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    assert!(
+        !digits.is_empty(),
+        "summary must carry a decimal {key}=N: {summary}"
+    );
+    digits
+        .parse()
+        .unwrap_or_else(|_| panic!("summary must carry a decimal {key}=N: {summary}"))
+}
+
+/// Reads a count from the report's completeness line.
+fn report_count(report: &str, label: &str) -> usize {
+    let summary = report
+        .lines()
+        .find(|line| line.contains("Directivas leídas:"))
+        .unwrap_or_else(|| panic!("report must show its completeness counters:\n{report}"));
+    let label_at = summary
+        .find(label)
+        .unwrap_or_else(|| panic!("report summary must name {label:?}: {summary}"));
+    let digits: String = summary[label_at + label.len()..]
+        .chars()
+        .skip_while(|c| !c.is_ascii_digit())
+        .take_while(char::is_ascii_digit)
+        .collect();
+    assert!(
+        !digits.is_empty(),
+        "report summary must carry a count for {label:?}: {summary}"
+    );
+    digits.parse().unwrap_or_else(|_| {
+        panic!("report summary must carry a decimal count for {label:?}: {summary}")
+    })
+}
+
+/// Reads the count in a report section heading such as `(revisar) (0)`.
+fn report_heading_count(report: &str, label: &str) -> usize {
+    let heading = report
+        .lines()
+        .find(|line| line.starts_with("###") && line.contains(label))
+        .unwrap_or_else(|| panic!("report must have a {label:?} section:\n{report}"));
+    let close = heading
+        .rfind(')')
+        .unwrap_or_else(|| panic!("report heading must end with a count: {heading}"));
+    let open = heading[..close]
+        .rfind('(')
+        .unwrap_or_else(|| panic!("report heading must carry a count: {heading}"));
+    heading[open + 1..close]
+        .parse()
+        .unwrap_or_else(|_| panic!("report heading count must be decimal: {heading}"))
+}
+
+fn run_healthcheck(config: &Path, timeout_ms: u64) -> std::process::Output {
+    bin()
+        .args(["healthcheck", "--config"])
+        .arg(config)
+        .args(["--timeout-ms", &timeout_ms.to_string()])
+        .output()
+        .expect("run eqproxy healthcheck")
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
+)]
+#[test]
+fn run_serves_every_coding_intact_from_one_cached_compressed_miss() {
+    let origin = start_compression_origin();
+    let text = compression_text();
+    let dir = std::env::temp_dir().join(format!("eqproxy-p010-cache-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let text_config = format!(
+        "schema_version = 1\nshutdown_grace = \"1s\"\n\
+             [listener.web]\n\
+             listen = \"127.0.0.1:0\"\n\
+             mode = \"http\"\n\
+             backend = \"api\"\n\
+             connect_timeout = \"2s\"\n\
+             [listener.web.compression]\n\
+             gzip = true\n\
+             brotli = true\n\
+             min_size = 512\n\
+             [listener.web.cache]\n\
+             default_ttl = \"60s\"\n\
+             disk_path = \"{}\"\n\
+             [backend.api]\n\
+             server = \"{origin}\"\n",
+        dir.display()
+    );
+    let config = temp_config("p010-compressed-hit", &text_config);
+
+    let (mut child, addr, _stderr) = spawn_run_and_wait(&config, "web");
+
+    // (1) gzip miss: a real member of the origin's 9 KB body.
+    let (head, body, _) = response_body(&get_with_encoding(&addr, "/", Some("gzip")));
+    assert!(head.starts_with("HTTP/1.1 200"), "head: {head}");
+    assert_eq!(header_of(&head, "x-cache").as_deref(), Some("MISS"));
+    assert_eq!(
+        header_of(&head, "content-encoding").as_deref(),
+        Some("gzip")
+    );
+    assert_eq!(codings(&head), 1, "one coding per response: {head}");
+    assert_eq!(header_of(&head, "vary").as_deref(), Some("Accept-Encoding"));
+    assert_eq!(gunzip(&body), text.as_bytes());
+
+    // (2) gzip hit: the corruption case — same coding, still a member.
+    let (head, body, _) = response_body(&get_with_encoding(&addr, "/", Some("gzip")));
+    assert_eq!(header_of(&head, "x-cache").as_deref(), Some("HIT"));
+    assert_eq!(codings(&head), 1, "one coding per response: {head}");
+    assert_eq!(gunzip(&body), text.as_bytes());
+
+    // (3) brotli hit: the same stored entry, coded on the fly.
+    let (head, body, _) = response_body(&get_with_encoding(&addr, "/", Some("br")));
+    assert_eq!(header_of(&head, "x-cache").as_deref(), Some("HIT"));
+    assert_eq!(header_of(&head, "content-encoding").as_deref(), Some("br"));
+    assert_eq!(codings(&head), 1, "one coding per response: {head}");
+    assert_eq!(unbrotli(&body), text.as_bytes());
+
+    // (4) identity hit: the origin's own bytes and length, no coding at all.
+    let (head, body, _) = response_body(&get_with_encoding(&addr, "/", None));
+    assert_eq!(header_of(&head, "x-cache").as_deref(), Some("HIT"));
+    assert_eq!(header_of(&head, "content-encoding"), None);
+    assert_eq!(
+        header_of(&head, "content-length").as_deref(),
+        Some(text.len().to_string().as_str()),
+        "the served length is the stored body's: {head}"
+    );
+    assert_eq!(body, text.as_bytes());
+
+    wait_for_sigint_shutdown(&mut child, &config);
+
+    // (5) After a restart the entry is reloaded from disk, and it is still the
+    // origin's representation: every coding decodes to the same bytes. The
+    // shutdown tail removes the config file, so the restart writes it again.
+    std::fs::write(&config, &text_config).expect("rewrite the test config");
+    let (mut child, addr, _stderr) = spawn_run_and_wait(&config, "web");
+    let (head, body, _) = response_body(&get_with_encoding(&addr, "/", Some("gzip")));
+    assert_eq!(header_of(&head, "x-cache").as_deref(), Some("HIT"));
+    assert_eq!(codings(&head), 1, "one coding per response: {head}");
+    assert_eq!(gunzip(&body), text.as_bytes());
+    let (head, body, _) = response_body(&get_with_encoding(&addr, "/", None));
+    assert_eq!(header_of(&head, "x-cache").as_deref(), Some("HIT"));
+    assert_eq!(header_of(&head, "content-encoding"), None);
+    assert_eq!(body, text.as_bytes());
+    wait_for_sigint_shutdown(&mut child, &config);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
+)]
+#[test]
+fn run_verifies_the_declared_backend_hostname_not_its_ip() {
+    let echo = start_static_backend("origin-ok");
+    // The TLS origin is a real server: a second `eqproxy` process terminating
+    // TLS with the name-only leaf, in front of a real HTTP origin. It listens on
+    // the IPv6 wildcard, which is dual-stack wherever this suite runs, so it
+    // answers whichever loopback `localhost` resolves to first.
+    let origin = temp_config(
+        "p014-origin",
+        &format!(
+            "schema_version = 1\n\
+             [listener.origin]\n\
+             listen = \"[::]:0\"\nmode = \"http\"\nbackend = \"echo\"\n\
+             [listener.origin.tls]\n\
+             cert = \"{FIXTURE_HOSTONLY_CERT}\"\n\
+             key = \"{FIXTURE_HOSTONLY_KEY}\"\n\
+             [backend.echo]\n\
+             server = \"{echo}\"\n"
+        ),
+    );
+    let (mut origin_child, origin_addr, _origin_stderr) = spawn_run_and_wait(&origin, "origin");
+    // The port the origin took, reached through the v6 loopback: an address the
+    // certificate does not name.
+    let port = origin_addr
+        .parse::<std::net::SocketAddr>()
+        .expect("the announced origin address is an IP:PORT")
+        .port();
+    let literal = format!("[::1]:{port}");
+    let proxy = |name: &str, server: &str, extra: &str| {
+        temp_config(
+            name,
+            &format!(
+                "schema_version = 1\n\
+                 [listener.web]\n\
+                 listen = \"127.0.0.1:0\"\nmode = \"http\"\nbackend = \"api\"\n\
+                 [backend.api]\n\
+                 server = \"{server}\"\n\
+                 [backend.api.tls]\n\
+                 verify = true\n\
+                 ca_file = \"{FIXTURE_HOSTONLY_CERT}\"\n\
+                 {extra}"
+            ),
+        )
+    };
+    let request = b"GET / HTTP/1.1\r\nHost: shop.example.test\r\nConnection: close\r\n\r\n";
+    // A backend given by name holds no balancer member until the name resolves,
+    // and that window looks like the built-in "no server available" answer
+    // (503, empty body). This journey is about the TLS identity, so it waits
+    // that short window out instead of measuring it.
+    let served = |addr: &str| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let response = proxied(addr, request);
+            if !response.starts_with("HTTP/1.1 503") || Instant::now() >= deadline {
+                return response;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    // The proxy's own reason for refusing travels in its log, so a failed
+    // exchange reports why instead of only its status line.
+    let drain = |stderr: &mut BufReader<std::process::ChildStderr>| {
+        let mut all = String::new();
+        let _ = stderr.read_to_string(&mut all);
+        all.lines()
+            .filter(|line| !line.starts_with("METRICS"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    // (1) The defect: with no `server_name`, the name verified and sent as SNI
+    //     is the host the backend declares, not the address it resolves to.
+    let named = proxy("p014-named", &format!("localhost:{port}"), "");
+    let (mut child, addr, mut stderr) = spawn_run_and_wait(&named, "web");
+    let response = served(&addr);
+    wait_for_sigint_shutdown(&mut child, &named);
+    let log = drain(&mut stderr);
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "a backend named localhost must verify as localhost, not as its IP: {response}\nproxy log:\n{log}"
+    );
+    assert_eq!(body_of(&response), "origin-ok", "proxy log:\n{log}");
+
+    // (2) Reached by IP and verified by name: a name the leaf does not carry is
+    //     refused even though the address is reachable.
+    let wrong = proxy("p014-wrong", &literal, "server_name = \"wrong.invalid\"\n");
+    let (mut child, addr, mut stderr) = spawn_run_and_wait(&wrong, "web");
+    let response = served(&addr);
+    wait_for_sigint_shutdown(&mut child, &wrong);
+    let log = drain(&mut stderr);
+    assert!(
+        response.starts_with("HTTP/1.1 502"),
+        "a name the certificate does not carry must fail verification: {response}\nproxy log:\n{log}"
+    );
+
+    // (3) The same IP-reached backend verifies when the name matches, even
+    //     though the leaf carries no IP SAN: the name, not the address, is
+    //     what the certificate has to cover.
+    let explicit = proxy("p014-explicit", &literal, "server_name = \"localhost\"\n");
+    let (mut child, addr, mut stderr) = spawn_run_and_wait(&explicit, "web");
+    let response = served(&addr);
+    wait_for_sigint_shutdown(&mut child, &explicit);
+    let log = drain(&mut stderr);
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "an explicit matching server_name must verify: {response}\nproxy log:\n{log}"
+    );
+    assert_eq!(body_of(&response), "origin-ok", "proxy log:\n{log}");
+    wait_for_sigint_shutdown(&mut origin_child, &origin);
+}
+
+/// Reads the decimal count immediately before `label` in a summary line.
+/// Parsing the whole token keeps `0 degraded` from accepting `10 degraded`.
+fn summary_count(summary: &str, label: &str) -> usize {
+    for (label_at, _) in summary.match_indices(label) {
+        let before = &summary[..label_at];
+        if !before.chars().next_back().is_some_and(char::is_whitespace) {
+            continue;
+        }
+        let before = before.trim_end();
+        let start = before
+            .rfind(|c: char| !c.is_ascii_digit())
+            .map_or(0, |index| index + 1);
+        let digits = &before[start..];
+        if !digits.is_empty()
+            && let Ok(count) = digits.parse::<usize>()
+        {
+            return count;
+        }
+    }
+    panic!("summary must carry a decimal count before {label:?}: {summary}")
+}
+
+/// Finds the line that introduces a human-readable summary.
+fn summary_line<'a>(text: &'a str, prefix: &str) -> &'a str {
+    text.lines()
+        .find(|line| line.starts_with(prefix))
+        .unwrap_or_else(|| panic!("expected a {prefix:?} summary line in:\n{text}"))
+}
+
+/// One real TLS request, returning the presented leaf and the HTTP response.
+fn tls_http_request(addr: std::net::SocketAddr, sni: &str, path: &str) -> (Vec<u8>, String) {
+    let recorder = SniRecorder::new();
+    let verifier: std::sync::Arc<dyn rustls::client::danger::ServerCertVerifier> = recorder.clone();
+    let config = rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_no_client_auth();
+    let name = rustls_pki_types::ServerName::try_from(sni.to_owned()).expect("SNI name");
+    let conn = rustls::ClientConnection::new(std::sync::Arc::new(config), name)
+        .expect("TLS client connection");
+    let tcp = TcpStream::connect(addr).expect("connect TLS listener");
+    tcp.set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("TLS read timeout");
+    tcp.set_write_timeout(Some(Duration::from_secs(5)))
+        .expect("TLS write timeout");
+    let mut stream = rustls::StreamOwned::new(conn, tcp);
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: {sni}\r\nConnection: close\r\n\r\n"
+    )
+    .expect("write TLS request");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("read TLS response");
+    let leaf = recorder
+        .seen
+        .lock()
+        .expect("recorder lock")
+        .take()
+        .expect("the handshake must present a certificate");
+    (leaf, response)
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs a child process: miri does not support spawning (rust-lang/miri#3449)"
+)]
+#[test]
+fn validate_rejects_two_listeners_on_one_address() {
+    let duplicate = temp_config(
+        "dup-listen",
+        "schema_version = 1\n\
+         [listener.a]\n\
+         listen = \"127.0.0.1:18080\"\n\
+         backend = \"api\"\n\
+         [listener.b]\n\
+         listen = \"127.0.0.1:18080\"\n\
+         backend = \"api\"\n\
+         [backend.api]\n\
+         server = \"127.0.0.1:9\"\n",
+    );
+    let output = bin()
+        .args(["config", "validate", "--config"])
+        .arg(&duplicate)
+        .output()
+        .expect("run eqproxy config validate");
+    remove_temp(&duplicate);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "the gate must reject the duplicate before run; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("listener \"a\" and listener \"b\" both listen on 127.0.0.1:18080"),
+        "the gate must name both listeners and the address:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("listener.b.listen"),
+        "the error must point at the duplicate listener:\n{stderr}"
+    );
+}
+
+/// Additional SNI certificates (B-I2/B-H10/B-E9): `alpha.example.test`
+/// (exact) and `*.beta.example.test` (wildcard).
+/// `localhost` only: no IP SAN, so verifying the resolved address fails
+/// (P0-14/EXT-H-05).
+const FIXTURE_HOSTONLY_CERT: &str = concat!(env!("OUT_DIR"), "/fixtures/hostonly.pem");
+
+const FIXTURE_HOSTONLY_KEY: &str = concat!(env!("OUT_DIR"), "/fixtures/hostonly.key");
+
+const FIXTURE_WILD_CERT: &str = concat!(env!("OUT_DIR"), "/fixtures/wild.pem");
+
+const FIXTURE_WILD_KEY: &str = concat!(env!("OUT_DIR"), "/fixtures/wild.key");
+
+/// Records the leaf presented by the server while accepting the self-signed
+/// test chain. The assertion is on the real handshake, not on config state.
+#[derive(Debug)]
+struct SniRecorder {
+    seen: std::sync::Mutex<Option<Vec<u8>>>,
+    provider: rustls::crypto::CryptoProvider,
+}
+
+impl SniRecorder {
+    fn new() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            seen: std::sync::Mutex::new(None),
+            provider: rustls::crypto::aws_lc_rs::default_provider(),
+        })
+    }
+}
+
+impl rustls::client::danger::ServerCertVerifier for SniRecorder {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls_pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls_pki_types::CertificateDer<'_>],
+        _server_name: &rustls_pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls_pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        *self.seen.lock().expect("recorder lock") = Some(end_entity.as_ref().to_vec());
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls_pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls_pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
 }

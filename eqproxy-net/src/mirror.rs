@@ -76,7 +76,7 @@ impl MirrorCopy {
             );
             return;
         };
-        let (mut read, mut write, _opened) = match connect_backend_to(
+        let Ok((mut read, mut write, _opened)) = connect_backend_to(
             DialTimeouts {
                 name: &self.name,
                 connect: self.connect_timeout,
@@ -95,16 +95,13 @@ impl MirrorCopy {
             &self.metrics,
         )
         .await
-        {
-            Ok(pair) => pair,
-            Err(_) => {
-                self.metrics.mirror_failures.fetch_add(1, Ordering::Relaxed);
-                eprintln!(
-                    "WARN [{}] mirror to {:?} at {addr} failed to connect (peer {})",
-                    self.name, backend.name, self.peer
-                );
-                return;
-            }
+        else {
+            self.metrics.mirror_failures.fetch_add(1, Ordering::Relaxed);
+            eprintln!(
+                "WARN [{}] mirror to {:?} at {addr} failed to connect (peer {})",
+                self.name, backend.name, self.peer
+            );
+            return;
         };
 
         // The copy is one whole request: head, terminator, body. The write
@@ -155,7 +152,7 @@ async fn drain(read: &mut BoxRead, idle: Duration) {
     loop {
         let read_some = tokio::time::timeout(idle, read.read(&mut buf)).await;
         match read_some {
-            Ok(Ok(0)) | Ok(Err(_)) | Err(_) => return,
+            Ok(Ok(0) | Err(_)) | Err(_) => return,
             Ok(Ok(n)) => {
                 seen += n;
                 if seen >= DRAIN_BUDGET {

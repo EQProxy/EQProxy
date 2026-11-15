@@ -24,13 +24,13 @@ pub(crate) fn current_http_date() -> String {
 pub(crate) fn http_date(now: SystemTime) -> String {
     let seconds = now
         .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs())
-        .unwrap_or(0);
-    let days = (seconds / 86_400) as i64;
+        .map_or(0, |elapsed| elapsed.as_secs());
+    let days = (seconds / 86_400).cast_signed();
     let second_of_day = seconds % 86_400;
     let (year, month, day) = civil_from_days(days);
     // 1970-01-01 was a Thursday (index 4 with Sunday = 0).
-    let weekday = (days + 4).rem_euclid(7) as usize;
+    let weekday =
+        usize::try_from((days + 4).rem_euclid(7)).expect("the value fits in the destination type");
     let hour = second_of_day / 3_600;
     let minute = (second_of_day % 3_600) / 60;
     let second = second_of_day % 60;
@@ -55,18 +55,20 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     } else {
         shifted - 146_096
     } / 146_097;
-    let day_of_era = (shifted - era * 146_097) as u64; // [0, 146096]
+    let day_of_era = (shifted - era * 146_097).cast_unsigned(); // [0, 146096]
     let year_of_era =
         (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let year = year_of_era as i64 + era * 400;
+    let year = year_of_era.cast_signed() + era * 400;
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let month_prime = (5 * day_of_year + 2) / 153;
-    let day = (day_of_year - (153 * month_prime + 2) / 5 + 1) as u32;
-    let month = if month_prime < 10 {
+    let day = u32::try_from(day_of_year - (153 * month_prime + 2) / 5 + 1)
+        .expect("the value fits in the destination type");
+    let month = u32::try_from(if month_prime < 10 {
         month_prime + 3
     } else {
         month_prime - 9
-    } as u32;
+    })
+    .expect("the value fits in the destination type");
     (if month <= 2 { year + 1 } else { year }, month, day)
 }
 

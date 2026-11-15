@@ -23,8 +23,15 @@ self_signed() {
 
 self_signed cert localhost "DNS:localhost,IP:127.0.0.1"
 mv cert.key key.pem
+# P0-14/EXT-H-05: names `localhost` and deliberately carries no IP SAN, so a
+# client that verifies the resolved address instead of the configured host
+# fails against its own correctly named backend.
+self_signed hostonly localhost "DNS:localhost"
 self_signed alpha alpha.example.test "DNS:alpha.example.test"
+self_signed alpha2 alpha.example.test "DNS:alpha.example.test"
 self_signed beta beta.example.test "DNS:beta.example.test"
+self_signed gamma gamma.example.test "DNS:gamma.example.test"
+self_signed wild wild.example.test "DNS:*.wild.example.test"
 
 openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 3650 \
     -keyout mtls-ca.key -out mtls-ca.pem -subj "/CN=EQProxy Test CA" \

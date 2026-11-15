@@ -1,7 +1,7 @@
 //! Semantic validation: dangling references, ranges and warnings for
 //! dangerous configurations. Errors with line, field, cause and example.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::time::Duration;
 
@@ -37,6 +37,7 @@ impl CheckResult {
 }
 
 /// Validates `config` (parsed) against the `source` text to locate lines.
+#[must_use]
 pub fn check(config: &Config, source: &str, file: &Path) -> CheckResult {
     let mut result = CheckResult::default();
     check_globals(config, source, file, &mut result);
@@ -122,6 +123,7 @@ fn check_globals(config: &Config, source: &str, file: &Path, result: &mut CheckR
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn check_admin(config: &Config, source: &str, file: &Path, result: &mut CheckResult) {
     let mut err = |field: String, cause: String, example: String, needle: &str| {
         result.errors.push(ConfigError {
@@ -475,6 +477,7 @@ fn check_access_log(config: &Config, source: &str, file: &Path, result: &mut Che
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn check_maps(config: &Config, source: &str, file: &Path, result: &mut CheckResult) {
     let mut err = |field: String, cause: String, example: String, needle: &str| {
         result.errors.push(ConfigError {
@@ -568,8 +571,7 @@ fn check_maps(config: &Config, source: &str, file: &Path, result: &mut CheckResu
             err(
                 field("reload_interval"),
                 format!(
-                    "reload_interval = {:?} out of range (\"0s\" = load once; otherwise between {:?} and {:?})",
-                    interval, MIN_MAP_RELOAD_INTERVAL, MAX_MAP_RELOAD_INTERVAL
+                    "reload_interval = {interval:?} out of range (\"0s\" = load once; otherwise between {MIN_MAP_RELOAD_INTERVAL:?} and {MAX_MAP_RELOAD_INTERVAL:?})"
                 ),
                 "reload_interval = \"5s\"".to_owned(),
                 &section,
@@ -598,9 +600,89 @@ fn check_listeners(config: &Config, source: &str, file: &Path, result: &mut Chec
         check_listener_rules(name, listener, config, source, file, result);
         check_listener_warnings(name, listener, result);
     }
+    check_listener_addresses(config, source, file, result);
+}
+
+/// Two listeners cannot own one `IP:PORT`. Exact duplicates collide, and a
+/// wildcard (`0.0.0.0` or `[::]`) also overlaps every concrete address it
+/// covers on that port. This is rejected even where `SO_REUSEADDR` would let
+/// both binds succeed: the wildcard claims the concrete listener's traffic, so
+/// which accept loop receives a connection is ambiguous. `[::]` covers IPv4
+/// too because `EQProxy` leaves `IPV6_V6ONLY` at the OS default (dual-stack on
+/// Linux and macOS). Port 0 asks the kernel for a fresh port per listener, so
+/// it is exempt.
+fn check_listener_addresses(config: &Config, source: &str, file: &Path, result: &mut CheckResult) {
+    let mut seen: Vec<(SocketAddr, &str)> = Vec::new();
+    for (name, listener) in &config.listener {
+        let Ok(addr) = listener.listen.parse::<SocketAddr>() else {
+            continue;
+        };
+        if addr.port() == 0 {
+            continue;
+        }
+        let first = seen
+            .iter()
+            .find(|(seen_addr, _)| addresses_overlap(*seen_addr, addr))
+            .map(|(seen_addr, seen_name)| (*seen_addr, *seen_name));
+        if let Some((first_addr, first)) = first {
+            let cause = if first_addr == addr {
+                format!(
+                    "listener \"{first}\" and listener \"{name}\" both listen on {addr}; \
+                     two listeners cannot share one address"
+                )
+            } else {
+                format!(
+                    "listener \"{first}\" on {first_addr} and listener \"{name}\" on {addr} overlap; \
+                     both would accept the same traffic on port {}",
+                    addr.port()
+                )
+            };
+            result.errors.push(ConfigError {
+                file: file.to_path_buf(),
+                location: find_line(source, &format!("[listener.{name}]"))
+                    .map(|line| Location { line, column: None }),
+                field: Some(format!("listener.{name}.listen")),
+                cause,
+                example: "give each listener its own port, e.g. listen = \"127.0.0.1:8081\""
+                    .to_owned(),
+            });
+        }
+        seen.push((addr, name.as_str()));
+    }
+}
+
+/// Whether two non-ephemeral addresses claim the same incoming connections.
+/// Port 0 is filtered by the caller.
+///
+/// Exact addresses collide, and so does a wildcard with any concrete address
+/// it covers. `[::]` covers IPv4 too because the bind does not set
+/// `IPV6_V6ONLY`, whose OS default is dual-stack on Linux and macOS. A concrete
+/// IPv6 address does not cover IPv4, nor the reverse; IPv4-mapped IPv6
+/// addresses are compared as IPv4 because they reach the same endpoint.
+fn addresses_overlap(a: SocketAddr, b: SocketAddr) -> bool {
+    if a.port() != b.port() {
+        return false;
+    }
+    if let (Some(a), Some(b)) = (ipv4_endpoint(a.ip()), ipv4_endpoint(b.ip())) {
+        return a.is_unspecified() || b.is_unspecified() || a == b;
+    }
+    match (a.ip(), b.ip()) {
+        (IpAddr::V4(a), IpAddr::V4(b)) => a.is_unspecified() || b.is_unspecified() || a == b,
+        (IpAddr::V6(a), IpAddr::V6(b)) => a.is_unspecified() || b.is_unspecified() || a == b,
+        (IpAddr::V4(_), IpAddr::V6(v6)) | (IpAddr::V6(v6), IpAddr::V4(_)) => v6.is_unspecified(),
+    }
+}
+
+/// The IPv4 endpoint behind an address: IPv4 itself, or a mapped IPv6 one.
+fn ipv4_endpoint(ip: IpAddr) -> Option<Ipv4Addr> {
+    match ip {
+        IpAddr::V4(v4) => Some(v4),
+        IpAddr::V6(v6) => v6.to_ipv4_mapped(),
+    }
 }
 
 /// Endpoint, timeouts and buffer limits of one listener.
+#[allow(clippy::too_many_lines)]
 fn check_listener_endpoint(
     name: &str,
     listener: &ListenerConfig,
@@ -633,18 +715,65 @@ fn check_listener_endpoint(
         );
     }
 
-    // Backend validations run per section (not per listener):
-    // they are checked in the backend loop below.
-    if !config.backend.contains_key(&listener.backend) {
-        err(
+    // A listener needs one fallback: forward to a backend, or answer every
+    // otherwise-unmatched request with a local redirect. Backend sections
+    // themselves are checked in the backend loop below.
+    match (&listener.backend, &listener.redirect) {
+        (None, None) => err(
             field("backend"),
-            format!("backend \"{}\" does not exist", listener.backend),
-            format!(
-                "backend = \"{}\" requires a [backend.{}] section with server = \"127.0.0.1:9000\"",
-                listener.backend, listener.backend
-            ),
+            "the listener has no fallback: set backend or redirect".to_owned(),
+            "backend = \"api\" (or [listener.web.redirect] location = \"https://$host$request_uri\")"
+                .to_owned(),
             &section,
-        );
+        ),
+        (Some(_), Some(_)) => err(
+            field("redirect"),
+            "`backend` and `redirect` are mutually exclusive: set only one fallback".to_owned(),
+            "redirect = { location = \"https://$host$request_uri\" } (remove `backend`)".to_owned(),
+            &section,
+        ),
+        (Some(backend), None) => {
+            if !config.backend.contains_key(backend) {
+                err(
+                    field("backend"),
+                    format!("backend \"{backend}\" does not exist"),
+                    format!(
+                        "backend = \"{backend}\" requires a [backend.{backend}] section with server = \"127.0.0.1:9000\""
+                    ),
+                    &section,
+                );
+            }
+        }
+        (None, Some(redirect)) => {
+            if listener.mode != ListenerMode::Http {
+                err(
+                    field("redirect"),
+                    "a redirect fallback needs mode = \"http\"".to_owned(),
+                    "mode = \"http\"".to_owned(),
+                    &section,
+                );
+            }
+            if let Some(status) = redirect.status
+                && !matches!(status, 301 | 302 | 303 | 307 | 308)
+            {
+                err(
+                    field("redirect.status"),
+                    format!(
+                        "redirect status {status} is not a redirect (301, 302, 303, 307, 308)"
+                    ),
+                    "status = 308".to_owned(),
+                    &section,
+                );
+            }
+            if let Err(cause) = validate_location(&redirect.location) {
+                err(
+                    field("redirect.location"),
+                    cause.to_string(),
+                    "location = \"https://$host$request_uri\"".to_owned(),
+                    &section,
+                );
+            }
+        }
     }
 
     if listener.maxconn == 0 {
@@ -905,7 +1034,7 @@ fn check_listener_cache(
             );
         }
         if cache.default_ttl < Duration::from_secs(1)
-            || cache.default_ttl > Duration::from_secs(86_400)
+            || cache.default_ttl > Duration::from_hours(24)
         {
             err(
                 field("cache.default_ttl"),
@@ -1157,6 +1286,7 @@ fn check_listener_local_response(
 }
 
 /// Custom error pages (B-H15/B-E18/B-N14).
+#[allow(clippy::too_many_lines)]
 fn check_listener_error_pages(
     name: &str,
     listener: &ListenerConfig,
@@ -1493,6 +1623,7 @@ fn check_listener_rules(
 }
 
 /// Exactly one action, its targets and the rewrite that shapes it.
+#[allow(clippy::too_many_lines)]
 fn check_rule_action(
     name: &str,
     i: usize,
@@ -1758,6 +1889,7 @@ fn check_rule_hash_and_mirror(
 }
 
 /// Header mutations and CORS (B-N4/B-I4/B-E17/B-I10).
+#[allow(clippy::too_many_lines)]
 fn check_rule_headers(
     name: &str,
     i: usize,
@@ -1902,6 +2034,7 @@ fn check_rule_headers(
 }
 
 /// Rate limit and authentication (B-N8/B-I7/B-E16, B-N9/B-I9).
+#[allow(clippy::too_many_lines)]
 fn check_rule_rate_and_auth(
     name: &str,
     i: usize,
@@ -2029,6 +2162,7 @@ fn check_rule_rate_and_auth(
 }
 
 /// Redirect, direct response, map reference and compile check.
+#[allow(clippy::too_many_lines)]
 fn check_rule_terminal(
     name: &str,
     i: usize,
@@ -2179,6 +2313,7 @@ fn check_listener_warnings(name: &str, listener: &ListenerConfig, result: &mut C
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn check_backends(config: &Config, source: &str, file: &Path, result: &mut CheckResult) {
     let mut err = |field: String, cause: String, example: String, needle: &str| {
         result.errors.push(ConfigError {
@@ -2416,7 +2551,7 @@ fn check_backends(config: &Config, source: &str, file: &Path, result: &mut Check
 
         // Re-resolution (B-H13/B-N18/B-E15): bounded. "0s" = resolve
         // once at startup (no periodic re-resolution).
-        if backend.resolve_interval > std::time::Duration::from_secs(24 * 3600) {
+        if backend.resolve_interval > std::time::Duration::from_hours(24) {
             err(
                 field("resolve_interval"),
                 format!(
@@ -2637,7 +2772,7 @@ fn check_listener_tls(config: &Config, source: &str, file: &Path, result: &mut C
 
 /// Problems of an error-page redirect target (`errorloc`, B-H16).
 ///
-/// A static target only: HAProxy's `errorloc` has no request template, and
+/// A static target only: `HAProxy`'s `errorloc` has no request template, and
 /// an unresolved `$…` in a `Location` header would reach the client. Spaces
 /// and control bytes are refused because they cannot be written to a header
 /// verbatim.
@@ -2694,7 +2829,7 @@ fn hash_key_problem(raw: &str) -> Option<String> {
 /// Problems of one configured SNI name (B-I2/B-H10/B-E9): a DNS name or
 /// a `*.` wildcard for exactly one extra label. IP literals are rejected
 /// because a TLS client never sends them as SNI (RFC 6066).
-fn sni_name_problem(raw: &str) -> Option<String> {
+pub(crate) fn sni_name_problem(raw: &str) -> Option<String> {
     let name = raw.trim().trim_end_matches('.');
     if name.is_empty() {
         return Some("the SNI name is empty".to_owned());
@@ -2851,6 +2986,125 @@ mod tests {
         check(&config, source, &file)
     }
 
+    #[test]
+    fn two_listeners_on_one_address_are_rejected_and_port_zero_is_exempt() {
+        let duplicate = check_source(
+            "schema_version = 1\n\
+             [listener.a]\n\
+             listen = \"127.0.0.1:8080\"\n\
+             backend = \"api\"\n\
+             [listener.b]\n\
+             listen = \"127.0.0.1:8080\"\n\
+             backend = \"api\"\n\
+             [backend.api]\n\
+             server = \"127.0.0.1:9000\"\n",
+        );
+        assert_eq!(
+            duplicate.errors.len(),
+            1,
+            "one error for the second listener: {:?}",
+            duplicate.errors
+        );
+        let error = &duplicate.errors[0];
+        assert_eq!(error.field.as_deref(), Some("listener.b.listen"));
+        assert!(
+            error.cause.contains("listener \"a\"")
+                && error.cause.contains("listener \"b\"")
+                && error.cause.contains("127.0.0.1:8080"),
+            "the cause must name both listeners and the address: {}",
+            error.cause
+        );
+        // Each `:0` listener gets its own ephemeral port, so they cannot
+        // collide; rejecting them would break tests and short-lived previews.
+        let ephemeral = check_source(
+            "schema_version = 1\n\
+             [listener.e1]\n\
+             listen = \"127.0.0.1:0\"\n\
+             backend = \"api\"\n\
+             [listener.e2]\n\
+             listen = \"127.0.0.1:0\"\n\
+             backend = \"api\"\n\
+             [backend.api]\n\
+             server = \"127.0.0.1:9000\"\n",
+        );
+        assert!(
+            ephemeral.is_valid(),
+            "two ephemeral listeners stay valid: {:?}",
+            ephemeral.errors
+        );
+    }
+
+    #[test]
+    fn wildcard_and_concrete_listeners_on_one_port_overlap() {
+        fn config(first: &str, second: &str) -> String {
+            format!(
+                "schema_version = 1\n\
+                 [listener.a]\n\
+                 listen = \"{first}\"\n\
+                 backend = \"api\"\n\
+                 [listener.b]\n\
+                 listen = \"{second}\"\n\
+                 backend = \"api\"\n\
+                 [backend.api]\n\
+                 server = \"127.0.0.1:9000\"\n"
+            )
+        }
+
+        for (first, second) in [
+            ("0.0.0.0:8080", "127.0.0.1:8080"),
+            ("127.0.0.1:8080", "0.0.0.0:8080"),
+            ("[::]:8080", "[::1]:8080"),
+            ("[::1]:8080", "[::]:8080"),
+            ("[::]:8080", "127.0.0.1:8080"),
+            ("127.0.0.1:8080", "[::]:8080"),
+            ("0.0.0.0:8080", "[::]:8080"),
+            ("[::]:8080", "0.0.0.0:8080"),
+            ("0.0.0.0:8080", "[::ffff:127.0.0.1]:8080"),
+            ("[::ffff:127.0.0.1]:8080", "0.0.0.0:8080"),
+            ("127.0.0.1:8080", "[::ffff:127.0.0.1]:8080"),
+            ("[::ffff:127.0.0.1]:8080", "127.0.0.1:8080"),
+            ("[::ffff:0.0.0.0]:8080", "127.0.0.1:8080"),
+        ] {
+            let result = check_source(&config(first, second));
+            assert_eq!(
+                result.errors.len(),
+                1,
+                "{first} and {second} must overlap: {:?}",
+                result.errors
+            );
+            let error = &result.errors[0];
+            assert_eq!(error.field.as_deref(), Some("listener.b.listen"));
+            assert!(
+                error.cause.contains("listener \"a\"")
+                    && error.cause.contains("listener \"b\"")
+                    && error.cause.contains(first)
+                    && error.cause.contains(second)
+                    && error.cause.contains("overlap"),
+                "the cause must name both listeners, both addresses and the overlap: {}",
+                error.cause
+            );
+        }
+
+        for (first, second) in [
+            ("0.0.0.0:8080", "[::1]:8080"),
+            ("[::1]:8080", "0.0.0.0:8080"),
+            ("127.0.0.1:8080", "127.0.0.2:8080"),
+            ("[::ffff:127.0.0.1]:8080", "127.0.0.2:8080"),
+            ("[::ffff:127.0.0.1]:8080", "[::1]:8080"),
+            ("0.0.0.0:8080", "127.0.0.1:8081"),
+            ("0.0.0.0:0", "127.0.0.1:0"),
+            ("[::]:0", "[::1]:0"),
+            ("[::]:0", "0.0.0.0:0"),
+        ] {
+            let result = check_source(&config(first, second));
+            assert!(
+                result.is_valid(),
+                "{first} and {second} must stay valid: {:?}",
+                result.errors
+            );
+        }
+    }
+
     /// Config with `listeners` [listener.*] and `backends` [backend.*] built
     /// directly: the budget lives in `check`, and parsing thousands of
     /// TOML sections under the miri interpreter is pure cost.
@@ -2881,14 +3135,15 @@ mod tests {
                 ListenerConfig {
                     listen: "127.0.0.1:0".to_owned(),
                     mode: ListenerMode::Tcp,
-                    backend: "b0".to_owned(),
+                    backend: Some("b0".to_owned()),
+                    redirect: None,
                     maxconn: 1024,
                     connect_timeout: Duration::from_secs(5),
                     idle_timeout: Duration::from_secs(60),
                     client_header_timeout: Duration::from_secs(5),
                     server_header_timeout: Duration::from_secs(30),
                     max_stream_duration: Duration::ZERO,
-                    limits: Default::default(),
+                    limits: crate::schema::LimitsConfig::default(),
                     tls: None,
                     quic: false,
                     proxy_receive: false,
@@ -2938,7 +3193,10 @@ mod tests {
             ("memory_bytes = 1024", "listener.web.plugin.memory_bytes"),
             ("max_header_ops = 0", "listener.web.plugin.max_header_ops"),
         ] {
-            let path_line = if field.ends_with(".path") {
+            let path_line = if std::path::Path::new(field)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("path"))
+            {
                 ""
             } else {
                 "path = \"p.wasm\""
@@ -3444,6 +3702,57 @@ server = "127.0.0.1:9000"
             err.example.contains("[backend.ghost]"),
             "example: {}",
             err.example
+        );
+    }
+
+    #[test]
+    fn redirect_only_listener_needs_no_backend_but_needs_http_and_one_fallback() {
+        let source = "schema_version = 1\n\
+             [listener.web]\n\
+             listen = \"127.0.0.1:8080\"\n\
+             mode = \"http\"\n\
+             [listener.web.redirect]\n\
+             status = 301\n\
+             location = \"https://$host$request_uri\"\n";
+        assert!(check_source(source).is_valid());
+
+        let both = check_source(
+            "schema_version = 1\n\
+             [listener.web]\n\
+             listen = \"127.0.0.1:8080\"\n\
+             backend = \"api\"\n\
+             [listener.web.redirect]\n\
+             location = \"https://$host$request_uri\"\n\
+             [backend.api]\n\
+             server = \"127.0.0.1:9000\"\n",
+        );
+        assert!(
+            both.errors.iter().any(|error| {
+                error.field.as_deref() == Some("listener.web.redirect")
+                    && error.cause.contains("mutually exclusive")
+            }),
+            "{:?}",
+            both.errors
+        );
+
+        let tcp = check_source(&source.replace("mode = \"http\"", "mode = \"tcp\""));
+        assert!(
+            tcp.errors.iter().any(|error| {
+                error.field.as_deref() == Some("listener.web.redirect")
+                    && error.cause.contains("mode = \"http\"")
+            }),
+            "{:?}",
+            tcp.errors
+        );
+
+        let bad = check_source(&source.replace("status = 301", "status = 200"));
+        assert!(
+            bad.errors.iter().any(|error| {
+                error.field.as_deref() == Some("listener.web.redirect.status")
+                    && error.cause.contains("not a redirect")
+            }),
+            "{:?}",
+            bad.errors
         );
     }
 
@@ -4463,6 +4772,7 @@ server = "127.0.0.1:9000"
     /// HTTP/3 (B-H2) is TLS 1.3 over UDP on an HTTP listener: the gate names
     /// the exact missing piece instead of failing at bind time.
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn quic_requires_tls_http_mode_and_no_proxy_header() {
         let no_tls = check_source(
             "schema_version = 1\n\
@@ -4578,6 +4888,7 @@ server = "127.0.0.1:9000"
     /// Administration plane (v0.8): loopback by default, one real secret,
     /// and never the public listener's address.
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn admin_plane_is_loopback_with_one_secret() {
         let base = "schema_version = 1\n\
                     [listener.web]\n\
@@ -4739,6 +5050,7 @@ server = "127.0.0.1:9000"
     /// Unix socket (ADR-0021, B-H14): the path replaces `listen`, and the
     /// TCP-only knob is refused instead of being silently ignored.
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn admin_unix_socket_replaces_the_tcp_listen() {
         let base = "schema_version = 1\n\
                     [listener.web]\n\

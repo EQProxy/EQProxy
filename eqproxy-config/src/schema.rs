@@ -125,16 +125,16 @@ fn default_content_type() -> String {
     "text/plain; charset=utf-8".to_owned()
 }
 
-/// Upper bound of a server's `maxconn` (B-H16: HAProxy `server … maxconn`).
-/// HAProxy caps it at 2^31-1; this is the resource budget instead: a value
+/// Upper bound of a server's `maxconn` (B-H16: `HAProxy` `server … maxconn`).
+/// `HAProxy` caps it at 2^31-1; this is the resource budget instead: a value
 /// that high cannot describe a real machine and only hides a typo.
 pub const MAX_SERVER_MAXCONN: u32 = 1_000_000;
 
-/// Maximum weight per server (HAProxy `weight` range, cfg 3.4 "server").
+/// Maximum weight per server (`HAProxy` `weight` range, cfg 3.4 "server").
 pub const MAX_SERVER_WEIGHT: u32 = 256;
 
-/// Upper bound of `backup` failover order (`priority`), inclusive. EQProxy
-/// extension: HAProxy 3.4 has no numeric priority on `server` lines, so the
+/// Upper bound of `backup` failover order (`priority`), inclusive. `EQProxy`
+/// extension: `HAProxy` 3.4 has no numeric priority on `server` lines, so the
 /// ladder is ours and the range is deliberately a byte.
 pub const MAX_SERVER_PRIORITY: u32 = 255;
 
@@ -167,7 +167,7 @@ pub enum BalanceAlgorithm {
     RoundRobin,
     /// Weighted least-connections (B-H5/B-N12/B-E6). The reference names
     /// `least_conn` (nginx) and `least_request` (Envoy `LEAST_REQUEST`)
-    /// are accepted as aliases of `leastconn` (HAProxy).
+    /// are accepted as aliases of `leastconn` (`HAProxy`).
     #[serde(alias = "least_conn", alias = "least_request")]
     LeastConn,
 }
@@ -241,7 +241,7 @@ pub struct TlsServerConfig {
     pub min_version: TlsVersion,
     /// Highest TLS version accepted. Absent = TLS 1.3, the previous
     /// behaviour; `"1.2"` caps the listener at TLS 1.2 (`ssl_protocols
-    /// TLSv1.2`, HAProxy `ssl-max-ver TLSv1.2`). Must not be lower than
+    /// TLSv1.2`, `HAProxy` `ssl-max-ver TLSv1.2`). Must not be lower than
     /// `min_version`.
     #[serde(default)]
     pub max_version: Option<TlsVersion>,
@@ -296,6 +296,11 @@ pub const MAX_UNIX_SOCKET_PATH: usize = 100;
 /// Accepts `IP:PORT`, `[IPv6]:PORT` and `HOSTNAME:PORT`; hostnames are
 /// lowercased (DNS is case-insensitive) and limited to letters, digits,
 /// `.`, `-` and `_`.
+///
+///# Errors
+///
+///Returns `Err` naming the accepted forms when the target is neither
+///`IP:PORT`, `HOST:PORT` nor a Unix socket path.
 pub fn parse_server_target(raw: &str) -> Result<ServerTarget, String> {
     // ADR-0043: `unix:/path` (nginx) and `unix@/path` (HAProxy) name a local
     // Unix-domain socket. Both are normalised to the same target.
@@ -378,7 +383,7 @@ pub struct ServerConfig {
     /// wait for a probe to discover it is alive.
     #[serde(default)]
     pub backup: bool,
-    /// Concurrent exchanges this server will take (B-H16: HAProxy
+    /// Concurrent exchanges this server will take (B-H16: `HAProxy`
     /// `server … maxconn`). `0` (default) = bounded only by the listener
     /// `maxconn`. At the cap the balancer stops selecting the server, exactly
     /// like a `weight = 0` one, so the load moves to its siblings; if every
@@ -388,16 +393,16 @@ pub struct ServerConfig {
     #[serde(default)]
     #[schemars(range(min = 0, max = 1_000_000))]
     pub maxconn: u32,
-    /// Failover order among backup servers (EQProxy extension, 0..=255):
+    /// Failover order among backup servers (`EQProxy` extension, 0..=255):
     /// higher first, ties follow configuration order. Only the first
     /// operational rung serves at a time, so a recovered higher rung takes
     /// the traffic back. Rejected unless `backup = true`, and ignored by the
-    /// reference, which has no such keyword (HAProxy 3.4 `server`).
+    /// reference, which has no such keyword (`HAProxy` 3.4 `server`).
     #[serde(default)]
     #[schemars(range(min = 0, max = 255))]
     pub priority: u32,
     /// Optional local source address for this server's outbound socket
-    /// (ADR-0043, HAProxy `source <addr>`): a literal `IP`, not a hostname.
+    /// (ADR-0043, `HAProxy` `source <addr>`): a literal `IP`, not a hostname.
     /// Only meaningful for TCP targets; rejected on a Unix target.
     #[serde(default)]
     pub source: Option<String>,
@@ -524,14 +529,14 @@ pub struct ErrorPageConfig {
     /// Inline body. Mutually exclusive with `file`.
     #[serde(default)]
     pub body: Option<String>,
-    /// Redirect target instead of a body (HAProxy `errorloc`): a path
+    /// Redirect target instead of a body (`HAProxy` `errorloc`): a path
     /// starting with `/` or an absolute `http://`/`https://` URL. Mutually
     /// exclusive with `file` and `body`; `status` must be a 3xx other than
     /// 304, and defaults to 302.
     #[serde(default)]
     pub location: Option<String>,
     /// `body` (default): the file is the payload. `raw`: the file is a
-    /// complete HTTP response (HAProxy `errorfile`), status line included.
+    /// complete HTTP response (`HAProxy` `errorfile`), status line included.
     #[serde(default)]
     pub format: ErrorPageFormat,
     /// Status to answer with instead of the one that fired (nginx
@@ -544,7 +549,7 @@ pub struct ErrorPageConfig {
     pub content_type: String,
     /// Also replace a matching **upstream** response with this page (nginx
     /// `proxy_intercept_errors`, ingress-nginx `custom-http-errors`).
-    /// Default off: only responses EQProxy generates are replaced.
+    /// Default off: only responses `EQProxy` generates are replaced.
     #[serde(default)]
     pub intercept: bool,
 }
@@ -935,8 +940,8 @@ pub struct MapConfig {
 /// One routing rule (v0.6, B-H3/B-H4): ordered match conditions plus
 /// exactly one action (`use_backend`, `split`, `redirect` or
 /// `direct_response`). Rules run in array order, first match wins; the
-/// listener's `backend` is the fallback when no rule matches. All
-/// conditions of a rule are ANDed.
+/// listener's `backend` or `redirect` is the fallback when no rule matches.
+/// All conditions of a rule are `ANDed`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RuleConfig {
@@ -1034,6 +1039,11 @@ impl RuleConfig {
     ///
     /// Invalid shapes are rejected by [`eqproxy_core::rules::Rule::compile`]
     /// with the field-qualified error the config gate reports.
+    ///
+    ///# Errors
+    ///
+    ///Returns [`eqproxy_core::rules::RuleError`] with field, cause and example
+    ///when the rule does not compile.
     pub fn to_spec(
         &self,
         index: usize,
@@ -1087,7 +1097,7 @@ impl RuleConfig {
     }
 }
 
-/// Full EQProxy configuration.
+/// Full `EQProxy` configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -1118,7 +1128,8 @@ pub struct Config {
     pub access_log: Option<AccessLogConfig>,
 }
 
-/// A frontend: where to listen and which backend to send to.
+/// A frontend: where to listen and which backend (or local redirect) serves
+/// requests that match no rule.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ListenerConfig {
@@ -1127,8 +1138,15 @@ pub struct ListenerConfig {
     /// Mode: `"tcp"` (tunnel, default) or `"http"` (strict HTTP/1.1).
     #[serde(default)]
     pub mode: ListenerMode,
-    /// Backend name ([`BackendConfig`] in `Config::backend`).
-    pub backend: String,
+    /// Backend name ([`BackendConfig`] in `Config::backend`). Required unless
+    /// `redirect` is set; the two are mutually exclusive.
+    #[serde(default)]
+    pub backend: Option<String>,
+    /// Default action for requests that match no rule: answer a local 3xx
+    /// instead of forwarding to a backend (nginx `server { return 301 …; }`).
+    /// Only valid with `mode = "http"` and without `backend`.
+    #[serde(default)]
+    pub redirect: Option<RedirectConfig>,
     /// Maximum concurrent connections; newcomers are explicitly refused when full.
     #[serde(default = "default_maxconn")]
     pub maxconn: u32,
@@ -1197,7 +1215,7 @@ pub struct ListenerConfig {
     #[serde(default)]
     pub cache: Option<CacheConfig>,
     /// Ordered routing rules (v0.6, B-H3/B-H4): first match wins, the
-    /// `backend` above is the fallback. `http` mode only.
+    /// `backend` or `redirect` above is the fallback. `http` mode only.
     #[serde(default)]
     pub rules: Vec<RuleConfig>,
 }
@@ -1459,7 +1477,7 @@ fn default_gzip_types() -> Vec<String> {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AffinityConfig {
-    /// `"cookie"` (the proxy inserts a sticky cookie, HAProxy `cookie
+    /// `"cookie"` (the proxy inserts a sticky cookie, `HAProxy` `cookie
     /// insert`) or `"source"` (hash of the client IP, nginx `ip_hash`).
     pub mode: String,
     /// Cookie name for `mode = "cookie"` (default `"eqproxy_affinity"`).
@@ -1519,7 +1537,7 @@ pub struct BackendConfig {
     /// Slow start (B14): when a server becomes operational (startup or
     /// recovery) its effective weight ramps linearly from ~0 to `weight`
     /// over this window (dynamic weighting). `"0s"` (default) disables
-    /// the ramp; maximum `"1h"` (HAProxy `slowstart` range).
+    /// the ramp; maximum `"1h"` (`HAProxy` `slowstart` range).
     #[serde(default, with = "duration")]
     #[schemars(with = "String")]
     pub slow_start: Duration,
@@ -1561,11 +1579,66 @@ impl BackendConfig {
             (None, None) => Vec::new(),
         }
     }
+
+    /// The DNS name this backend is reached by, when it declares exactly one
+    /// and every server is a hostname: the default for
+    /// `[backend.*.tls].server_name` (P0-14/EXT-H-05), so the certificate is
+    /// verified against the name the operator wrote instead of the address the
+    /// resolver returned. `None` for a literal IP, a Unix socket or a pool that
+    /// names different hosts — there the address is the only identity left, and
+    /// a certificate for it must carry an IP SAN.
+    #[must_use]
+    pub fn declared_host(&self) -> Option<String> {
+        let mut host: Option<String> = None;
+        for entry in self.server_entries() {
+            let ServerTarget::Name { host: name, .. } = parse_server_target(entry.addr).ok()?
+            else {
+                return None;
+            };
+            match &host {
+                None => host = Some(name),
+                Some(seen) if seen.eq_ignore_ascii_case(&name) => {}
+                Some(_) => return None,
+            }
+        }
+        host
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn declared_host_names_the_backend_a_certificate_is_verified_against() {
+        // P0-14/EXT-H-05: the name the operator wrote, not the address the
+        // resolver returns for it.
+        let named: BackendConfig = toml::from_str("server = \"localhost:8443\"").expect("parses");
+        assert_eq!(named.declared_host().as_deref(), Some("localhost"));
+
+        let pool: BackendConfig = toml::from_str(
+            "servers = [{ addr = \"app.internal:443\" }, { addr = \"APP.internal:8444\" }]",
+        )
+        .expect("parses");
+        assert_eq!(pool.declared_host().as_deref(), Some("app.internal"));
+
+        // A literal address has no name to verify: its certificate must carry
+        // an IP SAN, which is what the address fallback checks.
+        let literal: BackendConfig = toml::from_str("server = \"127.0.0.1:8443\"").expect("parses");
+        assert_eq!(literal.declared_host(), None);
+
+        // Several different hosts cannot share one verified name.
+        let mixed: BackendConfig = toml::from_str(
+            "servers = [{ addr = \"a.example:443\" }, { addr = \"b.example:443\" }]",
+        )
+        .expect("parses");
+        assert_eq!(mixed.declared_host(), None);
+
+        // A local socket has no DNS identity either.
+        let unix: BackendConfig =
+            toml::from_str("server = \"unix:/run/app.sock\"").expect("parses");
+        assert_eq!(unix.declared_host(), None);
+    }
 
     #[test]
     fn body_cap_keeps_the_published_zero_sentinel() {

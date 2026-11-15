@@ -227,16 +227,25 @@ impl DetailSnapshot {
         // Appending to a `String` cannot fail, so no `Result` is discarded
         // here (R10): the lines are pushed explicitly.
         out.push_str("# TYPE eqproxy_metrics_detail_enabled gauge\n");
-        out.push_str(&format!("eqproxy_metrics_detail_enabled {enabled}\n"));
+        push_line(
+            &mut out,
+            format_args!("eqproxy_metrics_detail_enabled {enabled}\n"),
+        );
         out.push_str("# TYPE eqproxy_metrics_detail_series gauge\n");
-        out.push_str(&format!("eqproxy_metrics_detail_series {}\n", self.series));
+        push_line(
+            &mut out,
+            format_args!("eqproxy_metrics_detail_series {}\n", self.series),
+        );
         out.push_str("# TYPE eqproxy_metrics_detail_budget gauge\n");
-        out.push_str(&format!("eqproxy_metrics_detail_budget {}\n", self.budget));
+        push_line(
+            &mut out,
+            format_args!("eqproxy_metrics_detail_budget {}\n", self.budget),
+        );
         out.push_str("# TYPE eqproxy_metrics_detail_dropped_total counter\n");
-        out.push_str(&format!(
-            "eqproxy_metrics_detail_dropped_total {}\n",
-            self.dropped
-        ));
+        push_line(
+            &mut out,
+            format_args!("eqproxy_metrics_detail_dropped_total {}\n", self.dropped),
+        );
         // Server family: requests and 5xx, split by backend and dialed server.
         let servers: Vec<&DetailRow> = self
             .rows
@@ -246,21 +255,27 @@ impl DetailSnapshot {
         if !servers.is_empty() {
             out.push_str("# TYPE eqproxy_server_requests_total counter\n");
             for row in &servers {
-                out.push_str(&format!(
-                    "eqproxy_server_requests_total{{backend=\"{}\",server=\"{}\"}} {}\n",
-                    label_value(&row.scope),
-                    label_value(&row.key),
-                    row.requests
-                ));
+                push_line(
+                    &mut out,
+                    format_args!(
+                        "eqproxy_server_requests_total{{backend=\"{}\",server=\"{}\"}} {}\n",
+                        label_value(&row.scope),
+                        label_value(&row.key),
+                        row.requests
+                    ),
+                );
             }
             out.push_str("# TYPE eqproxy_server_errors_total counter\n");
             for row in &servers {
-                out.push_str(&format!(
-                    "eqproxy_server_errors_total{{backend=\"{}\",server=\"{}\"}} {}\n",
-                    label_value(&row.scope),
-                    label_value(&row.key),
-                    row.errors
-                ));
+                push_line(
+                    &mut out,
+                    format_args!(
+                        "eqproxy_server_errors_total{{backend=\"{}\",server=\"{}\"}} {}\n",
+                        label_value(&row.scope),
+                        label_value(&row.key),
+                        row.errors
+                    ),
+                );
             }
         }
         // Route family: requests by listener and matched rule. An error split
@@ -273,12 +288,15 @@ impl DetailSnapshot {
         if !routes.is_empty() {
             out.push_str("# TYPE eqproxy_route_requests_total counter\n");
             for row in &routes {
-                out.push_str(&format!(
-                    "eqproxy_route_requests_total{{listener=\"{}\",route=\"{}\"}} {}\n",
-                    label_value(&row.scope),
-                    label_value(&row.key),
-                    row.requests
-                ));
+                push_line(
+                    &mut out,
+                    format_args!(
+                        "eqproxy_route_requests_total{{listener=\"{}\",route=\"{}\"}} {}\n",
+                        label_value(&row.scope),
+                        label_value(&row.key),
+                        row.requests
+                    ),
+                );
             }
         }
         out
@@ -287,6 +305,15 @@ impl DetailSnapshot {
 
 /// Escapes a Prometheus label value (the exposition format allows `\\`, `\"`
 /// and a literal newline in the **escaped** form only).
+/// Appends one exposition line to `out`. Writing into a `String` cannot
+/// fail, so the `Result` is turned into a documented panic instead of being
+/// discarded (R10).
+fn push_line(out: &mut String, args: std::fmt::Arguments<'_>) {
+    use std::fmt::Write as _;
+    out.write_fmt(args)
+        .expect("writing into a String cannot fail");
+}
+
 fn label_value(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for ch in value.chars() {
@@ -589,6 +616,9 @@ impl MetricsSnapshot {
     /// series is a fixed name with no labels, so a scrape cannot grow the
     /// index (CE4). Counters carry the `_total` suffix Prometheus expects;
     /// `connections_active` and the last swap duration are gauges.
+    // One `push_line` per series: splitting the fixed series list would hide
+    // the exposition format from a reviewer for no gain.
+    #[allow(clippy::too_many_lines)]
     #[must_use]
     pub fn prometheus(&self) -> String {
         let counters: &[(&str, u64)] = &[
@@ -672,24 +702,33 @@ impl MetricsSnapshot {
         ];
         let mut out = String::with_capacity(4096);
         for (name, value) in counters {
-            out.push_str(&format!("# TYPE eqproxy_{name}_total counter\n"));
-            out.push_str(&format!("eqproxy_{name}_total {value}\n"));
+            push_line(
+                &mut out,
+                format_args!("# TYPE eqproxy_{name}_total counter\n"),
+            );
+            push_line(&mut out, format_args!("eqproxy_{name}_total {value}\n"));
         }
         out.push_str("# TYPE eqproxy_connections_active gauge\n");
-        out.push_str(&format!(
-            "eqproxy_connections_active {}\n",
-            self.connections_active
-        ));
+        push_line(
+            &mut out,
+            format_args!("eqproxy_connections_active {}\n", self.connections_active),
+        );
         out.push_str("# TYPE eqproxy_config_reload_last_swap_seconds gauge\n");
-        out.push_str(&format!(
-            "eqproxy_config_reload_last_swap_seconds {:.6}\n",
-            self.config_reload_duration_us as f64 / 1_000_000.0
-        ));
+        push_line(
+            &mut out,
+            format_args!(
+                "eqproxy_config_reload_last_swap_seconds {:.6}\n",
+                std::time::Duration::from_micros(self.config_reload_duration_us).as_secs_f64()
+            ),
+        );
         out.push_str("# TYPE eqproxy_build_info gauge\n");
-        out.push_str(&format!(
-            "eqproxy_build_info{{version=\"{}\"}} 1\n",
-            env!("CARGO_PKG_VERSION")
-        ));
+        push_line(
+            &mut out,
+            format_args!(
+                "eqproxy_build_info{{version=\"{}\"}} 1\n",
+                env!("CARGO_PKG_VERSION")
+            ),
+        );
         out
     }
 }
@@ -819,6 +858,9 @@ impl fmt::Display for MetricsSnapshot {
     /// Rendered by failure origin (Q4/H5/CE5: no black box): `client`,
     /// `proxy`, `network` and `backend` groups plus phases and bytes.
     /// Every group is a fixed set of counters (CE4: bounded cardinality).
+    // One `write!` per group: splitting it would scatter a single line
+    // format across helpers without making it easier to follow.
+    #[allow(clippy::too_many_lines)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,

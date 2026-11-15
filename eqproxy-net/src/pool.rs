@@ -4,7 +4,7 @@
 //! source port per request (measured EADDRNOTAVAIL collapse in Phase 2c).
 //! The pool keeps clean backend connections alive for reuse.
 //!
-//! Reuse safety contract (PARITY_MATRIX A16): a connection returns to the
+//! Reuse safety contract (`PARITY_MATRIX` A16): a connection returns to the
 //! pool **only after a fully clean exchange** — request completely sent,
 //! response completely forwarded, no framing error, no truncation, no
 //! timeout, and the server did not signal close (`wants_close`). Anything
@@ -98,7 +98,7 @@ impl Pool {
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<Endpoint, ServerPool>> {
         self.inner
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Take a fresh idle connection to `addr`, or `None` (caller dials).
@@ -206,7 +206,7 @@ impl fmt::Debug for Pool {
             .field("floor", &self.floor)
             .field("ceiling", &self.ceiling)
             .field("idle_timeout", &self.idle_timeout)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

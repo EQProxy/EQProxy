@@ -6,7 +6,7 @@
 //!
 //! Two classes exist, on purpose:
 //!
-//! - **local failures** — EQProxy generated the status (no server, connect
+//! - **local failures** — `EQProxy` generated the status (no server, connect
 //!   failure, header timeout, request rejected). Any page covering the code
 //!   applies.
 //! - **interception** — the backend answered, and the page only replaces that
@@ -33,7 +33,7 @@ pub struct ErrorPage {
     pub content_type: String,
     /// Payload bytes, already loaded and bounded.
     pub body: Arc<[u8]>,
-    /// Redirect target instead of a body (HAProxy `errorloc`). When present,
+    /// Redirect target instead of a body (`HAProxy` `errorloc`). When present,
     /// `status` is a 3xx and `body` is empty.
     pub location: Option<String>,
     /// Replace matching upstream responses too.
@@ -61,7 +61,7 @@ impl ErrorPages {
         self.pages.is_empty()
     }
 
-    /// Page covering a status EQProxy generated locally.
+    /// Page covering a status `EQProxy` generated locally.
     #[must_use]
     pub fn page_for(&self, code: u16) -> Option<&ErrorPage> {
         self.pages.iter().find(|page| page.codes.contains(&code))

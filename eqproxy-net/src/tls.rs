@@ -4,12 +4,12 @@
 //!   (A14) and minimum TLS 1.2 (TLS 1.0/1.1 are never accepted).
 //! - **Client (A12)**: certificate **and name** verification on
 //!   by default (SNI derived from the address or `server_name`); `verify =
-//!   false` is a conscious, dangerous opt-out (THREAT_MODEL), and `ca_file`
+//!   false` is a conscious, dangerous opt-out (`THREAT_MODEL`), and `ca_file`
 //!   adds private CAs to the Mozilla roots.
 //! - **Renewal (D7)**: the certificates live behind a resolver the acceptor
 //!   consults on every handshake, so a rotation swaps them in place — the
 //!   listener, the QUIC endpoint and its live connections are untouched.
-//! - CryptoProvider: aws-lc-rs (ADR-0004). 100 % safe Rust code.
+//! - `CryptoProvider`: aws-lc-rs (ADR-0004). 100 % safe Rust code.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
@@ -19,6 +19,7 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::{DigitallySignedStruct, RootCertStore, SignatureScheme};
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateDer, IpAddr, PrivateKeyDer, ServerName};
+use std::fmt::Write as _;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 /// Minimum accepted TLS version (1.0/1.1 do not exist in modern rustls).
@@ -67,9 +68,9 @@ pub struct ServerTls {
     /// (empty when the listener serves a single certificate).
     sni_names: Vec<Vec<String>>,
     /// Digest of the material this acceptor was built from (certificates,
-    /// keys, client CA, ALPN and minimum version). A hot reload compares it
-    /// to decide whether a live QUIC endpoint still matches the new
-    /// configuration.
+    /// keys, client CA, ALPN and minimum version). Retained as public
+    /// metadata; adoption no longer keys off it, because a swapped generation
+    /// can share the live acceptor without changing this value.
     fingerprint: u64,
     /// The certificates this acceptor serves **right now**. Shared with the
     /// QUIC endpoint built from this acceptor: a renewal swaps the resolver
@@ -82,7 +83,8 @@ pub struct ServerTls {
 }
 
 impl ServerTls {
-    /// Digest of the TLS material (equality only; not a cryptographic hash).
+    /// Digest of the TLS material this acceptor was built from (equality only;
+    /// not a cryptographic hash).
     #[must_use]
     pub fn fingerprint(&self) -> u64 {
         self.fingerprint
@@ -119,6 +121,11 @@ impl ServerTls {
     /// with ALPN forced to `h3` (RFC 9114 §3.1) and the listener's
     /// `idle_timeout` as the QUIC idle timeout. Returning `Err` refuses to
     /// start the UDP endpoint rather than serving HTTP/3 with wrong TLS.
+    ///
+    ///# Errors
+    ///
+    ///Returns `TlsError` when the certificate, key or policy cannot be applied
+    ///to the QUIC endpoint.
     pub fn quic_server_config(&self, idle: Duration) -> Result<quinn::ServerConfig, TlsError> {
         let mut config = (*self.config).clone();
         config.alpn_protocols = vec![b"h3".to_vec()];
@@ -299,8 +306,7 @@ impl HotCerts {
             .default
             .cert
             .first()
-            .map(leaf_fingerprint_of)
-            .unwrap_or_default()
+            .map_or_default(leaf_fingerprint_of)
     }
 }
 
@@ -331,7 +337,7 @@ impl std::fmt::Debug for ClientTls {
 }
 
 /// Protocol versions offered for a `[min, max]` range (B-N16/B-I16:
-/// nginx `ssl_protocols`, HAProxy `ssl-min-ver`/`ssl-max-ver`).
+/// nginx `ssl_protocols`, `HAProxy` `ssl-min-ver`/`ssl-max-ver`).
 ///
 /// `None` keeps the previous upper bound (TLS 1.3). Validation refuses a
 /// `max` lower than `min`, so the match has no impossible arms to report at
@@ -355,6 +361,10 @@ fn protocol_versions(
 ///
 /// Uses the `rustls-pki-types` parser (`PemObject`); `rustls-pemfile` is
 /// deprecated (RUSTSEC-2025-0134).
+///
+///# Errors
+///
+///Returns `TlsError` when the PEM holds no certificate or a malformed one.
 pub fn parse_certs(pem: &[u8]) -> Result<Vec<CertificateDer<'static>>, TlsError> {
     let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(pem)
         .collect::<Result<_, _>>()
@@ -366,6 +376,10 @@ pub fn parse_certs(pem: &[u8]) -> Result<Vec<CertificateDer<'static>>, TlsError>
 }
 
 /// Parses a PEM private key (PKCS#8, PKCS#1 or SEC1).
+///
+///# Errors
+///
+///Returns `TlsError` when the PEM holds no supported private key.
 pub fn parse_key(pem: &[u8]) -> Result<PrivateKeyDer<'static>, TlsError> {
     PrivateKeyDer::pem_slice_iter(pem)
         .next()
@@ -379,6 +393,11 @@ pub fn parse_key(pem: &[u8]) -> Result<PrivateKeyDer<'static>, TlsError> {
 /// `cert_chain_pem`: full chain (leaf first); `key_pem`: private key.
 /// `alpn`: offered protocols (empty = no ALPN). Actionable error when the PEM
 /// does not parse or the key does not match the leaf.
+///
+///# Errors
+///
+///Returns `TlsError` when the PEM does not parse, the key does not match
+///the leaf or the policy is invalid.
 pub fn server_config(
     cert_chain_pem: &[u8],
     key_pem: &[u8],
@@ -399,6 +418,11 @@ pub fn server_config(
 /// wildcard), and the handshake never fails for an unknown name — it
 /// gets the default certificate, like nginx's default server.
 #[allow(clippy::too_many_arguments)]
+///
+///# Errors
+///
+///Returns `TlsError` when the PEM does not parse, the key does not match
+///the leaf or the policy is invalid.
 pub fn server_config_with_sni(
     cert_chain_pem: &[u8],
     key_pem: &[u8],
@@ -413,6 +437,11 @@ pub fn server_config_with_sni(
 /// [`server_config_with_sni`] with an explicit TLS upper bound
 /// (`tls.max_version`). `None` leaves the previous behaviour (TLS 1.3).
 #[allow(clippy::too_many_arguments)]
+///
+///# Errors
+///
+///Returns `TlsError` when the PEM does not parse, the key does not match
+///the leaf or the policy is invalid.
 pub fn server_config_with_sni_and_max(
     cert_chain_pem: &[u8],
     key_pem: &[u8],
@@ -505,7 +534,7 @@ fn leaf_fingerprint_of(leaf: &CertificateDer<'_>) -> String {
     let mut out = String::with_capacity(7 + digest.as_ref().len() * 2);
     out.push_str("sha256:");
     for byte in digest.as_ref() {
-        out.push_str(&format!("{byte:02x}"));
+        let _ = write!(out, "{byte:02x}");
     }
     out
 }
@@ -530,7 +559,8 @@ fn fixed_material_fingerprint(
 
 /// Digest of everything that changes what the endpoint asserts: the default
 /// chain and key, every SNI chain/key/name set, the client CA, ALPN and the
-/// minimum version. Two acceptors with the same digest serve the same TLS.
+/// minimum version. Two acceptors with the same digest were built from the
+/// same TLS material.
 fn material_fingerprint(
     cert_chain_pem: &[u8],
     key_pem: &[u8],
@@ -590,6 +620,11 @@ fn certified_key(
 ///
 /// Verification on by default; Mozilla roots + optional `ca_pem`.
 /// `verify = false` disables verification entirely (conscious opt-out).
+///
+///# Errors
+///
+///Returns `TlsError` when the CA bundle does not parse or the policy is
+///invalid.
 pub fn client_config(
     ca_pem: Option<&[u8]>,
     verify: bool,
@@ -633,6 +668,11 @@ pub fn client_config(
 
 /// Name to verify/SNI for a given connection: the config `server_name`
 /// when present; otherwise the server IP (literal SNI, no DNS).
+///
+/// The CLI fills `server_name` from the backend's declared host
+/// (`BackendConfig::declared_host`) whenever the backend is named, so this
+/// address fallback only applies to a literal IP, a Unix socket or a pool that
+/// names different hosts — each of which needs a certificate with an IP SAN.
 #[must_use]
 pub fn server_name_for(client: &ClientTls, addr: SocketAddr) -> ServerName<'static> {
     client
@@ -825,7 +865,7 @@ mod tests {
     fn sni_configuration_keeps_the_default_when_no_entries() {
         let server = server_config_with_sni(CERT, KEY, &[], None, &[], TlsVersion::V1_2)
             .expect("default only");
-        assert!(server.sni_names().is_empty());
+        assert_eq!(server.sni_names(), Vec::<Vec<String>>::new());
     }
 
     #[cfg_attr(miri, ignore = "uses rustls/aws-lc-rs (FFI not emulatable by miri)")]

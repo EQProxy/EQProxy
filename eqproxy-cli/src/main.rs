@@ -1,7 +1,7 @@
-//! EQProxy CLI.
+//! `EQProxy` CLI.
 //!
-//! Implemented: `run`, `config validate/explain/diff/plan/apply/rollback`
-//! and `doctor`. The rest **fail explicitly** with exit code 2
+//! Implemented: `run`, `config validate/explain/diff/plan/apply/rollback`,
+//! `doctor` and `healthcheck`. The rest **fail explicitly** with exit code 2
 //! (never fake success).
 
 #![forbid(unsafe_code)]
@@ -17,11 +17,13 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 mod profile;
 
 use std::collections::BTreeMap;
-use std::net::SocketAddr;
+use std::fmt::Write as _;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 
@@ -107,6 +109,19 @@ enum Command {
         #[arg(short, long)]
         config: Option<PathBuf>,
     },
+    /// Probes a running dataplane for container health checks.
+    ///
+    /// Uses the admin status endpoint when `[admin]` is configured; otherwise
+    /// it checks that every TCP listener is accepting connections. The
+    /// fallback is liveness, not a routing or backend-readiness probe.
+    Healthcheck {
+        /// TOML configuration file used by the running process
+        #[arg(short, long, default_value = "/etc/eqproxy.toml")]
+        config: PathBuf,
+        /// Whole-probe timeout in milliseconds
+        #[arg(long, default_value_t = 2000)]
+        timeout_ms: u64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -173,7 +188,7 @@ enum ConfigCommand {
     /// Restores the most recent backup into current (Phase 3, offline)
     Rollback,
     /// Converts a reference-proxy configuration (Phase 8, CE6/Q9/CE8):
-    /// nginx, HAProxy, ingress-nginx or Envoy → eqproxy.toml plus a report
+    /// nginx, `HAProxy`, ingress-nginx or Envoy → eqproxy.toml plus a report
     /// that classifies every source directive. Exit 0 = clean conversion,
     /// 2 = converted with rejected or degraded directives (read the report),
     /// 1 = the source could not be read or produced an invalid configuration
@@ -190,6 +205,11 @@ enum ConfigCommand {
         /// Write the Markdown conversion report to this file
         #[arg(long)]
         report: Option<PathBuf>,
+        /// Expand nginx `include` directives relative to this directory
+        /// (nginx's prefix). Absolute include paths are read as written.
+        /// Without this flag, `include` is reported for manual review.
+        #[arg(long, value_name = "DIR")]
+        include_root: Option<PathBuf>,
     },
 }
 
@@ -208,6 +228,7 @@ async fn main() -> ExitCode {
         } => run(config, metrics_interval).await,
         Command::Config { command } => config_command(command).await,
         Command::Doctor { config } => doctor(config.as_deref()),
+        Command::Healthcheck { config, timeout_ms } => healthcheck(&config, timeout_ms).await,
     };
     #[cfg(feature = "profile")]
     profile::finish(profiler);
@@ -244,7 +265,14 @@ async fn config_command(command: ConfigCommand) -> u8 {
             input,
             output,
             report,
-        } => import(from.as_deref(), &input, &output, report.as_deref()),
+            include_root,
+        } => import(
+            from.as_deref(),
+            &input,
+            &output,
+            report.as_deref(),
+            include_root.as_deref(),
+        ),
     }
 }
 
@@ -498,7 +526,6 @@ fn diff(left: &Path, right: &Path) -> u8 {
 /// deterministic. Server lists compare through `server_entries`, hence the
 /// legacy single `server` and the `servers` list use one vocabulary.
 fn diff_report(left: &Config, right: &Config) -> String {
-    use std::fmt::Write as _;
     let changes = diff_changes(left, right);
     let mut out = String::new();
     if changes.is_empty() {
@@ -514,6 +541,7 @@ fn diff_report(left: &Config, right: &Config) -> String {
 
 /// The individual change lines of [`diff_report`], exposed so `apply` and
 /// `rollback` can count them for their verdict line.
+#[allow(clippy::too_many_lines)]
 fn diff_changes(left: &Config, right: &Config) -> Vec<String> {
     let mut changes = Vec::new();
     if left.schema_version != right.schema_version {
@@ -564,7 +592,27 @@ fn diff_changes(left: &Config, right: &Config) -> Vec<String> {
         if l.backend != r.backend {
             changes.push(format!(
                 "~ listener \"{name}\" backend: {} -> {}",
-                l.backend, r.backend
+                l.backend.as_deref().unwrap_or("<redirect>"),
+                r.backend.as_deref().unwrap_or("<redirect>")
+            ));
+        }
+        if l.redirect != r.redirect {
+            let summary = |listener: &eqproxy_config::schema::ListenerConfig| {
+                listener.redirect.as_ref().map_or_else(
+                    || "none".to_owned(),
+                    |redirect| {
+                        format!(
+                            "{} -> {}",
+                            redirect.status.unwrap_or(301),
+                            redirect.location
+                        )
+                    },
+                )
+            };
+            changes.push(format!(
+                "~ listener \"{name}\" redirect: {} -> {}",
+                summary(l),
+                summary(r)
             ));
         }
         if l.maxconn != r.maxconn {
@@ -744,14 +792,13 @@ fn explain(
     client_ip: &str,
     raw_headers: &[String],
 ) -> u8 {
-    let client_ip: std::net::IpAddr = match client_ip.parse() {
-        Ok(ip) => ip,
-        Err(_) => {
-            eprintln!(
-                "error: --client-ip \"{client_ip}\" is not a valid IP address; example: --client-ip 10.1.2.3"
-            );
-            return 1;
-        }
+    let client_ip: std::net::IpAddr = if let Ok(ip) = client_ip.parse() {
+        ip
+    } else {
+        eprintln!(
+            "error: --client-ip \"{client_ip}\" is not a valid IP address; example: --client-ip 10.1.2.3"
+        );
+        return 1;
     };
     let mut headers = Vec::with_capacity(raw_headers.len());
     for raw in raw_headers {
@@ -847,8 +894,10 @@ fn plan_report(config: &Config, listeners: &[ResolvedListener]) -> String {
     // One entry per distinct default backend, taken from the resolved
     // listeners themselves: the inventory cannot disagree with the model it
     // prints (no name lookup to miss).
-    let mut backends: Vec<&ResolvedBackend> =
-        listeners.iter().map(|l| l.backend.as_ref()).collect();
+    let mut backends: Vec<&ResolvedBackend> = listeners
+        .iter()
+        .filter_map(|listener| listener.backend.as_deref())
+        .collect();
     backends.sort_unstable_by(|a, b| a.name.cmp(&b.name));
     backends.dedup_by(|a, b| a.name == b.name);
     let mut out = String::new();
@@ -885,16 +934,19 @@ fn plan_report(config: &Config, listeners: &[ResolvedListener]) -> String {
             }
         };
         let quic = if listener.quic { " quic=h3/udp" } else { "" };
+        let fallback = listener.redirect.as_ref().map_or_else(
+            || format!("backend=\"{}\"", listener.backend_name),
+            |redirect| {
+                format!(
+                    "redirect={} location=\"{}\"",
+                    redirect.status, redirect.location
+                )
+            },
+        );
         let _ = writeln!(
             out,
-            "listener \"{}\": bind {} mode={} maxconn={} tls={} backend=\"{}\"{}",
-            listener.name,
-            listener.listen,
-            mode,
-            listener.maxconn,
-            tls,
-            listener.backend_name,
-            quic
+            "listener \"{}\": bind {} mode={} maxconn={} tls={} {}{}",
+            listener.name, listener.listen, mode, listener.maxconn, tls, fallback, quic
         );
         let _ = writeln!(
             out,
@@ -913,11 +965,10 @@ fn plan_report(config: &Config, listeners: &[ResolvedListener]) -> String {
             ProxyProtocolMode::V1 => "v1",
             ProxyProtocolMode::V2 => "v2",
         };
-        let health = backend
-            .health_check
-            .as_ref()
-            .map(|hc| format!("interval={:?} timeout={:?}", hc.interval, hc.timeout))
-            .unwrap_or_else(|| "none".to_owned());
+        let health = backend.health_check.as_ref().map_or_else(
+            || "none".to_owned(),
+            |hc| format!("interval={:?} timeout={:?}", hc.interval, hc.timeout),
+        );
         let _ = writeln!(
             out,
             "backend \"{}\": servers={} tls={} proxy_protocol={} health_check={}",
@@ -941,9 +992,7 @@ fn plan_report(config: &Config, listeners: &[ResolvedListener]) -> String {
 /// override is also how the E2E tests isolate parallel runs without
 /// touching the process working directory).
 fn state_dir() -> PathBuf {
-    std::env::var_os("EQPROXY_STATE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(".eqproxy"))
+    std::env::var_os("EQPROXY_STATE_DIR").map_or_else(|| PathBuf::from(".eqproxy"), PathBuf::from)
 }
 
 /// Maximum retained backups; older ones are pruned on `apply`.
@@ -956,7 +1005,7 @@ fn list_history(history: &Path) -> Vec<String> {
     if let Ok(entries) = std::fs::read_dir(history) {
         for entry in entries.flatten() {
             if let Some(name) = entry.file_name().to_str()
-                && name.ends_with(".toml")
+                && name.to_ascii_lowercase().ends_with(".toml")
                 && entry.file_type().is_ok_and(|t| t.is_file())
             {
                 names.push(name.to_owned());
@@ -1126,8 +1175,7 @@ async fn apply(path: &Path) -> u8 {
     if let Some(prev) = previous.as_deref() {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_nanos());
         let name = next_history_name(&list_history(&history), unique);
         let entry = history.join(&name);
         let mut stored = history_header(&absolute_base(path), unique).into_bytes();
@@ -1148,28 +1196,25 @@ async fn apply(path: &Path) -> u8 {
         );
         return 1;
     }
-    match previous_config {
-        Some(prev) => {
-            let changes = diff_changes(&prev, &config);
-            println!(
-                "applied: {} -> {} ({} difference(s) vs previous{backup_note})",
-                path.display(),
-                current.display(),
-                changes.len()
-            );
-            if let Some(code) = emit_report_or_exit(&diff_report(&prev, &config)) {
-                return code;
-            }
+    if let Some(prev) = previous_config {
+        let changes = diff_changes(&prev, &config);
+        println!(
+            "applied: {} -> {} ({} difference(s) vs previous{backup_note})",
+            path.display(),
+            current.display(),
+            changes.len()
+        );
+        if let Some(code) = emit_report_or_exit(&diff_report(&prev, &config)) {
+            return code;
         }
-        None => {
-            println!(
-                "applied: {} -> {} (no previous configuration)",
-                path.display(),
-                current.display()
-            );
-            if let Some(code) = emit_report_or_exit(&plan_report(&config, &listeners)) {
-                return code;
-            }
+    } else {
+        println!(
+            "applied: {} -> {} (no previous configuration)",
+            path.display(),
+            current.display()
+        );
+        if let Some(code) = emit_report_or_exit(&plan_report(&config, &listeners)) {
+            return code;
         }
     }
     0
@@ -1189,7 +1234,13 @@ fn absolute_base(path: &Path) -> PathBuf {
 /// converted with less security than the source declared (the report names
 /// it); 1 = unreadable source, failed conversion or unwritable destination,
 /// and then nothing is written.
-fn import(from: Option<&str>, input: &Path, output: &Path, report_path: Option<&Path>) -> u8 {
+fn import(
+    from: Option<&str>,
+    input: &Path,
+    output: &Path,
+    report_path: Option<&Path>,
+    include_root: Option<&Path>,
+) -> u8 {
     let text = match std::fs::read_to_string(input) {
         Ok(text) => text,
         Err(e) => {
@@ -1198,28 +1249,35 @@ fn import(from: Option<&str>, input: &Path, output: &Path, report_path: Option<&
         }
     };
     let source = match from {
-        Some(name) => match eqproxy_config::import::Source::parse(name) {
-            Some(source) => source,
-            None => {
+        Some(name) => {
+            if let Some(source) = eqproxy_config::import::Source::parse(name) {
+                source
+            } else {
                 eprintln!(
                     "error: unknown source dialect \"{name}\" (expected nginx, haproxy, ingress or envoy)"
                 );
                 return 1;
             }
-        },
+        }
         None => eqproxy_config::import::Source::detect(&text),
     };
-    let (outcome, degraded) = match eqproxy_config::import::convert_with_degraded(source, &text) {
-        Ok(converted) => converted,
-        Err(err) => {
-            eprintln!(
-                "error: {} is not a convertible {} configuration: {err}",
-                input.display(),
-                source.as_str()
-            );
-            return 1;
-        }
-    };
+    if include_root.is_some() && source != eqproxy_config::import::Source::Nginx {
+        eprintln!("error: --include-root only applies to nginx configurations");
+        return 1;
+    }
+    let options = eqproxy_config::import::ImportOptions { include_root };
+    let (outcome, degraded) =
+        match eqproxy_config::import::convert_with_options_and_degraded(source, &text, options) {
+            Ok(converted) => converted,
+            Err(err) => {
+                eprintln!(
+                    "error: {} is not a convertible {} configuration: {err}",
+                    input.display(),
+                    source.as_str()
+                );
+                return 1;
+            }
+        };
     let report = eqproxy_config::import::report_with_paths(
         &outcome.report,
         &input.display().to_string(),
@@ -1358,25 +1416,166 @@ fn rollback() -> u8 {
     if let Err(e) = std::fs::remove_file(&entry) {
         eprintln!("warning: restored {name} but cannot remove the spent backup: {e}");
     }
-    match displaced {
-        Some(prev) => {
-            let changes = diff_changes(&prev, &config);
-            println!(
-                "rolled back: current restored from {name} ({} difference(s) vs applied)",
-                changes.len()
-            );
-            if let Some(code) = emit_report_or_exit(&diff_report(&prev, &config)) {
-                return code;
-            }
+    if let Some(prev) = displaced {
+        let changes = diff_changes(&prev, &config);
+        println!(
+            "rolled back: current restored from {name} ({} difference(s) vs applied)",
+            changes.len()
+        );
+        if let Some(code) = emit_report_or_exit(&diff_report(&prev, &config)) {
+            return code;
         }
-        None => {
-            println!("rolled back: current restored from {name} (no previous current to compare)");
-            if let Some(code) = emit_report_or_exit(&plan_report(&config, &listeners)) {
-                return code;
-            }
+    } else {
+        println!("rolled back: current restored from {name} (no previous current to compare)");
+        if let Some(code) = emit_report_or_exit(&plan_report(&config, &listeners)) {
+            return code;
         }
     }
     0
+}
+
+/// Probes a running dataplane for Docker/container health checks.
+///
+/// The admin endpoint is the strong probe (it authenticates and reads live
+/// status). Without `[admin]`, the command only checks that each TCP listener
+/// accepts a connection: that is liveness, not routing or backend readiness,
+/// and the distinction is deliberate. It never reads the access log, binds a
+/// port, or starts the dataplane.
+async fn healthcheck(path: &Path, timeout_ms: u64) -> u8 {
+    if timeout_ms == 0 {
+        eprintln!("healthcheck: --timeout-ms must be greater than zero");
+        return 1;
+    }
+    let (config, result) = match load_and_check(path) {
+        Ok(loaded) => loaded,
+        Err(err) => {
+            eprintln!("healthcheck: {err}");
+            return 1;
+        }
+    };
+    if !result.is_valid() {
+        for err in &result.errors {
+            eprintln!("healthcheck: {err}");
+        }
+        return 1;
+    }
+    let base = base_dir(path);
+    let probe = async {
+        match resolve_admin(&config, base)? {
+            Some(admin) => probe_admin(&admin).await,
+            None => probe_listeners(&config).await,
+        }
+    };
+    match tokio::time::timeout(Duration::from_millis(timeout_ms), probe).await {
+        Ok(Ok(())) => 0,
+        Ok(Err(err)) => {
+            eprintln!("healthcheck: {err}");
+            1
+        }
+        Err(_) => {
+            eprintln!("healthcheck: timed out after {timeout_ms} ms");
+            1
+        }
+    }
+}
+
+/// One authenticated `GET /api/v1/status` against the live admin plane.
+///
+/// The token is read from the config and never printed. Only the status line
+/// is interpreted: a 200 proves the process is serving its admin endpoint,
+/// which is the strongest generic liveness signal the image has.
+async fn probe_admin(admin: &ResolvedAdmin) -> Result<(), String> {
+    match &admin.endpoint {
+        AdminEndpoint::Tcp(addr) => {
+            let stream = tokio::net::TcpStream::connect(addr)
+                .await
+                .map_err(|err| format!("admin {addr}: {err}"))?;
+            exchange_admin(stream, &admin.token).await
+        }
+        AdminEndpoint::Unix(path) => {
+            #[cfg(unix)]
+            {
+                let stream = tokio::net::UnixStream::connect(path)
+                    .await
+                    .map_err(|err| format!("admin unix:{}: {err}", path.display()))?;
+                exchange_admin(stream, &admin.token).await
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = path;
+                Err("admin Unix socket is not supported on this platform".to_owned())
+            }
+        }
+    }
+}
+
+async fn exchange_admin<S>(mut stream: S, token: &str) -> Result<(), String>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let request = format!(
+        "GET /api/v1/status HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .map_err(|err| format!("admin request: {err}"))?;
+    let mut response = Vec::new();
+    stream
+        .take(64 * 1024)
+        .read_to_end(&mut response)
+        .await
+        .map_err(|err| format!("admin response: {err}"))?;
+    let response = String::from_utf8_lossy(&response);
+    let status = response.lines().next().unwrap_or("");
+    if status.split_whitespace().nth(1) == Some("200") {
+        Ok(())
+    } else {
+        Err(format!("admin returned {status:?}"))
+    }
+}
+
+/// Liveness fallback for configurations without an admin plane.
+///
+/// Port 0 cannot be probed from outside the process; a config with port 0 is
+/// rejected by the validator for a long-running deployment anyway. Wildcard
+/// binds are probed through loopback so a container does not need its own
+/// externally reachable address.
+async fn probe_listeners(config: &Config) -> Result<(), String> {
+    if config.listener.is_empty() {
+        return Err("no listeners and no [admin] endpoint to probe".to_owned());
+    }
+    let mut failures = Vec::new();
+    for (name, listener) in &config.listener {
+        let addr: SocketAddr = listener
+            .listen
+            .parse()
+            .map_err(|_| format!("listener {name}: invalid address {:?}", listener.listen))?;
+        let probe = loopback_for(addr);
+        if let Err(err) = tokio::net::TcpStream::connect(probe).await {
+            failures.push(format!("{name} ({probe}): {err}"));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "no listener accepted a connection: {}",
+            failures.join("; ")
+        ))
+    }
+}
+
+fn loopback_for(mut addr: SocketAddr) -> SocketAddr {
+    if addr.ip().is_unspecified() {
+        addr.set_ip(match addr.ip() {
+            IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        });
+    }
+    addr
 }
 
 /// Environment diagnostics for a config that is about to run (Phase 3).
@@ -1552,7 +1751,7 @@ impl DoctorReport {
     }
 
     fn exit_code(&self) -> u8 {
-        if self.counts().2 > 0 { 1 } else { 0 }
+        u8::from(self.counts().2 > 0)
     }
 }
 
@@ -1684,7 +1883,8 @@ fn action_summary(action: &eqproxy_net::RouteAction, host: &str, req_path: &str)
                 if let Some(new_host) = &rewrite.host_rewrite {
                     parts.push(format!("host -> {new_host:?}"));
                 }
-                out.push_str(&format!(" (rewrite: {})", parts.join(", ")));
+                write!(out, " (rewrite: {})", parts.join(", "))
+                    .expect("writing into a String cannot fail");
             }
             out
         }
@@ -1721,6 +1921,7 @@ fn action_summary(action: &eqproxy_net::RouteAction, host: &str, req_path: &str)
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn explain_report(
     config: &Config,
     listener: &ResolvedListener,
@@ -1795,10 +1996,20 @@ fn explain_report(
         out,
         "route_decision: {}",
         chosen.map_or_else(
-            || format!(
-                "no rule matched -> default backend \"{}\"",
-                listener.backend.name
-            ),
+            || match (&listener.backend, &listener.redirect) {
+                (Some(backend), _) =>
+                    format!("no rule matched -> default backend \"{}\"", backend.name),
+                (None, Some(redirect)) => {
+                    let rendered =
+                        eqproxy_core::rules::render_location(&redirect.location, host, req_path)
+                            .unwrap_or_else(|why| format!("(invalid template: {why})"));
+                    format!(
+                        "no rule matched -> redirect {} -> {rendered:?}",
+                        redirect.status
+                    )
+                }
+                (None, None) => "no rule matched -> no fallback".to_owned(),
+            },
             |action| format!(
                 "first matching rule -> {}{}",
                 action_summary(action, host, req_path),
@@ -1835,7 +2046,7 @@ fn explain_report(
             );
             Some(Arc::clone(throwaway.pick()))
         }
-        None => Some(Arc::clone(&listener.backend)),
+        None => listener.backend.as_ref().map(Arc::clone),
     };
     let sim_pick: Option<(eqproxy_net::Balancer, Option<eqproxy_net::Endpoint>)> =
         match &sim_backend {
@@ -1847,8 +2058,7 @@ fn explain_report(
                 let backend_cfg = config.backend.get(&backend.name);
                 let (fall, rise) = backend_cfg
                     .and_then(|b| b.health_check.as_ref())
-                    .map(|hc| (hc.fall, hc.rise))
-                    .unwrap_or((3, 2));
+                    .map_or((3, 2), |hc| (hc.fall, hc.rise));
                 let (algorithm, slow_start, all_backups) = backend_cfg.map_or(
                     (
                         eqproxy_config::schema::BalanceAlgorithm::RoundRobin,
@@ -1879,16 +2089,15 @@ fn explain_report(
                     ProxyProtocolMode::V1 => "v1",
                     ProxyProtocolMode::V2 => "v2",
                 };
-                let health = backend
-                    .health_check
-                    .as_ref()
-                    .map(|hc| {
+                let health = backend.health_check.as_ref().map_or_else(
+                    || "none".to_owned(),
+                    |hc| {
                         format!(
                             "interval={:?} timeout={:?} fall={} rise={}",
                             hc.interval, hc.timeout, fall, rise
                         )
-                    })
-                    .unwrap_or_else(|| "none".to_owned());
+                    },
+                );
                 let balance_name = match algorithm {
                     eqproxy_config::schema::BalanceAlgorithm::RoundRobin => "roundrobin",
                     eqproxy_config::schema::BalanceAlgorithm::LeastConn => "leastconn",
@@ -1947,10 +2156,12 @@ fn explain_report(
                 listener.idle_timeout
             );
             if !listener.max_stream_duration.is_zero() {
-                fire.push_str(&format!(
+                write!(
+                    fire,
                     "; max_stream=504(before head)/close after {:?}",
                     listener.max_stream_duration
-                ));
+                )
+                .expect("writing into a String cannot fail");
             }
             fire
         }
@@ -2278,7 +2489,10 @@ fn listener_infos(
                 eqproxy_config::schema::ListenerMode::Tcp => "tcp",
             }
             .to_owned(),
-            backend: listener.backend.clone(),
+            backend: listener
+                .backend
+                .clone()
+                .unwrap_or_else(|| "redirect".to_owned()),
             maxconn: listener.maxconn,
             // Read from the acceptors, not from the config: a renewal that
             // was rejected must not be reported as applied (D7).
@@ -2434,6 +2648,7 @@ impl ConfigApplier {
     /// Validates and resolves the whole candidate, then asks the dataplane to
     /// swap. Nothing is committed until the dataplane confirms, and a failed
     /// validation never reaches it (the running generation keeps serving).
+    #[allow(clippy::too_many_lines)]
     async fn apply_candidate(&mut self, candidate: Config) -> ApplyReply {
         let result = validate::check(&candidate, "", &self.path);
         for warning in &result.warnings {
@@ -2682,6 +2897,7 @@ fn resolve(config: &Config, base_dir: &Path) -> Result<Vec<ResolvedListener>, St
 /// [`resolve`] with a shared administration-state registry (ADR-0018): the
 /// same registry is handed to every balancer and to the admin plane, and the
 /// resolved backends come back for the admin's live view.
+#[allow(clippy::too_many_lines)]
 fn resolve_with(
     config: &Config,
     base_dir: &Path,
@@ -2740,8 +2956,7 @@ fn resolve_with(
         let (fall, rise) = backend
             .health_check
             .as_ref()
-            .map(|hc| (hc.fall, hc.rise))
-            .unwrap_or((3, 2));
+            .map_or((3, 2), |hc| (hc.fall, hc.rise));
         let mut resolved = ResolvedBackend::new(name.clone(), servers, fall, rise)
             .with_proxy_protocol(match backend.proxy_protocol {
                 eqproxy_config::schema::ProxyProtocolMode::None => ProxyProtocolMode::None,
@@ -2820,10 +3035,14 @@ fn resolve_with(
                 .as_deref()
                 .map(|ca| read_pem(base_dir, &format!("backend.{name}.tls.ca_file"), ca))
                 .transpose()?;
+            // P0-14/EXT-H-05: with no explicit `server_name`, the name to
+            // verify and to send as SNI is the host the backend declares, not
+            // the address it resolves to (the schema documents this default).
+            let declared = backend.declared_host();
             let tls = tls::client_config(
                 ca.as_deref(),
                 client_tls.verify,
-                client_tls.server_name.as_deref(),
+                client_tls.server_name.as_deref().or(declared.as_deref()),
                 &client_tls.alpn,
                 tls_version(client_tls.min_version),
             )
@@ -2842,28 +3061,46 @@ fn resolve_with(
                 .listen
                 .parse()
                 .map_err(|_| format!("listener.{name}.listen invalid: \"{}\"", listener.listen))?;
-            let backend = backends.get(&listener.backend).ok_or_else(|| {
-                format!(
-                    "listener.{name}.backend does not exist: \"{}\"",
-                    listener.backend
+            let mode = match listener.mode {
+                eqproxy_config::ListenerMode::Tcp => ProxyMode::Tcp,
+                eqproxy_config::ListenerMode::Http => ProxyMode::Http,
+            };
+            let mut resolved = if let Some(backend_name) = &listener.backend {
+                let backend = backends.get(backend_name).ok_or_else(|| {
+                    format!("listener.{name}.backend does not exist: \"{backend_name}\"")
+                })?;
+                ResolvedListener::new(
+                    name.clone(),
+                    listen,
+                    backend_name.clone(),
+                    backend.servers[0].addr.clone(),
+                    mode,
+                    listener.maxconn,
+                    listener.connect_timeout,
+                    listener.idle_timeout,
+                    listener.client_header_timeout,
+                    listener.server_header_timeout,
                 )
-            })?;
-            let mut resolved = ResolvedListener::new(
-                name.clone(),
-                listen,
-                listener.backend.clone(),
-                backend.servers[0].addr.clone(),
-                match listener.mode {
-                    eqproxy_config::ListenerMode::Tcp => ProxyMode::Tcp,
-                    eqproxy_config::ListenerMode::Http => ProxyMode::Http,
-                },
-                listener.maxconn,
-                listener.connect_timeout,
-                listener.idle_timeout,
-                listener.client_header_timeout,
-                listener.server_header_timeout,
-            )
-            .with_backend(Arc::clone(backend));
+                .with_backend(Arc::clone(backend))
+            } else {
+                let redirect = listener.redirect.as_ref().ok_or_else(|| {
+                    format!(
+                        "listener.{name}: set exactly one of backend or redirect"
+                    )
+                })?;
+                ResolvedListener::redirect(
+                    name.clone(),
+                    listen,
+                    redirect.status.unwrap_or(301),
+                    redirect.location.clone(),
+                    mode,
+                    listener.maxconn,
+                    listener.connect_timeout,
+                    listener.idle_timeout,
+                    listener.client_header_timeout,
+                    listener.server_header_timeout,
+                )
+            };
             // Routing rules (B-H3/B-H4): compiled once here (the gate and
             // the runtime share the matcher grammar), order preserved.
             let mut routes = Vec::with_capacity(listener.rules.len());
@@ -2872,16 +3109,14 @@ fn resolve_with(
                     let at = why
                         .field
                         .as_deref()
-                        .map(|field| format!(".{field}"))
-                        .unwrap_or_default();
+                        .map_or_default(|field| format!(".{field}"));
                     format!("listener.{name}.rules[{i}]{at}: {}", why.cause)
                 })?;
                 let compiled = eqproxy_core::rules::Rule::compile(&spec).map_err(|why| {
                     let at = why
                         .field
                         .as_deref()
-                        .map(|field| format!(".{field}"))
-                        .unwrap_or_default();
+                        .map_or_default(|field| format!(".{field}"));
                     format!("listener.{name}.rules[{i}]{at}: {}", why.cause)
                 })?;
                 // The rewrite applies to the forwarded request on both
@@ -3337,6 +3572,7 @@ fn load_error_pages(
     Ok(eqproxy_net::ErrorPages::from_pages(resolved))
 }
 
+#[allow(clippy::too_many_lines)]
 async fn run(path: PathBuf, metrics_interval: String) -> u8 {
     let interval = match eqproxy_config::duration::parse(&metrics_interval) {
         Ok(value) if !value.is_zero() => value,
@@ -3863,7 +4099,8 @@ mod tests {
         use eqproxy_net::proxy::{LocalResponse, QueueSettings, RetryPolicy, WaitQueue};
 
         let (config, mut listener) = two_server_listener();
-        let backend = Arc::get_mut(&mut listener.backend).expect("unique backend");
+        let backend =
+            Arc::get_mut(listener.backend.as_mut().expect("backend")).expect("unique backend");
         backend.queue = Some(WaitQueue::new(QueueSettings {
             maxqueue: 8,
             timeout: Duration::from_millis(500),

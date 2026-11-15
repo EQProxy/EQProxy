@@ -16,13 +16,14 @@ use eqproxy_core::auth::{AuthUrl, BasicUsers, basic_credentials};
 
 use crate::http1::{HeadLimits, RequestHead, parse_response_head, read_head};
 use crate::proxy::ResolvedAuth;
+use std::fmt::Write as _;
 
 /// Maximum deny-response body read from the auth service (bounded like
 /// local responses).
 const MAX_AUTH_RESPONSE_BYTES: usize = 8 * 1024;
 
 /// Headers of the auth service response that reach the client on deny
-/// (OAuth2 flows need `www-authenticate`/`location`; the rest is dropped).
+/// (`OAuth2` flows need `www-authenticate`/`location`; the rest is dropped).
 const FORWARDED_DENY_HEADERS: [&str; 4] =
     ["www-authenticate", "location", "set-cookie", "content-type"];
 
@@ -131,9 +132,8 @@ async fn subrequest(
     };
     let connected =
         tokio::time::timeout(connect_timeout, tokio::net::TcpStream::connect(addr)).await;
-    let mut stream = match connected {
-        Ok(Ok(stream)) => stream,
-        _ => return AuthOutcome::Error(service_error()),
+    let Ok(Ok(mut stream)) = connected else {
+        return AuthOutcome::Error(service_error());
     };
     let head = subrequest_head(target, request);
     if stream.write_all(head.as_bytes()).await.is_err() {
@@ -142,14 +142,13 @@ async fn subrequest(
     // The auth subrequest is internal and its answer is read into a fixed
     // budget: it uses the historical head bounds, not a listener's.
     let default_limits = HeadLimits::default();
-    let (head, rest) =
-        match read_head(&mut stream, total_timeout, default_limits.max_head_bytes).await {
-            Ok(pair) => pair,
-            Err(_) => return AuthOutcome::Error(service_error()),
-        };
-    let response = match parse_response_head(&head, false, default_limits) {
-        Ok(response) => response,
-        Err(_) => return AuthOutcome::Error(service_error()),
+    let Ok((head, rest)) =
+        read_head(&mut stream, total_timeout, default_limits.max_head_bytes).await
+    else {
+        return AuthOutcome::Error(service_error());
+    };
+    let Ok(response) = parse_response_head(&head, false, default_limits) else {
+        return AuthOutcome::Error(service_error());
     };
     // Body (bounded): the connection was opened for this check only and
     // closes with it (`connection: close`), so framing is irrelevant.
@@ -184,9 +183,9 @@ async fn subrequest(
 /// authorize per path.
 fn subrequest_head(target: &AuthUrl, request: &RequestHead) -> String {
     let mut head = format!("GET {} HTTP/1.1\r\n", target.path);
-    head.push_str(&format!("host: {}:{}\r\n", target.host, target.port));
-    head.push_str(&format!("x-original-method: {}\r\n", request.method));
-    head.push_str(&format!("x-original-url: {}\r\n", request.target));
+    let _ = write!(head, "host: {}:{}\r\n", target.host, target.port);
+    let _ = write!(head, "x-original-method: {}\r\n", request.method);
+    let _ = write!(head, "x-original-url: {}\r\n", request.target);
     for (name, value) in &request.headers {
         if matches!(
             name.as_str(),
@@ -250,8 +249,7 @@ mod tests {
             wants_upgrade: false,
             host: "svc.example".to_owned(),
             headers: authorization
-                .map(|value| vec![("authorization".to_owned(), value.to_owned())])
-                .unwrap_or_default(),
+                .map_or_default(|value| vec![("authorization".to_owned(), value.to_owned())]),
         }
     }
 

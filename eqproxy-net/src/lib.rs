@@ -1,4 +1,4 @@
-//! EQProxy dataplane: TCP/HTTP proxy with TLS, balancing, health checks and
+//! `EQProxy` dataplane: TCP/HTTP proxy with TLS, balancing, health checks and
 //! limits. Streaming, cancellation and graceful shutdown.
 //!
 //! Phase 1: TCP passthrough with timeouts and limits. Phase 2a: strict HTTP/1.1.

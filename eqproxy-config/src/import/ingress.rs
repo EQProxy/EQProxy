@@ -1,14 +1,14 @@
-//! ingress-nginx → EQProxy.
+//! ingress-nginx → `EQProxy`.
 //!
-//! Reads the multi-document manifest stream (ConfigMaps, Endpoints, Services
+//! Reads the multi-document manifest stream (`ConfigMaps`, Endpoints, Services
 //! and Ingress objects), resolves each Ingress backend through its Endpoints
 //! (or through the in-cluster service DNS name when the Endpoints object is
 //! absent) and emits one listener per public address with `host` + `path`
 //! rules — the shape an ingress controller actually has. Annotations map to
-//! the fields EQProxy has: CORS, rate limit, IP allowlist, rewrite, HSTS,
+//! the fields `EQProxy` has: CORS, rate limit, IP allowlist, rewrite, HSTS,
 //! body size, timeouts and load balancing. Everything else is classified,
 //! including `configuration-snippet` (never executed) and `ssl-passthrough`
-//! (needs SNI routing EQProxy does not do).
+//! (needs SNI routing `EQProxy` does not do).
 
 use std::collections::BTreeMap;
 
@@ -48,6 +48,7 @@ struct Route {
     behaviour: Behaviour,
 }
 
+#[allow(clippy::too_many_lines)]
 pub(super) fn convert(conv: &mut Conv, text: &str) -> Result<(), ImportError> {
     let documents =
         yaml::documents(text).map_err(|err| ImportError::new(format!("YAML no válido: {err}")))?;
@@ -70,18 +71,18 @@ pub(super) fn convert(conv: &mut Conv, text: &str) -> Result<(), ImportError> {
                     .to_owned();
                 match name.as_str() {
                     "ingress-nginx-controller" | "nginx-configuration" => {
-                        for (key, value) in doc.get("data").map(Value::entries).unwrap_or(&[]) {
+                        for (key, value) in doc.get("data").map_or_default(Value::entries) {
                             global.insert(key.clone(), value.text().unwrap_or_default().to_owned());
                         }
                     }
                     "tcp-services" => {
-                        for (port, target) in doc.get("data").map(Value::entries).unwrap_or(&[]) {
+                        for (port, target) in doc.get("data").map_or_default(Value::entries) {
                             tcp_services
                                 .push((port.clone(), target.text().unwrap_or_default().to_owned()));
                         }
                     }
                     "udp-services" => {
-                        for (port, _) in doc.get("data").map(Value::entries).unwrap_or(&[]) {
+                        for (port, _) in doc.get("data").map_or_default(Value::entries) {
                             udp_ports.push(port.clone());
                         }
                     }
@@ -96,16 +97,15 @@ pub(super) fn convert(conv: &mut Conv, text: &str) -> Result<(), ImportError> {
             "Endpoints" => {
                 let (namespace, name) = metadata(doc);
                 let mut addrs = Vec::new();
-                for subset in doc.get("subsets").map(Value::items).unwrap_or(&[]) {
+                for subset in doc.get("subsets").map_or_default(Value::items) {
                     let port = subset
                         .get("ports")
-                        .map(Value::items)
-                        .unwrap_or(&[])
+                        .map_or_default(Value::items)
                         .iter()
                         .find_map(|port| port.get("port").and_then(Value::text))
                         .and_then(|text| text.parse::<u16>().ok());
                     let Some(port) = port else { continue };
-                    for address in subset.get("addresses").map(Value::items).unwrap_or(&[]) {
+                    for address in subset.get("addresses").map_or_default(Value::items) {
                         if let Some(ip) = address.get("ip").and_then(Value::text) {
                             addrs.push((ip.to_owned(), port));
                         }
@@ -118,8 +118,7 @@ pub(super) fn convert(conv: &mut Conv, text: &str) -> Result<(), ImportError> {
                 if let Some(port) = doc
                     .get("spec")
                     .and_then(|s| s.get("ports"))
-                    .map(Value::items)
-                    .unwrap_or(&[])
+                    .map_or_default(Value::items)
                     .first()
                     .and_then(|p| p.get("port"))
                     .and_then(Value::text)
@@ -150,8 +149,7 @@ pub(super) fn convert(conv: &mut Conv, text: &str) -> Result<(), ImportError> {
         let annotations: BTreeMap<String, String> = doc
             .get("metadata")
             .and_then(|m| m.get("annotations"))
-            .map(Value::entries)
-            .unwrap_or(&[])
+            .map_or_default(Value::entries)
             .iter()
             .map(|(key, value)| {
                 (
@@ -187,8 +185,7 @@ pub(super) fn convert(conv: &mut Conv, text: &str) -> Result<(), ImportError> {
         for entry in doc
             .get("spec")
             .and_then(|s| s.get("tls"))
-            .map(Value::items)
-            .unwrap_or(&[])
+            .map_or_default(Value::items)
         {
             if let Some(secret) = entry.get("secretName").and_then(Value::text) {
                 tls = true;
@@ -225,15 +222,13 @@ pub(super) fn convert(conv: &mut Conv, text: &str) -> Result<(), ImportError> {
         for rule in doc
             .get("spec")
             .and_then(|s| s.get("rules"))
-            .map(Value::items)
-            .unwrap_or(&[])
+            .map_or_default(Value::items)
         {
             let host = rule.get("host").and_then(Value::text).map(str::to_owned);
             for path in rule
                 .get("http")
                 .and_then(|h| h.get("paths"))
-                .map(Value::items)
-                .unwrap_or(&[])
+                .map_or_default(Value::items)
             {
                 let raw_path = path
                     .get("path")
@@ -516,6 +511,7 @@ fn backend_for(
 }
 
 /// One `nginx.ingress.kubernetes.io/*` annotation.
+#[allow(clippy::too_many_lines)]
 fn annotation(
     conv: &mut Conv,
     key: &str,
@@ -724,17 +720,30 @@ fn annotation(
             }
         }
         "hsts-max-age" => {
+            let mut applied = false;
             for header in &mut behaviour.response_headers {
                 if header.name.eq_ignore_ascii_case("Strict-Transport-Security") {
                     header.value = format!("max-age={value}");
+                    applied = true;
                 }
             }
-            conv.done(
-                1,
-                &text,
-                context,
-                "response_headers Strict-Transport-Security max-age",
-            );
+            if applied {
+                conv.done(
+                    1,
+                    &text,
+                    context,
+                    "response_headers Strict-Transport-Security max-age",
+                );
+            } else {
+                // `hsts-max-age` without `enable-hsts: true` creates no header:
+                // claiming Done would promise a field the TOML does not have.
+                conv.review(
+                    1,
+                    &text,
+                    context,
+                    "hsts-max-age sin enable-hsts: no hay cabecera HSTS que ajustar",
+                );
+            }
         }
         "backend-protocol" => match value {
             "AUTO_HTTP" | "HTTP" => conv.info(
@@ -827,7 +836,7 @@ fn annotation(
     }
 }
 
-/// The controller ConfigMap (`enable-http2`, `ssl-protocols`, …).
+/// The controller `ConfigMap` (`enable-http2`, `ssl-protocols`, …).
 fn global_config(conv: &mut Conv, global: &BTreeMap<String, String>) -> Result<(), ImportError> {
     for (key, value) in global {
         let before = conv.notes.len();
@@ -952,6 +961,33 @@ mod tests {
                 && outcome.report.contains("body o file"),
             "the annotation must name the codes and the missing content:\n{}",
             outcome.report
+        );
+    }
+
+    #[test]
+    fn hsts_max_age_without_enable_hsts_is_not_done() {
+        let source = "apiVersion: networking.k8s.io/v1\nkind: Ingress\nmetadata:\n  name: web\n  annotations:\n    nginx.ingress.kubernetes.io/hsts-max-age: \"31536000\"\nspec:\n  rules:\n    - host: shop.example.com\n      http:\n        paths:\n          - path: /\n            pathType: Prefix\n            backend:\n              service:\n                name: web\n                port:\n                  number: 8080\n";
+        let outcome = super::super::convert(super::super::Source::Ingress, source)
+            .expect("hsts-max-age alone is classified");
+        assert!(
+            !outcome.toml.contains("Strict-Transport-Security"),
+            "{}",
+            outcome.toml
+        );
+        assert!(
+            outcome.report.contains("hsts-max-age sin enable-hsts"),
+            "the missing HSTS header must be explained:\n{}",
+            outcome.report
+        );
+        let done = outcome
+            .report
+            .split("### ✅ convertido")
+            .nth(1)
+            .and_then(|section| section.split("###").next())
+            .expect("the report has a Done section");
+        assert!(
+            !done.contains("hsts-max-age"),
+            "hsts-max-age must not read as converted when it filled no field:\n{done}"
         );
     }
 

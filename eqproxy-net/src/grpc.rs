@@ -27,7 +27,7 @@
 //! - A stream the peer refuses after opening it is not replayed: a gRPC
 //!   exchange is not idempotent.
 //! - `max_stream_duration` ends a running stream with `grpc-status: 4`
-//!   (DEADLINE_EXCEEDED) trailers; `idle_timeout` cuts a silent one with a
+//!   (`DEADLINE_EXCEEDED`) trailers; `idle_timeout` cuts a silent one with a
 //!   stream reset.
 
 use std::net::SocketAddr;
@@ -91,6 +91,7 @@ enum ReadError {
 /// Serves one gRPC stream end to end, or hands the request back untouched
 /// when this is not the pass-through's case (the caller then keeps the h1
 /// translation it always had).
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn serve(
     request: Request<RecvStream>,
     mut respond: h2::server::SendResponse<Bytes>,
@@ -197,35 +198,29 @@ pub(crate) async fn serve(
         Some(rewrite) => apply_rewrite(&forwarded, rewrite, &head.target),
         None => forwarded,
     };
-    let forwarded = match parse_head(&forwarded, grpc_head_limits(cfg)) {
-        Ok(forwarded) => forwarded,
-        Err(_) => {
-            metrics
-                .http_requests_rejected
-                .fetch_add(1, Ordering::Relaxed);
-            let _ = local_answer(
-                &mut respond,
-                StatusCode::BAD_REQUEST,
-                &[],
-                b"untranslatable request head",
-            );
-            return Ok(());
-        }
+    let Ok(forwarded) = parse_head(&forwarded, grpc_head_limits(cfg)) else {
+        metrics
+            .http_requests_rejected
+            .fetch_add(1, Ordering::Relaxed);
+        let _ = local_answer(
+            &mut respond,
+            StatusCode::BAD_REQUEST,
+            &[],
+            b"untranslatable request head",
+        );
+        return Ok(());
     };
-    let outbound = match outbound_request(&forwarded, scheme) {
-        Ok(outbound) => outbound,
-        Err(()) => {
-            metrics
-                .http_requests_rejected
-                .fetch_add(1, Ordering::Relaxed);
-            let _ = local_answer(
-                &mut respond,
-                StatusCode::BAD_REQUEST,
-                &[],
-                b"untranslatable request target",
-            );
-            return Ok(());
-        }
+    let Ok(outbound) = outbound_request(&forwarded, scheme) else {
+        metrics
+            .http_requests_rejected
+            .fetch_add(1, Ordering::Relaxed);
+        let _ = local_answer(
+            &mut respond,
+            StatusCode::BAD_REQUEST,
+            &[],
+            b"untranslatable request target",
+        );
+        return Ok(());
     };
     let affinity_cookie = backend.affinity.as_ref().and_then(|affinity| {
         (affinity.mode == AffinityMode::Cookie)
@@ -246,9 +241,7 @@ pub(crate) async fn serve(
     .await
     {
         Ok(stream) => stream,
-        Err(OutboundError::NoServer)
-        | Err(OutboundError::QueueFull)
-        | Err(OutboundError::QueueTimeout) => {
+        Err(OutboundError::NoServer | OutboundError::QueueFull | OutboundError::QueueTimeout) => {
             write_no_server(&mut respond, cfg, metrics);
             return Ok(());
         }
@@ -328,12 +321,9 @@ pub(crate) async fn serve(
     out.headers_mut()
         .insert("server", HeaderValue::from_static("EQProxy"));
     let end = response.body().is_end_stream();
-    let client = match respond.send_response(out, end) {
-        Ok(client) => client,
-        Err(_) => {
-            up.abort();
-            return Ok(());
-        }
+    let Ok(client) = respond.send_response(out, end) else {
+        up.abort();
+        return Ok(());
     };
     if end {
         // A trailers-only answer (gRPC's immediate status): nothing to relay.
@@ -520,7 +510,7 @@ async fn forward_request(
 
 /// Relays the backend's DATA and trailers into the client stream. The final
 /// trailers carry gRPC's status; a `max_stream_duration` cut sends
-/// `grpc-status: 4` (DEADLINE_EXCEEDED) instead of hiding the reason.
+/// `grpc-status: 4` (`DEADLINE_EXCEEDED`) instead of hiding the reason.
 async fn relay_response(
     mut backend: RecvStream,
     mut client: h2::SendStream<Bytes>,
@@ -583,7 +573,7 @@ async fn next_data(
     let read = tokio::time::timeout(idle, recv.data());
     let got = match deadline {
         Some(at) => tokio::select! {
-            _ = tokio::time::sleep_until(at) => return Err(ReadError::Deadline),
+            () = tokio::time::sleep_until(at) => return Err(ReadError::Deadline),
             got = read => got,
         },
         None => read.await,

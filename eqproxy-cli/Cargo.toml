@@ -42,6 +42,10 @@ workspace = true
 
 [dev-dependencies]
 serde_json = { workspace = true }
+# The TLS E2E drives a real rustls client so the SNI the dataplane selects
+# is observed on the wire instead of inferred from the response.
+rustls = "0.23"
+rustls-pki-types = "1"
 # The compression E2E decodes what the real binary wrote on the wire.
 flate2 = "1"
 brotli = "9"

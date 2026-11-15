@@ -7,6 +7,7 @@
 //! disk persistence across a restart, and the admin inventory.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -114,6 +115,7 @@ fn head_path(head: &str) -> String {
 
 /// Real TCP origin: programmable per-path responses with `ETag`/`304`
 /// support, per-path counters and conditional-header recording.
+#[allow(clippy::too_many_lines)]
 async fn start_origin() -> Origin {
     let behaviors: Arc<Mutex<HashMap<String, Behavior>>> = Arc::new(Mutex::new(HashMap::from([
         (
@@ -339,7 +341,8 @@ async fn start_origin() -> Origin {
                     let etag = behavior.etag.clone().unwrap_or_default();
                     let mut reply = format!("HTTP/1.1 304 Not Modified\r\netag: {etag}\r\n");
                     for (name, value) in &behavior.revalidate_headers {
-                        reply.push_str(&format!("{name}: {value}\r\n"));
+                        write!(reply, "{name}: {value}\r\n")
+                            .expect("writing into a String cannot fail");
                     }
                     reply.push_str("content-length: 0\r\n\r\n");
                     let _ = socket.write_all(reply.as_bytes()).await;
@@ -355,7 +358,25 @@ async fn start_origin() -> Origin {
                 {
                     let mut reply = format!("HTTP/1.1 304 Not Modified\r\netag: {etag}\r\n");
                     for (name, value) in &behavior.revalidate_headers {
-                        reply.push_str(&format!("{name}: {value}\r\n"));
+                        write!(reply, "{name}: {value}\r\n")
+                            .expect("writing into a String cannot fail");
+                    }
+                    reply.push_str("content-length: 0\r\n\r\n");
+                    let _ = socket.write_all(reply.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                    return;
+                }
+                // Conditional request against a matching ETag: 304 with the
+                // validators, no body — the exact exchange the proxy must
+                // turn into a refresh instead of a download.
+                let inm = head_value(&head_text, "if-none-match");
+                if let (Some(inm), Some(etag)) = (inm, behavior.etag.clone())
+                    && cache::client_fresh(&inm, Some(&etag))
+                {
+                    let mut reply = format!("HTTP/1.1 304 Not Modified\r\netag: {etag}\r\n");
+                    for (name, value) in &behavior.revalidate_headers {
+                        write!(reply, "{name}: {value}\r\n")
+                            .expect("writing into a String cannot fail");
                     }
                     reply.push_str("content-length: 0\r\n\r\n");
                     let _ = socket.write_all(reply.as_bytes()).await;
@@ -444,6 +465,91 @@ async fn start_proxy_with_cache(
     shutdown::ShutdownHandle,
     tokio::task::JoinHandle<()>,
 ) {
+    start_cached_proxy(origin, cache, backend, None).await
+}
+
+/// The cache proxy with response compression enabled: the pair whose
+/// interaction this file has to prove can never corrupt a stored entry.
+async fn start_compressing_proxy(
+    origin: SocketAddr,
+    cache: CacheSettings,
+) -> (
+    SocketAddr,
+    Arc<Metrics>,
+    Arc<Cache>,
+    shutdown::ShutdownHandle,
+    tokio::task::JoinHandle<()>,
+) {
+    start_cached_proxy(origin, cache, None, Some(gzip_and_brotli())).await
+}
+
+fn gzip_and_brotli() -> eqproxy_net::compression::ResolvedCompression {
+    eqproxy_net::compression::ResolvedCompression::new(
+        true,
+        true,
+        6,
+        5,
+        1024,
+        &["text/plain".to_owned()],
+    )
+    .expect("gzip+brotli settings")
+}
+
+/// Payload of a `chunked` response body: the compressor's output arrives
+/// framed, so decoding it starts by removing the framing (strictly: a
+/// malformed section fails the test instead of silently truncating).
+fn dechunk(raw: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut rest = raw;
+    loop {
+        let line_end = rest
+            .windows(2)
+            .position(|window| window == b"\r\n")
+            .expect("chunk size line");
+        let line = std::str::from_utf8(&rest[..line_end]).expect("ascii chunk size");
+        let size = usize::from_str_radix(line.split(';').next().unwrap_or("0").trim(), 16)
+            .expect("hex chunk size");
+        rest = &rest[line_end + 2..];
+        if size == 0 {
+            return out;
+        }
+        assert!(rest.len() >= size + 2, "chunk data is truncated");
+        out.extend_from_slice(&rest[..size]);
+        assert_eq!(&rest[size..size + 2], b"\r\n", "chunk data terminator");
+        rest = &rest[size + 2..];
+    }
+}
+
+fn gunzip(bytes: &[u8]) -> Vec<u8> {
+    use std::io::Read as _;
+    let mut out = Vec::new();
+    flate2::read::GzDecoder::new(bytes)
+        .read_to_end(&mut out)
+        .expect("the gzip member decodes");
+    out
+}
+
+fn unbrotli(bytes: &[u8]) -> Vec<u8> {
+    use std::io::Read as _;
+    let mut out = Vec::new();
+    brotli::Decompressor::new(bytes, 4096)
+        .read_to_end(&mut out)
+        .expect("the brotli stream decodes");
+    out
+}
+
+async fn start_cached_proxy(
+    origin: SocketAddr,
+    cache: CacheSettings,
+    backend: Option<Arc<ResolvedBackend>>,
+    compression: Option<eqproxy_net::compression::ResolvedCompression>,
+) -> (
+    SocketAddr,
+    Arc<Metrics>,
+    Arc<Cache>,
+    shutdown::ShutdownHandle,
+    tokio::task::JoinHandle<()>,
+) {
     let metrics = Arc::new(Metrics::default());
     let cache = Cache::load(cache, Arc::clone(&metrics)).expect("cache builds");
     let mut cfg = ResolvedListener::new(
@@ -461,6 +567,9 @@ async fn start_proxy_with_cache(
     .with_cache(Arc::clone(&cache));
     if let Some(backend) = backend {
         cfg = cfg.with_backend(backend);
+    }
+    if let Some(compression) = compression {
+        cfg = cfg.with_compression(compression);
     }
     let bound: BoundProxy = bind(vec![cfg], Arc::clone(&metrics))
         .await
@@ -507,7 +616,7 @@ async fn fetch(
     let mut socket = TcpStream::connect(addr).await.expect("connect proxy");
     let mut request = format!("{method} {path} HTTP/1.1\r\nhost: api\r\nconnection: close\r\n");
     for (name, value) in extra {
-        request.push_str(&format!("{name}: {value}\r\n"));
+        write!(request, "{name}: {value}\r\n").expect("writing into a String cannot fail");
     }
     request.push_str("\r\n");
     socket
@@ -522,8 +631,7 @@ async fn fetch(
     let split = response
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
-        .map(|pos| pos + 4)
-        .unwrap_or(response.len());
+        .map_or(response.len(), |pos| pos + 4);
     let head = String::from_utf8_lossy(&response[..split]).into_owned();
     let status = head
         .split_whitespace()
@@ -1465,4 +1573,81 @@ async fn a_hit_serves_the_stored_bytes_after_the_origin_changes() {
     assert_eq!(origin.hits("/static"), 1, "the hit must not dial");
     assert_eq!(metrics.snapshot().cache_stores, 1);
     assert_eq!(metrics.snapshot().cache_hits, 1);
+}
+
+/// EXT-H-01 (P0-10): one stored entry, every coding intact. A compressed miss
+/// must store the origin's bytes with the origin's framing, so a later hit is
+/// negotiated from scratch: gzip, brotli and identity all serve the same 2 KiB
+/// plaintext, and none of them can be a head from one representation glued to
+/// the body of another.
+#[cfg_attr(
+    miri,
+    ignore = "needs TCP sockets: miri does not support networking (rust-lang/miri#3449)"
+)]
+#[tokio::test]
+async fn a_compressed_miss_stores_identity_and_every_coding_serves_it_intact() {
+    let origin = start_origin().await;
+    let plaintext = "0123456789abcdef".repeat(128);
+    assert_eq!(plaintext.len(), 2048, "the origin body is 2 KiB");
+    origin.set_body("/poison", &plaintext, Some("\"p1\""));
+    let (proxy, metrics, _cache, _handle, _serve) =
+        start_compressing_proxy(origin.addr, cache_settings("web")).await;
+
+    // (1) gzip miss: the client gets a real gzip member of the origin body.
+    let (status, head, gz) = fetch(proxy, "GET", "/poison", &[("accept-encoding", "gzip")]).await;
+    assert_eq!(status, 200);
+    assert_eq!(header(&head, "x-cache").as_deref(), Some("MISS"));
+    assert_eq!(header(&head, "content-encoding").as_deref(), Some("gzip"));
+    assert_eq!(
+        header(&head, "vary").as_deref(),
+        Some("Accept-Encoding"),
+        "a compressed reply must say what it varies on"
+    );
+    assert_eq!(gunzip(&dechunk(&gz)), plaintext.as_bytes());
+    assert_eq!(origin.hits("/poison"), 1);
+
+    // (2) the same coding again: this is the corruption EXT-H-01 described —
+    // a hit labeled gzip must still be a gzip member of the same plaintext.
+    let (status, head, gz_hit) =
+        fetch(proxy, "GET", "/poison", &[("accept-encoding", "gzip")]).await;
+    assert_eq!(status, 200);
+    assert_eq!(header(&head, "x-cache").as_deref(), Some("HIT"));
+    assert_eq!(
+        head.matches("content-encoding:").count(),
+        1,
+        "exactly one coding per response: {head}"
+    );
+    assert_eq!(gunzip(&dechunk(&gz_hit)), plaintext.as_bytes());
+
+    // (3) brotli hit: same entry, coded on the fly, no second origin dial.
+    let (status, head, br) = fetch(proxy, "GET", "/poison", &[("accept-encoding", "br")]).await;
+    assert_eq!(status, 200);
+    assert_eq!(header(&head, "x-cache").as_deref(), Some("HIT"));
+    assert_eq!(header(&head, "content-encoding").as_deref(), Some("br"));
+    assert_eq!(unbrotli(&dechunk(&br)), plaintext.as_bytes());
+
+    // (4) identity hit: the stored representation is the origin's own bytes,
+    // with the origin's declared length and no coding.
+    let (status, head, body) = fetch(proxy, "GET", "/poison", &[]).await;
+    assert_eq!(status, 200);
+    assert_eq!(header(&head, "x-cache").as_deref(), Some("HIT"));
+    assert_eq!(header(&head, "content-encoding"), None);
+    assert_eq!(
+        header(&head, "content-length").as_deref(),
+        Some("2048"),
+        "the served length is the stored body's length"
+    );
+    assert_eq!(body, plaintext.as_bytes());
+
+    assert_eq!(
+        origin.hits("/poison"),
+        1,
+        "one entry serves every coding: the key must not include Accept-Encoding"
+    );
+    assert_eq!(metrics.snapshot().cache_stores, 1);
+    assert_eq!(
+        metrics.snapshot().cache_hits,
+        3,
+        "gzip, brotli and identity all hit the one entry"
+    );
 }

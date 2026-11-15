@@ -131,7 +131,7 @@ impl Session {
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Whether a new exchange may use this session.
@@ -247,7 +247,7 @@ impl Session {
         let handle = self
             .connection
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         if let Some(handle) = handle {
             handle.abort();
@@ -378,7 +378,7 @@ impl Hub {
     fn lock(&self) -> MutexGuard<'_, HashMap<SocketAddr, Arc<Session>>> {
         self.sessions
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Alive session for `addr`, or `None` when the caller must dial. A dead,
@@ -402,7 +402,7 @@ impl Hub {
         let mut gates = self
             .gates
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Arc::clone(gates.entry(addr).or_default())
     }
 
@@ -442,6 +442,11 @@ impl Hub {
 /// The handshake happens **before** returning: a backend that is not really
 /// h2 is a connect-phase failure (retried by B-H7, answered with `502`),
 /// never a connection that looks open and then fails per request.
+///
+///# Errors
+///
+///Returns the connect-phase error (dial, TLS or h2 preface), never a session
+///that looks open and then fails per request.
 pub async fn connect<IO>(
     hub: Arc<Hub>,
     io: IO,
@@ -503,7 +508,7 @@ where
     session
         .connection
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .replace(task.abort_handle());
     drop(task);
     spawn_idle_monitor(&session);
@@ -515,6 +520,11 @@ where
 ///
 /// `dialer` is only used when the peer refuses the stream with GOAWAY: the
 /// replay needs a fresh session, and dialing is the dataplane's job.
+///
+///# Errors
+///
+///Returns the I/O error when the session, or its fresh replacement after a
+///GOAWAY, cannot open a stream.
 pub fn open(
     session: &Arc<Session>,
     dialer: Arc<dyn SessionDialer>,
@@ -836,7 +846,9 @@ where
         BodyFraming::None => return Ok(()),
         BodyFraming::ContentLength(mut remaining) => {
             while remaining > 0 {
-                let want = (remaining as usize).min(DATA_CHUNK);
+                let want = usize::try_from(remaining)
+                    .expect("value fits in the destination type")
+                    .min(DATA_CHUNK);
                 let got = read_some(body, &mut buf[..want], idle).await?;
                 if got == 0 {
                     return Err(StreamError::Truncated);
@@ -865,7 +877,9 @@ where
             }
             let mut remaining = size;
             while remaining > 0 {
-                let want = (remaining as usize).min(DATA_CHUNK);
+                let want = usize::try_from(remaining)
+                    .expect("value fits in the destination type")
+                    .min(DATA_CHUNK);
                 let got = read_some(body, &mut buf[..want], idle).await?;
                 if got == 0 {
                     return Err(StreamError::Truncated);
@@ -985,56 +999,52 @@ async fn relay_response_body<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    match declared {
-        Some(len) => {
-            let mut total = 0u64;
-            loop {
-                let chunk = match next_data(&mut recv, idle).await? {
-                    Some(chunk) => chunk,
-                    None => break,
-                };
-                if total + chunk.len() as u64 > len {
-                    // More than declared: the h1 head already promised a
-                    // shorter body — never over-send into the pipe.
-                    return Err(StreamError::Framing);
-                }
-                write_all(out, &chunk, idle).await?;
-                total += chunk.len() as u64;
-            }
-            if total != len {
-                return Err(StreamError::Truncated);
-            }
-            Ok(())
-        }
-        None => {
-            loop {
-                let Some(chunk) = next_data(&mut recv, idle).await? else {
-                    break;
-                };
-                write_all(out, format!("{:x}\r\n", chunk.len()).as_bytes(), idle).await?;
-                write_all(out, &chunk, idle).await?;
-                write_all(out, b"\r\n", idle).await?;
-            }
-            let trailers = match tokio::time::timeout(idle, recv.trailers()).await {
-                Err(_) => return Err(StreamError::Io),
-                Ok(Err(_)) => return Err(StreamError::H2),
-                Ok(Ok(Some(trailers))) => trailers,
-                Ok(Ok(None)) => HeaderMap::new(),
+    if let Some(len) = declared {
+        let mut total = 0u64;
+        loop {
+            let Some(chunk) = next_data(&mut recv, idle).await? else {
+                break;
             };
-            write_all(out, b"0\r\n", idle).await?;
-            for (name, value) in &trailers {
-                if FORBIDDEN_TRAILERS.contains(&name.as_str()) {
-                    return Err(StreamError::Framing);
-                }
-                let mut line = Vec::with_capacity(name.as_str().len() + value.as_bytes().len() + 4);
-                line.extend_from_slice(name.as_str().as_bytes());
-                line.extend_from_slice(b": ");
-                line.extend_from_slice(value.as_bytes());
-                line.extend_from_slice(b"\r\n");
-                write_all(out, &line, idle).await?;
+            if total + chunk.len() as u64 > len {
+                // More than declared: the h1 head already promised a
+                // shorter body — never over-send into the pipe.
+                return Err(StreamError::Framing);
             }
-            write_all(out, b"\r\n", idle).await
+            write_all(out, &chunk, idle).await?;
+            total += chunk.len() as u64;
         }
+        if total != len {
+            return Err(StreamError::Truncated);
+        }
+        Ok(())
+    } else {
+        loop {
+            let Some(chunk) = next_data(&mut recv, idle).await? else {
+                break;
+            };
+            write_all(out, format!("{:x}\r\n", chunk.len()).as_bytes(), idle).await?;
+            write_all(out, &chunk, idle).await?;
+            write_all(out, b"\r\n", idle).await?;
+        }
+        let trailers = match tokio::time::timeout(idle, recv.trailers()).await {
+            Err(_) => return Err(StreamError::Io),
+            Ok(Err(_)) => return Err(StreamError::H2),
+            Ok(Ok(Some(trailers))) => trailers,
+            Ok(Ok(None)) => HeaderMap::new(),
+        };
+        write_all(out, b"0\r\n", idle).await?;
+        for (name, value) in &trailers {
+            if FORBIDDEN_TRAILERS.contains(&name.as_str()) {
+                return Err(StreamError::Framing);
+            }
+            let mut line = Vec::with_capacity(name.as_str().len() + value.as_bytes().len() + 4);
+            line.extend_from_slice(name.as_str().as_bytes());
+            line.extend_from_slice(b": ");
+            line.extend_from_slice(value.as_bytes());
+            line.extend_from_slice(b"\r\n");
+            write_all(out, &line, idle).await?;
+        }
+        write_all(out, b"\r\n", idle).await
     }
 }
 
@@ -1077,8 +1087,7 @@ async fn read_some<R: AsyncRead + Unpin>(
     idle: Duration,
 ) -> Result<usize, StreamError> {
     match tokio::time::timeout(idle, reader.read(buf)).await {
-        Err(_) => Err(StreamError::Io),
-        Ok(Err(_)) => Err(StreamError::Io),
+        Err(_) | Ok(Err(_)) => Err(StreamError::Io),
         Ok(Ok(got)) => Ok(got),
     }
 }
@@ -1089,8 +1098,7 @@ async fn write_all<W: AsyncWrite + Unpin>(
     idle: Duration,
 ) -> Result<(), StreamError> {
     match tokio::time::timeout(idle, out.write_all(buf)).await {
-        Err(_) => Err(StreamError::Io),
-        Ok(Err(_)) => Err(StreamError::Io),
+        Err(_) | Ok(Err(_)) => Err(StreamError::Io),
         Ok(Ok(())) => Ok(()),
     }
 }

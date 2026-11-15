@@ -63,6 +63,9 @@ impl Lines {
     }
 }
 
+/// Marker that separates a block-scalar key from its folded body.
+const BLOCK: char = '\u{1}';
+
 /// Parses a document stream.
 pub(super) fn documents(text: &str) -> Result<Vec<Value>, String> {
     let mut documents = Vec::new();
@@ -107,7 +110,6 @@ pub(super) fn documents(text: &str) -> Result<Vec<Value>, String> {
                 lines.next();
             }
             let key = content.trim_end_matches(['|', '>', '-', '+']);
-            const BLOCK: char = '\u{1}';
             current.push((indent, format!("{key}{BLOCK}{}", scalar.trim_end())));
             continue;
         }
@@ -192,7 +194,7 @@ fn parse_seq(lines: &mut Lines, indent: usize) -> Result<Value, String> {
             continue;
         }
         if let Some((key, rest)) = split_key(&item) {
-            items.push(Value::Map(item_entries(lines, key, rest, indent)?));
+            items.push(Value::Map(item_entries(lines, key, &rest, indent)?));
         } else {
             items.push(scalar_value(&item)?);
         }
@@ -205,7 +207,7 @@ fn parse_seq(lines: &mut Lines, indent: usize) -> Result<Value, String> {
 fn item_entries(
     lines: &mut Lines,
     key: String,
-    rest: String,
+    rest: &str,
     indent: usize,
 ) -> Result<Vec<(String, Value)>, String> {
     let mut entries = Vec::new();
@@ -217,7 +219,7 @@ fn item_entries(
             _ => entries.push((key, Value::Null)),
         }
     } else {
-        entries.push((key, scalar_value(&rest)?));
+        entries.push((key, scalar_value(rest)?));
     }
     // Sibling keys of the item live at any deeper indentation, not only at the
     // one the first nested block used (`load_balancing_weight` after a deeper

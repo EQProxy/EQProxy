@@ -2,7 +2,7 @@
 //!
 //! The emitter writes only the fields the schema does not default to, so the
 //! file stays readable; the converter then parses and validates the result
-//! with EQProxy's own parser before handing it over (`import::convert`).
+//! with `EQProxy`'s own parser before handing it over (`import::convert`).
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -10,6 +10,7 @@ use std::fmt::Write as _;
 use super::{Conv, Counts, Severity, Source, toml_key, toml_string};
 
 /// Serialises the accumulated IR as `eqproxy.toml`.
+#[allow(clippy::too_many_lines)]
 pub fn emit_toml(conv: &Conv) -> String {
     let mut out = String::new();
     out.push_str("# Generado por `eqproxy config import`.\n");
@@ -110,7 +111,9 @@ pub fn emit_toml(conv: &Conv) -> String {
         let _ = writeln!(out, "\n[listener.{}]", toml_key(name));
         let _ = writeln!(out, "listen = {}", toml_string(&listener.listen));
         let _ = writeln!(out, "mode = {}", toml_string(&listener.mode));
-        let _ = writeln!(out, "backend = {}", toml_string(&listener.backend));
+        if let Some(backend) = &listener.backend {
+            let _ = writeln!(out, "backend = {}", toml_string(backend));
+        }
         if listener.maxconn != 1024 {
             let _ = writeln!(out, "maxconn = {}", listener.maxconn);
         }
@@ -134,6 +137,14 @@ pub fn emit_toml(conv: &Conv) -> String {
             out.push_str("quic = true\n");
         }
 
+        if let Some((status, location)) = &listener.redirect {
+            let _ = writeln!(out, "\n[listener.{}.redirect]", toml_key(name));
+            if let Some(status) = status {
+                let _ = writeln!(out, "status = {status}");
+            }
+            let _ = writeln!(out, "location = {}", toml_string(location));
+        }
+
         if let Some(tls) = &listener.tls {
             let _ = writeln!(out, "\n[listener.{}.tls]", toml_key(name));
             let _ = writeln!(out, "cert = {}", toml_string(&tls.cert));
@@ -149,6 +160,12 @@ pub fn emit_toml(conv: &Conv) -> String {
             }
             if let Some(ca) = &tls.client_ca {
                 let _ = writeln!(out, "client_ca = {}", toml_string(ca));
+            }
+            for cert in &tls.certs {
+                let _ = writeln!(out, "\n[[listener.{}.tls.certs]]", toml_key(name));
+                let _ = writeln!(out, "cert = {}", toml_string(&cert.cert));
+                let _ = writeln!(out, "key = {}", toml_string(&cert.key));
+                let _ = writeln!(out, "names = {}", string_list(&cert.names));
             }
         }
         if listener.compression_gzip {
@@ -212,6 +229,9 @@ pub fn emit_toml(conv: &Conv) -> String {
             }
             if let Some(host) = &rule.host {
                 let _ = writeln!(out, "host = {}", toml_string(host));
+            }
+            if let Some(prefix) = &rule.host_prefix {
+                let _ = writeln!(out, "host_prefix = {}", toml_string(prefix));
             }
             if let Some(regex) = &rule.host_regex {
                 let _ = writeln!(out, "host_regex = {}", toml_string(regex));
@@ -327,6 +347,7 @@ fn header_ops(ops: &[super::HeaderOp]) -> String {
 
 /// Renders the Markdown report. `input`/`output` are placeholders that
 /// [`super::report_with_paths`] replaces with the real names.
+#[allow(clippy::too_many_lines)]
 pub fn render(source: Source, conv: &Conv, counts: Counts) -> String {
     let mut out = String::new();
     let _ = writeln!(
@@ -334,8 +355,8 @@ pub fn render(source: Source, conv: &Conv, counts: Counts) -> String {
         "# Informe de conversión {} → EQProxy\n",
         source_label(source)
     );
-    let _ = writeln!(out, "- Entrada: `@input@`");
-    let _ = writeln!(out, "- Salida: `@output@`");
+    let _ = writeln!(out, "- Entrada: @input@");
+    let _ = writeln!(out, "- Salida: @output@");
     let _ = writeln!(
         out,
         "- Listeners generados: **{}** · Backends generados: **{}**",
@@ -366,12 +387,17 @@ pub fn render(source: Source, conv: &Conv, counts: Counts) -> String {
     let _ = writeln!(out, "\n## Conversión generada\n");
     out.push_str("| listener | escucha | modo | backend | TLS |\n|---|---|---|---|---|\n");
     for (name, listener) in &conv.listeners {
+        let fallback = match (&listener.backend, &listener.redirect) {
+            (Some(backend), None) => format!("`{backend}`"),
+            (None, Some((Some(status), _))) => format!("redirect {status}"),
+            (None, Some((None, _))) => "redirect 301".to_owned(),
+            _ => "—".to_owned(),
+        };
         let _ = writeln!(
             out,
-            "| `{name}` | {} | {} | `{}` | {} |",
+            "| `{name}` | {} | {} | {fallback} | {} |",
             listener.listen,
             listener.mode,
-            listener.backend,
             if listener.tls.is_some() { "sí" } else { "no" }
         );
     }
@@ -515,12 +541,46 @@ pub fn render(source: Source, conv: &Conv, counts: Counts) -> String {
     out
 }
 
+/// The degraded count declared in the report's summary header.
+///
+/// Only the text before the first `##` section is read: the detail heading
+/// `### … (0)` is a separate number and must never become the signal.
+fn declared_degraded_count(report: &str) -> Option<usize> {
+    let line = report
+        .lines()
+        .take_while(|line| !line.starts_with("## "))
+        .find(|line| line.starts_with("- Directivas leídas:"))?;
+    let (_, tail) = line.split_once("con degradación **")?;
+    let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
+/// The summary's degraded count must equal the names the caller will print.
+///
+/// This is the only runtime consistency check: it stays in the summary, never
+/// in the detail section, and runs before the caller can write any file. The
+/// names remain the source of truth; the report supplies only the count it
+/// promises to have listed.
+pub(super) fn check_degraded_names(report: &str, names: &[String]) -> Result<(), String> {
+    let declared = declared_degraded_count(report)
+        .ok_or_else(|| "internal: the summary does not declare its degraded count".to_owned())?;
+    if declared != names.len() {
+        return Err(format!(
+            "internal: the summary declares **{declared}** degraded directive(s) but {} name(s) were extracted",
+            names.len()
+        ));
+    }
+    if names.iter().any(|name| name.trim().is_empty()) {
+        return Err("internal: a degraded directive was extracted without a name".to_owned());
+    }
+    Ok(())
+}
+
 /// The degraded directives, one line each, in classification order.
 ///
-/// `config import` summarizes these names directly instead of parsing the
-/// Markdown it just wrote: both the summary and the report read the same
-/// notes, so a security loss can neither be summarized as zero nor depend on
-/// the report's layout.
+/// This is the machine-readable signal `config import` summarizes; it comes
+/// from the same notes the report renders, so it never depends on parsing the
+/// report's Markdown or on a particular report section.
 pub(super) fn degraded_directives(conv: &Conv) -> Vec<String> {
     conv.notes
         .iter()
@@ -547,12 +607,54 @@ fn source_label(source: Source) -> &'static str {
     }
 }
 
-/// Replaces the path placeholders of a report with the real file names.
+/// Renders a value as a `CommonMark` inline code span.
+///
+/// A code span cannot contain a backtick run as long as its delimiter, so the
+/// delimiter is one backtick longer than the longest run in the value. CR/LF
+/// become their visible `\r`/`\n` escapes: a path cannot create a new heading
+/// or list item even though the value is interpolated into Markdown. Normal
+/// paths keep the previous single-backtick rendering.
+fn markdown_code_span(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for c in value.chars() {
+        match c {
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            _ => escaped.push(c),
+        }
+    }
+
+    let mut longest_run = 0;
+    let mut run = 0;
+    for c in escaped.chars() {
+        if c == '`' {
+            run += 1;
+            longest_run = longest_run.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    let delimiter = "`".repeat(longest_run + 1);
+    let needs_padding = escaped.starts_with('`')
+        || escaped.ends_with('`')
+        || escaped.starts_with(' ')
+        || escaped.ends_with(' ');
+    if needs_padding {
+        format!("{delimiter} {escaped} {delimiter}")
+    } else {
+        format!("{delimiter}{escaped}{delimiter}")
+    }
+}
+
+/// Replaces the path placeholders of a report with safe Markdown code spans.
 #[must_use]
 pub fn report_with_paths(report: &str, input: &str, output: &str) -> String {
+    let input = markdown_code_span(input);
+    let output = markdown_code_span(output);
     report
-        .replacen("@input@", input, 1)
-        .replacen("@output@", output, 1)
+        .replacen("@input@", &input, 1)
+        .replacen("@output@", &output, 1)
 }
 
 #[cfg(test)]
@@ -562,7 +664,7 @@ mod tests {
 
     #[test]
     fn paths_are_substituted_once_and_untouched_when_absent() {
-        let report = "- Entrada: `@input@`\n- Salida: `@output@`\n";
+        let report = "- Entrada: @input@\n- Salida: @output@\n";
         let rendered = report_with_paths(report, "a/nginx.conf", "out/eqproxy.toml");
         assert_eq!(
             rendered,
@@ -571,6 +673,34 @@ mod tests {
         assert_eq!(
             report_with_paths("sin marcadores", "x", "y"),
             "sin marcadores"
+        );
+    }
+
+    #[test]
+    fn markdown_metacharacters_stay_inside_one_code_span() {
+        // Backticks would close the old code span and the CR/LF would let the
+        // rest of the path look like a section heading. Two backticks force a
+        // three-backtick delimiter; the newline must remain one line and one
+        // code span.
+        let rendered = report_with_paths(
+            "- Entrada: @input@\n- Salida: @output@\n",
+            "in\n## SECCIÓN FALSA ``\nname.conf",
+            "out\n## SECCIÓN FALSA ``\nname.toml",
+        );
+        assert_eq!(rendered.lines().count(), 2, "{rendered}");
+        assert!(
+            !rendered
+                .lines()
+                .any(|line| line.starts_with("## SECCIÓN FALSA")),
+            "the path must not create a Markdown heading:\n{rendered}"
+        );
+        assert_eq!(
+            rendered.lines().next(),
+            Some(r"- Entrada: ```in\n## SECCIÓN FALSA ``\nname.conf```")
+        );
+        assert_eq!(
+            rendered.lines().nth(1),
+            Some(r"- Salida: ```out\n## SECCIÓN FALSA ``\nname.toml```")
         );
     }
 
@@ -593,13 +723,33 @@ mod tests {
             "se negocia con otra política",
         );
         conv.review(1, "gzip on", "http", "por listener");
+        let names = degraded_directives(&conv);
         assert_eq!(
-            degraded_directives(&conv),
+            names,
             vec![
                 "proxy_ssl_certificate /etc/client.pem".to_owned(),
                 "proxy_ssl_protocols TLSv1.3".to_owned()
             ],
             "the summary names the degraded directives, not the reviewed ones"
+        );
+        let report = render(Source::Nginx, &conv, conv.classify());
+        assert!(
+            report.contains("con degradación **2**"),
+            "the rendered summary must count both losses:\n{report}"
+        );
+        assert!(
+            report.contains("### ⚠️ convertido con degradación (revisar) (2)"),
+            "the detail header must count the same losses, not a section-local number:\n{report}"
+        );
+        assert!(
+            check_degraded_names(&report, &names).is_ok(),
+            "the summary count and the extracted names must agree:\n{report}"
+        );
+        let error = check_degraded_names(&report, &names[..1])
+            .expect_err("one name for two summary losses must fail");
+        assert!(
+            error.contains("summary declares **2**") && error.contains("1 name(s)"),
+            "the guard must name the summary count and the extraction: {error}"
         );
 
         let mut clean = Conv::new();
@@ -607,6 +757,19 @@ mod tests {
         assert!(
             degraded_directives(&clean).is_empty(),
             "a clean conversion has no degraded directive"
+        );
+        let clean_report = render(Source::Nginx, &clean, clean.classify());
+        assert!(
+            clean_report.contains("con degradación **0**"),
+            "a clean report declares zero in its summary:\n{clean_report}"
+        );
+        assert!(
+            clean_report.contains("### ⚠️ convertido con degradación (revisar) (0)"),
+            "the detail header at (0) must be harmless:\n{clean_report}"
+        );
+        assert!(
+            check_degraded_names(&clean_report, &[]).is_ok(),
+            "a clean report's detail (0) must not be read as a loss:\n{clean_report}"
         );
     }
 

@@ -1,6 +1,6 @@
 //! HTTP response cache (B-N7/H1) — ADR-0034.
 //!
-//! The honest-cache lesson from the HAProxy critique (H1): a cache that
+//! The honest-cache lesson from the `HAProxy` critique (H1): a cache that
 //! stores session responses, keys on cookies or hides its content blocks
 //! migrations instead of enabling them. Every guarantee below is a test:
 //!
@@ -345,6 +345,11 @@ impl Cache {
     /// [`crate::plugin::PluginHost::load`]: a bad directory rejects the
     /// snapshot instead of failing per request). Expired or corrupt files
     /// are skipped and counted.
+    ///
+    ///# Errors
+    ///
+    ///Returns the I/O error when the directory cannot be listed; a corrupt
+    ///entry is skipped and counted, never fatal.
     pub fn load(settings: CacheSettings, metrics: Arc<Metrics>) -> std::io::Result<Arc<Self>> {
         if let Some(dir) = &settings.disk_dir {
             std::fs::create_dir_all(dir)?;
@@ -372,8 +377,9 @@ impl Cache {
     }
 
     /// RAM budget for one stored body; larger bodies stream uncached.
-    pub(crate) fn max_entry_bytes(&self) -> usize {
-        self.settings.max_entry_bytes
+    /// The listener's cache configuration, for [`store_representation`].
+    pub(crate) fn settings(&self) -> &CacheSettings {
+        &self.settings
     }
 
     /// Fresh lifetime when the origin gives no tighter bound.
@@ -792,17 +798,13 @@ impl Cache {
         );
         // Same variant stored twice (owner + direct fallback racing): keep
         // the newest.
-        let replaced = inner
-            .map
-            .get(key)
-            .map(|variants| {
-                variants
-                    .iter()
-                    .filter(|existing| existing.vary_values == entry.vary_values)
-                    .map(|existing| existing.weight())
-                    .sum()
-            })
-            .unwrap_or(0);
+        let replaced = inner.map.get(key).map_or(0, |variants| {
+            variants
+                .iter()
+                .filter(|existing| existing.vary_values == entry.vary_values)
+                .map(|existing| existing.weight())
+                .sum()
+        });
         inner.bytes = inner.bytes.saturating_sub(replaced) + weight;
         let variants = inner.map.entry(key.clone()).or_default();
         variants.retain(|existing| existing.vary_values != entry.vary_values);
@@ -890,12 +892,9 @@ impl Cache {
                     continue;
                 }
             };
-            let (key, entry) = match decode_entry(&bytes, self.settings.max_entry_bytes) {
-                Some(pair) => pair,
-                None => {
-                    skip();
-                    continue;
-                }
+            let Some((key, entry)) = decode_entry(&bytes, self.settings.max_entry_bytes) else {
+                skip();
+                continue;
             };
             if variant_fingerprint(&key, &entry.vary_values) != file_stem_hash(&path) {
                 skip();
@@ -952,16 +951,16 @@ fn disk_file_for(settings: &CacheSettings, key: &CacheKey, vary_values: &[String
 }
 
 fn variant_fingerprint(key: &CacheKey, vary_values: &[String]) -> u64 {
-    let mut hash: u64 = 0xcbf29ce484222325;
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in key.encode() {
         hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x100000001b3);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
     }
     hash ^= 0xff;
     for value in vary_values {
         for byte in value.bytes() {
             hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x100000001b3);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
         }
         hash ^= 0x1f;
     }
@@ -1017,8 +1016,7 @@ fn evict_locked(
                 let used = entry
                     .last_used
                     .lock()
-                    .map(|used| *used)
-                    .unwrap_or_else(|poisoned| *poisoned.into_inner());
+                    .map_or_else(|poisoned| *poisoned.into_inner(), |used| *used);
                 let older = match oldest {
                     Some((_, _, at)) => used < at,
                     None => true,
@@ -1102,12 +1100,11 @@ fn apply_cache_control(value: &str, policy: &mut RequestCachePolicy) -> bool {
                 Some(value) => MaxStale::Seconds(delta_seconds(Some(value)).unwrap_or(0)),
             };
             policy.max_stale = Some(match policy.max_stale {
-                None => next,
                 Some(MaxStale::Seconds(current)) => MaxStale::Seconds(match next {
                     MaxStale::Any => current,
                     MaxStale::Seconds(next) => current.min(next),
                 }),
-                Some(MaxStale::Any) => next,
+                None | Some(MaxStale::Any) => next,
             });
         }
     }
@@ -1141,6 +1138,10 @@ fn request_cache_policy(headers: &[(String, String)]) -> (RequestCachePolicy, bo
 /// routing and the plugin, before any backend byte: the key uses the
 /// forwarded head (rules, rewrites and plugin mutations applied), so two
 /// requests that reach the backend differently never share an entry.
+///
+///# Errors
+///
+///Returns `Bypass` with the reason when the request must not use the cache.
 pub fn decide(
     method: &str,
     framing_none: bool,
@@ -1420,6 +1421,86 @@ pub fn end_to_end(headers: &[(String, String)]) -> Vec<(String, String)> {
         .collect()
 }
 
+/// What one origin response stores, decided in a single place (P0-10 /
+/// EXT-H-01).
+///
+/// The four things that can disagree and corrupt a `HIT` are fixed here and
+/// nowhere else:
+///
+/// * **`Content-Encoding`** — the entry holds the bytes the origin sent. The
+///   coding this proxy negotiated for one client is re-derived on every serve
+///   and never reaches the store; only an origin that pre-coded its own body
+///   keeps its `Content-Encoding`, because that *is* the representation.
+/// * **`Content-Length`** — never stored: the served length is the stored
+///   body's ([`render_head`]), so no head can claim another body's size.
+/// * **`Vary`** — the origin's list and only that list. The `Vary:
+///   Accept-Encoding` the proxy adds when it codes a reply would otherwise
+///   enter the key and fetch one URL once per coding.
+/// * **The key** — the base key plus the origin `Vary` values of *this*
+///   request, so `Accept-Encoding` only splits the cache when the origin
+///   itself varies on it.
+#[derive(Debug)]
+pub struct StoredRepresentation {
+    /// Base key plus variant selection for this request.
+    pub key: CacheKey,
+    /// `Vary` of the stored entry (the origin's).
+    pub vary: Vec<String>,
+    /// This request's values for `vary`, in order.
+    pub vary_values: Vec<String>,
+    /// End-to-end headers of the origin response (no framing, no coding the
+    /// proxy added, no cache markers).
+    pub headers: Vec<(String, String)>,
+    pub status: u16,
+    pub reason: String,
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+    pub ttl: Duration,
+    /// Body length the store will hold (the origin's, identity).
+    pub len: u64,
+}
+
+/// Decides the representation an entry stores. `head` must be the **origin's**
+/// response head, before any client-facing rewrite (rule headers, product
+/// banner, compression, cache markers): storing from the rewritten head is
+/// what glued one representation's head to another's body.
+#[must_use]
+pub fn store_representation(
+    settings: &CacheSettings,
+    key: &CacheKey,
+    request_headers: &[(String, String)],
+    method: &str,
+    declared_len: Option<u64>,
+    head: &[u8],
+) -> Option<StoredRepresentation> {
+    // `HEAD` populates nothing (served from `GET` entries); only a declared
+    // length can be assembled and stored.
+    if method != "GET" {
+        return None;
+    }
+    let len = declared_len?;
+    if len > settings.max_entry_bytes as u64 {
+        return None;
+    }
+    let facts = parse_origin_head(head)?;
+    let vary = storable_vary(&facts)?;
+    let ttl = effective_ttl(settings.default_ttl, &facts.cache_control);
+    if ttl.is_zero() && facts.etag.is_none() && facts.last_modified.is_none() {
+        return None;
+    }
+    Some(StoredRepresentation {
+        key: key.clone(),
+        vary_values: vary_values(request_headers, &vary),
+        vary,
+        headers: end_to_end(&facts.headers),
+        status: facts.status,
+        reason: facts.reason,
+        etag: facts.etag,
+        last_modified: facts.last_modified,
+        ttl,
+        len,
+    })
+}
+
 /// Renders a stored entry as an origin-style head (status line + headers +
 /// `Content-Length`), ready for the rule/compression tail. No trailing
 /// terminator, like every head the engine writes: the caller appends
@@ -1472,8 +1553,7 @@ fn sanitize_reason(reason: &str) -> String {
 pub(crate) fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 impl CacheKey {
@@ -1501,24 +1581,36 @@ fn encode_entry(key: &CacheKey, entry: &StoredEntry) -> Vec<u8> {
     let mut out = Vec::with_capacity(entry.body.len() + 512);
     out.extend_from_slice(&DISK_MAGIC);
     let key_bytes = key.encode();
-    push_u32(&mut out, key_bytes.len() as u32);
+    push_u32(
+        &mut out,
+        u32::try_from(key_bytes.len()).expect("the value fits in the destination type"),
+    );
     out.extend_from_slice(&key_bytes);
     push_u16(&mut out, entry.status);
     push_str(&mut out, &entry.reason);
     push_u64(&mut out, entry.stored_at_unix);
     push_u64(&mut out, entry.ttl.as_secs());
-    push_u32(&mut out, entry.headers.len() as u32);
+    push_u32(
+        &mut out,
+        u32::try_from(entry.headers.len()).expect("the value fits in the destination type"),
+    );
     for (name, value) in &entry.headers {
         push_str(&mut out, name);
         push_str(&mut out, value);
     }
     push_opt_str(&mut out, entry.etag.as_deref());
     push_opt_str(&mut out, entry.last_modified.as_deref());
-    push_u32(&mut out, entry.vary.len() as u32);
+    push_u32(
+        &mut out,
+        u32::try_from(entry.vary.len()).expect("the value fits in the destination type"),
+    );
     for name in &entry.vary {
         push_str(&mut out, name);
     }
-    push_u32(&mut out, entry.vary_values.len() as u32);
+    push_u32(
+        &mut out,
+        u32::try_from(entry.vary_values.len()).expect("the value fits in the destination type"),
+    );
     for value in &entry.vary_values {
         push_str(&mut out, value);
     }
@@ -1563,7 +1655,7 @@ fn decode_entry(bytes: &[u8], max_body: usize) -> Option<(CacheKey, StoredParts)
     let reason = sanitize_reason(&read_str(bytes, &mut pos)?);
     let stored_at_unix = read_u64(bytes, &mut pos)?;
     let ttl = Duration::from_secs(read_u64(bytes, &mut pos)?);
-    if ttl.is_zero() || ttl > Duration::from_secs(86_400) {
+    if ttl.is_zero() || ttl > Duration::from_hours(24) {
         return None;
     }
     let header_count = read_u32(bytes, &mut pos)? as usize;
@@ -1593,7 +1685,8 @@ fn decode_entry(bytes: &[u8], max_body: usize) -> Option<(CacheKey, StoredParts)
         vary_values.push(read_str(bytes, &mut pos)?);
     }
     let flags = *read_bytes(bytes, &mut pos, 1)?.first()?;
-    let body_len = read_u64(bytes, &mut pos)? as usize;
+    let body_len = usize::try_from(read_u64(bytes, &mut pos)?)
+        .expect("the value fits in the destination type");
     if body_len > max_body {
         return None;
     }
@@ -1660,6 +1753,9 @@ fn read_str(bytes: &[u8], pos: &mut usize) -> Option<String> {
         .into()
 }
 
+// `None` = field absent and `Some(None)` = stored null: the disk format keeps
+// them apart.
+#[allow(clippy::option_option)]
 fn read_opt_str(bytes: &[u8], pos: &mut usize) -> Option<Option<String>> {
     let len = read_u32(bytes, pos)?;
     if len == DISK_NONE {
@@ -1686,7 +1782,10 @@ fn push_u64(out: &mut Vec<u8>, value: u64) {
 }
 
 fn push_str(out: &mut Vec<u8>, value: &str) {
-    push_u32(out, value.len() as u32);
+    push_u32(
+        out,
+        u32::try_from(value.len()).expect("the value fits in the destination type"),
+    );
     out.extend_from_slice(value.as_bytes());
 }
 
@@ -1802,9 +1901,8 @@ mod tests {
         .expect("builds");
         let key = key();
         assert!(matches!(cache.lookup(&key, &[], false), Lookup::Fetch));
-        let shared = match cache.lookup(&key, &[], false) {
-            Lookup::Wait(shared) => shared,
-            _ => panic!("the second lookup must wait on the in-flight fetch"),
+        let Lookup::Wait(shared) = cache.lookup(&key, &[], false) else {
+            panic!("the second lookup must wait on the in-flight fetch")
         };
         cache.complete(key, FetchOutcome::Stored(parts(200))).await;
         assert_eq!(
@@ -1826,9 +1924,8 @@ mod tests {
         .expect("builds");
         let key = key();
         assert!(matches!(cache.lookup(&key, &[], false), Lookup::Fetch));
-        let shared = match cache.lookup(&key, &[], false) {
-            Lookup::Wait(shared) => shared,
-            _ => panic!("the second lookup must wait on the in-flight fetch"),
+        let Lookup::Wait(shared) = cache.lookup(&key, &[], false) else {
+            panic!("the second lookup must wait on the in-flight fetch")
         };
         let wait = cache.wait(&shared);
         let complete = async {
@@ -1851,9 +1948,8 @@ mod tests {
         .expect("builds");
         let key = key();
         assert!(matches!(cache.lookup(&key, &[], false), Lookup::Fetch));
-        let shared = match cache.lookup(&key, &[], false) {
-            Lookup::Wait(shared) => shared,
-            _ => panic!("the second lookup must wait on the in-flight fetch"),
+        let Lookup::Wait(shared) = cache.lookup(&key, &[], false) else {
+            panic!("the second lookup must wait on the in-flight fetch")
         };
         assert_eq!(cache.wait(&shared).await, None);
     }
@@ -2265,5 +2361,78 @@ mod tests {
             _ => panic!("disk entry must hit after reload"),
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn store_representation_decides_coding_length_vary_and_key_together() {
+        // P0-10 / EXT-H-01: the four things a `HIT` relies on are fixed in
+        // one place, from the origin's own head.
+        let origin_head = b"HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 2048\r\ncache-control: max-age=60\r\n";
+        let gzip_client = vec![("accept-encoding".to_owned(), "gzip".to_owned())];
+        let stored = store_representation(
+            &settings(),
+            &key(),
+            &gzip_client,
+            "GET",
+            Some(2048),
+            origin_head,
+        )
+        .expect("a cacheable origin response stores");
+        assert_eq!(stored.len, 2048, "the stored body is the origin's");
+        assert!(stored.vary.is_empty(), "the origin did not vary");
+        assert_eq!(stored.vary_values, [] as [std::string::String; 0]);
+        assert!(
+            stored
+                .headers
+                .iter()
+                .all(|(name, _)| name != "content-encoding"),
+            "a coding this proxy might negotiate is never part of the entry"
+        );
+        assert!(
+            stored
+                .headers
+                .iter()
+                .all(|(name, _)| name != "content-length"),
+            "the length is rendered from the stored body, never carried"
+        );
+
+        // An origin that pre-coded its own body keeps that coding: it is the
+        // representation, not a per-client negotiation.
+        let pre_coded = b"HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 900\r\ncache-control: max-age=60\r\ncontent-encoding: gzip\r\nvary: accept-encoding\r\n";
+        let stored = store_representation(
+            &settings(),
+            &key(),
+            &gzip_client,
+            "GET",
+            Some(900),
+            pre_coded,
+        )
+        .expect("a pre-coded origin response stores");
+        assert_eq!(stored.vary, vec!["accept-encoding".to_owned()]);
+        assert_eq!(stored.vary_values, vec!["gzip".to_owned()]);
+        assert_eq!(
+            stored
+                .headers
+                .iter()
+                .find(|(name, _)| name == "content-encoding")
+                .map(|(_, value)| value.as_str()),
+            Some("gzip"),
+            "the origin's own coding is part of the representation"
+        );
+
+        // Not storable: no declared length, a method that populates nothing,
+        // and a body over the entry bound.
+        assert!(store_representation(&settings(), &key(), &[], "GET", None, origin_head).is_none());
+        assert!(
+            store_representation(&settings(), &key(), &[], "HEAD", Some(2048), origin_head)
+                .is_none()
+        );
+        let small = CacheSettings {
+            max_entry_bytes: 1024,
+            ..settings()
+        };
+        assert!(
+            store_representation(&small, &key(), &[], "GET", Some(2048), origin_head).is_none()
+        );
     }
 }

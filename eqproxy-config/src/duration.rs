@@ -25,6 +25,11 @@ impl fmt::Display for DurationParseError {
 impl std::error::Error for DurationParseError {}
 
 /// Parses durations like `"<integer><ms|s|m|h>"`.
+///
+///# Errors
+///
+///Returns `DurationParseError` naming the accepted forms when the value is
+///empty, has an unknown unit or overflows the millisecond range.
 pub fn parse(input: &str) -> Result<Duration, DurationParseError> {
     let trimmed = input.trim();
     let err = || DurationParseError {
@@ -54,12 +59,22 @@ pub fn parse(input: &str) -> Result<Duration, DurationParseError> {
 }
 
 /// Deserializes a `String` field into [`Duration`] with explainable errors.
+///
+///# Errors
+///
+///Returns the deserializer's error when the value is not a duration that
+///[`parse`] accepts.
 pub fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<Duration, D::Error> {
     let raw = String::deserialize(de)?;
     parse(&raw).map_err(|e| serde::de::Error::custom(format!("{e}; example: {EXAMPLE}")))
 }
 
 /// Serializes a duration as milliseconds (for a future `config export`).
+///
+///# Errors
+///
+///Returns the serializer's error when the duration cannot be written as
+///`"<n>ms"`.
 pub fn serialize<S: Serializer>(value: &Duration, ser: S) -> Result<S::Ok, S::Error> {
     ser.serialize_str(&format!("{}ms", value.as_millis()))
 }

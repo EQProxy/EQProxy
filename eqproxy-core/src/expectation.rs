@@ -20,6 +20,12 @@ pub struct StatusExpectation {
 impl StatusExpectation {
     /// Parses the grammar above. The error names the offending token and
     /// the rule, so callers can report `field + rule` (never a config dump).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` naming the token and the rule when the input is empty,
+    /// has an empty element between commas, carries a non-numeric or
+    /// out-of-range code, or a range whose start is past its end.
     pub fn parse(input: &str) -> Result<Self, String> {
         let mut ranges = Vec::new();
         let trimmed = input.trim();
@@ -34,12 +40,11 @@ impl StatusExpectation {
                         .to_owned(),
                 );
             }
-            let (start, end) = match token.split_once('-') {
-                Some((a, b)) => (parse_code(a)?, parse_code(b)?),
-                None => {
-                    let code = parse_code(token)?;
-                    (code, code)
-                }
+            let (start, end) = if let Some((a, b)) = token.split_once('-') {
+                (parse_code(a)?, parse_code(b)?)
+            } else {
+                let code = parse_code(token)?;
+                (code, code)
             };
             if start > end {
                 return Err(format!(
@@ -89,6 +94,11 @@ pub struct IpBlock {
 
 impl IpBlock {
     /// Parses `1.2.3.4`, `1.2.3.0/24`, `::1` or `fd00::/8`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with the rule when the address is not an IP, the prefix
+    /// is not a number, or it exceeds the family's bit width.
     pub fn parse(input: &str) -> Result<Self, String> {
         let (addr_part, prefix_part) = match input.split_once('/') {
             Some((a, p)) => (a, Some(p)),
@@ -164,6 +174,11 @@ pub struct IpAllowlist {
 
 impl IpAllowlist {
     /// Parses comma-free entries (one per list element).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when the list is empty or any entry is not a valid
+    /// address or CIDR block (see [`IpBlock::parse`]).
     pub fn parse(entries: &[String]) -> Result<Self, String> {
         if entries.is_empty() {
             return Err(
@@ -202,6 +217,10 @@ pub struct RegexMatcher {
 
 impl RegexMatcher {
     /// Compiles the pattern; the error names the rule.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` naming the rule when `regex` rejects the pattern.
     pub fn parse(pattern: &str) -> Result<Self, String> {
         regex::Regex::new(pattern)
             .map(|regex| Self { regex })

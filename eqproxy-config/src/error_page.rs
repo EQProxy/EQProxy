@@ -1,7 +1,7 @@
 //! Parsing of a `format = "raw"` error page (ADR-0045).
 //!
-//! HAProxy's `errorfile <code> <file>` does not store a payload: the file is
-//! a **complete HTTP response** (status line, headers, body). EQProxy keeps
+//! `HAProxy`'s `errorfile <code> <file>` does not store a payload: the file is
+//! a **complete HTTP response** (status line, headers, body). `EQProxy` keeps
 //! that spelling working by parsing the file at load time and serving its
 //! status, content type and body, so an operator can move an `errorfile`
 //! without rewriting it.

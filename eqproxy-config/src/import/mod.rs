@@ -1,6 +1,6 @@
 //! Reference-proxy configuration import (Phase 8, CE6/Q9/CE8).
 //!
-//! Converts an nginx, HAProxy, ingress-nginx or Envoy configuration into the
+//! Converts an nginx, `HAProxy`, ingress-nginx or Envoy configuration into the
 //! canonical `eqproxy.toml` and a Markdown report that classifies **every**
 //! directive of the source as one of three outcomes:
 //!
@@ -8,7 +8,7 @@
 //!   written to the output;
 //! - **revisar** — an approximation, a cosmetic difference or a global
 //!   directive: the operator must read it, nothing was invented;
-//! - **rechazado** — EQProxy has no equivalent today (or the source value is
+//! - **rechazado** — `EQProxy` has no equivalent today (or the source value is
 //!   untranslatable); the directive is named with what is lost.
 //!
 //! Two properties are enforced by construction rather than promised:
@@ -17,7 +17,7 @@
 //!    classification; [`Conv::touch`] fails the import for a directive that
 //!    produced none, so a forgotten `continue` is a hard error, not a hole in
 //!    the report. The report prints the counts it walked and it classified.
-//! 2. **The output is a valid EQProxy configuration.** The generated TOML is
+//! 2. **The output is a valid `EQProxy` configuration.** The generated TOML is
 //!    parsed and semantically checked with this crate's own parser and
 //!    validator ([`crate::parse_str`] + [`crate::validate::check`]) before it
 //!    is returned: the importer can never hand back a file the product would
@@ -31,15 +31,15 @@ mod haproxy;
 mod ingress;
 mod nginx;
 mod report;
+#[cfg(test)]
+mod security;
 mod yaml;
 
-pub use report::report_with_paths;
+pub use report::{emit_toml, report_with_paths};
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
-
-pub use report::emit_toml;
 
 /// Source configuration dialect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +48,18 @@ pub enum Source {
     Haproxy,
     Ingress,
     Envoy,
+}
+
+/// Options for [`convert_with_options`].
+///
+/// `include_root` enables nginx `include` expansion. Relative include paths
+/// (and glob patterns) are resolved against it; absolute paths are read as
+/// written. Without it, `include` remains a manual review item, exactly as in
+/// [`convert`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ImportOptions<'a> {
+    /// Base directory for relative nginx `include` paths.
+    pub include_root: Option<&'a Path>,
 }
 
 impl Source {
@@ -125,7 +137,7 @@ pub enum Severity {
     Info,
     /// Approximation or cosmetic difference: read it before switching.
     Review,
-    /// EQProxy has no equivalent for this directive today.
+    /// `EQProxy` has no equivalent for this directive today.
     Gap,
     /// The source value cannot be translated as written.
     Rejected,
@@ -196,7 +208,7 @@ pub struct Counts {
     /// less security than the source). This is the report's «revisar» column;
     /// the header prints the `Degraded` subtotal apart from the rest.
     pub review: usize,
-    /// Directives EQProxy cannot serve today.
+    /// Directives `EQProxy` cannot serve today.
     pub rejected: usize,
 }
 
@@ -243,7 +255,7 @@ struct Server {
     addr: String,
     weight: u32,
     backup: bool,
-    /// HAProxy `server … maxconn` (B-H16); `0` = no per-server cap.
+    /// `HAProxy` `server … maxconn` (B-H16); `0` = no per-server cap.
     maxconn: u32,
 }
 
@@ -300,6 +312,18 @@ struct ListenerTls {
     /// Highest accepted version (B-N16/B-I16); `None` = TLS 1.3.
     max_version: Option<&'static str>,
     client_ca: Option<String>,
+    /// Additional certificates selected by SNI, one per vhost
+    /// (`[listener.*.tls].certs[]`).
+    certs: Vec<SniCertIr>,
+}
+
+/// One `[[listener.*.tls.certs]]` entry: a certificate plus the SNI names
+/// (exact or `*.domain`) from the vhost that declared it.
+#[derive(Debug, Clone, Default)]
+struct SniCertIr {
+    cert: String,
+    key: String,
+    names: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -326,7 +350,11 @@ struct Rule {
     path_prefix: Option<String>,
     path: Option<String>,
     host: Option<String>,
+    host_prefix: Option<String>,
     host_regex: Option<String>,
+    /// nginx `server_name` precedence (exact, leading wildcard, trailing
+    /// wildcard, regex); not emitted. Other converters leave the default.
+    host_rank: HostRank,
     headers: Vec<HeaderCondition>,
     methods: Vec<String>,
     ip: Vec<String>,
@@ -343,23 +371,41 @@ struct Rule {
     rewrite_prefix: Option<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+/// Matching precedence of a `server_name` pattern. `Reverse` makes the
+/// longest wildcard sort first, as nginx does.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+enum HostRank {
+    Exact,
+    LeadingWildcard(std::cmp::Reverse<usize>),
+    TrailingWildcard(std::cmp::Reverse<usize>),
+    Regex(usize),
+    #[default]
+    CatchAll,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ErrorPageIr {
     codes: Vec<u16>,
     file: Option<String>,
     body: Option<String>,
-    /// HAProxy `errorloc`: a 3xx redirect instead of a body.
+    /// `HAProxy` `errorloc`: a 3xx redirect instead of a body.
     location: Option<String>,
     raw: bool,
     status: Option<u16>,
     intercept: bool,
 }
 
+// The IR mirrors the TOML surface one field per key; grouping the switches
+// would break that correspondence.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Default)]
 struct Listener {
     listen: String,
     mode: String,
-    backend: String,
+    backend: Option<String>,
+    /// Default 3xx for a redirect-only listener (nginx server-level
+    /// `return`): status and `Location` template.
+    redirect: Option<(Option<u16>, String)>,
     maxconn: u32,
     connect_timeout: Option<String>,
     idle_timeout: Option<String>,
@@ -383,7 +429,26 @@ impl Listener {
         Self {
             listen: listen.into(),
             mode: mode.to_owned(),
-            backend: backend.into(),
+            backend: Some(backend.into()),
+            // The schema default; the emitter omits it while it stays 1024.
+            maxconn: 1024,
+            ..Self::default()
+        }
+    }
+
+    /// A listener whose fallback is a local redirect, so it needs no
+    /// backend at all (nginx `server { return 301 …; }`).
+    fn redirect(
+        listen: impl Into<String>,
+        mode: &str,
+        status: Option<u16>,
+        location: impl Into<String>,
+    ) -> Self {
+        Self {
+            listen: listen.into(),
+            mode: mode.to_owned(),
+            backend: None,
+            redirect: Some((status, location.into())),
             // The schema default; the emitter omits it while it stays 1024.
             maxconn: 1024,
             ..Self::default()
@@ -633,7 +698,7 @@ pub fn sanitize_name(name: &str) -> String {
 /// Converts a reference duration to the `eqproxy.toml` spelling
 /// (`<integer><ms|s|m|h>`).
 ///
-/// nginx: a bare number is seconds. HAProxy: a bare number is milliseconds.
+/// nginx: a bare number is seconds. `HAProxy`: a bare number is milliseconds.
 /// Anything else (`10m30s`, `1d`) is summed when every part is recognised and
 /// reviewed with a note reading it, never guessed.
 fn convert_duration(
@@ -672,15 +737,20 @@ fn convert_duration(
         let Ok(value) = digits.parse::<f64>() else {
             break;
         };
-        let factor: u64 = match unit {
-            "ms" => 1,
+        let factor: u32 = match unit {
             "s" => 1_000,
             "m" => 60_000,
             "h" => 3_600_000,
             "d" => 86_400_000,
             _ => 1,
         };
-        total_ms += (value * factor as f64) as u64;
+        // `value` is a non-negative figure parsed from the directive and the
+        // caller range-checks the total; truncating to whole milliseconds is
+        // the intended rounding.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        {
+            total_ms += (value * f64::from(factor)) as u64;
+        }
         rest = &after[consumed..];
         parts += 1;
     }
@@ -734,7 +804,7 @@ pub fn is_addr(value: &str) -> bool {
 /// Normalises a bind/server address to `IP:PORT`, `HOSTNAME:PORT` or
 /// `unix:/absolute/path` (ADR-0043).
 ///
-/// EQProxy accepts literal IPs and hostnames (resolved in the background,
+/// `EQProxy` accepts literal IPs and hostnames (resolved in the background,
 /// B-H13) and, as a **backend** target, a filesystem Unix socket. A listener
 /// still cannot be a Unix socket (`allow_unix = false`), and `fd@` has no
 /// equivalent: both are rejected with their cause. A missing port is filled
@@ -884,18 +954,61 @@ fn toml_key(name: &str) -> String {
 /// Fails when the source cannot be read as that dialect, when it yields no
 /// listener, or when the generated document does not pass this crate's own
 /// parser and validator. Nothing partial is ever returned.
+///
+///# Errors
+///
+///Returns `ImportError` naming the directive and the reason when the source
+///cannot be read or converted.
 pub fn convert(source: Source, text: &str) -> Result<Outcome, ImportError> {
     convert_with_degraded(source, text).map(|(outcome, _)| outcome)
+}
+
+/// Like [`convert`], with explicit options (currently nginx `include`
+/// expansion).
+///
+///# Errors
+///
+///Returns `ImportError` naming the directive and the reason when the source
+///cannot be read or converted; the options are applied as documented.
+pub fn convert_with_options(
+    source: Source,
+    text: &str,
+    options: ImportOptions<'_>,
+) -> Result<Outcome, ImportError> {
+    convert_with_options_and_degraded(source, text, options).map(|(outcome, _)| outcome)
 }
 
 /// Like [`convert`], plus the directives classified as degraded.
 ///
 /// The names come from the same notes the report is rendered from, so a caller
-/// that summarizes the conversion never has to parse its Markdown. They are
-/// one line each, in report order.
+/// that summarizes the conversion never has to parse its Markdown or depend on
+/// a report section. They are one line each, in report order. The report's
+/// summary count is checked against this list before the conversion returns.
+///
+///# Errors
+///
+///Returns `ImportError` naming the directive and the reason when the source
+///cannot be read or converted.
 pub fn convert_with_degraded(
     source: Source,
     text: &str,
+) -> Result<(Outcome, Vec<String>), ImportError> {
+    convert_with_options_and_degraded(source, text, ImportOptions::default())
+}
+
+/// Like [`convert_with_degraded`], with explicit options.
+///
+/// `include_root` is only meaningful for nginx; passing it for another
+/// dialect is an error rather than silently reading files it would never use.
+///
+///# Errors
+///
+///Returns `ImportError` naming the directive and the reason when the source
+///cannot be read or converted.
+pub fn convert_with_options_and_degraded(
+    source: Source,
+    text: &str,
+    options: ImportOptions<'_>,
 ) -> Result<(Outcome, Vec<String>), ImportError> {
     if text.len() > crate::MAX_CONFIG_BYTES {
         return Err(ImportError::new(format!(
@@ -904,9 +1017,14 @@ pub fn convert_with_degraded(
             crate::MAX_CONFIG_BYTES
         )));
     }
+    if options.include_root.is_some() && source != Source::Nginx {
+        return Err(ImportError::new(
+            "--include-root only applies to nginx configurations".to_owned(),
+        ));
+    }
     let mut conv = Conv::new();
     match source {
-        Source::Nginx => nginx::convert(&mut conv, text)?,
+        Source::Nginx => nginx::convert(&mut conv, text, options.include_root)?,
         Source::Haproxy => haproxy::convert(&mut conv, text)?,
         Source::Ingress => ingress::convert(&mut conv, text)?,
         Source::Envoy => envoy::convert(&mut conv, text)?,
@@ -946,6 +1064,7 @@ pub fn convert_with_degraded(
     let counts = conv.classify();
     let degraded = report::degraded_directives(&conv);
     let report = report::render(source, &conv, counts);
+    report::check_degraded_names(&report, &degraded).map_err(ImportError::new)?;
     Ok((
         Outcome {
             toml,

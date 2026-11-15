@@ -1,4 +1,4 @@
-//! WebSockets over HTTP/2 (RFC 8441 extended CONNECT) with **real sockets**:
+//! `WebSockets` over HTTP/2 (RFC 8441 extended CONNECT) with **real sockets**:
 //! a real `h2` client to the proxy and a real HTTP/1.1 WebSocket origin behind
 //! it. These journeys prove the tunnel both ways, the h2 `200` success
 //! (never a `101`), the relayed refusal, the routing decisions applied by the
@@ -8,6 +8,7 @@
 //! `:protocol = websocket`, exactly what a browser or `grpcurl`-style client
 //! does after the proxy's SETTINGS say extended CONNECT is understood.
 
+use std::fmt::Write as _;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -132,7 +133,7 @@ async fn start_ws_origin(protocol: Option<&'static str>) -> (SocketAddr, Arc<See
                     }
                 };
                 let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
-                *recorded.head.lock().expect("lock") = head.clone();
+                recorded.head.lock().expect("lock").clone_from(&head);
                 let lower = head.to_ascii_lowercase();
                 assert!(
                     lower.starts_with("get /")
@@ -146,7 +147,8 @@ async fn start_ws_origin(protocol: Option<&'static str>) -> (SocketAddr, Arc<See
                     "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n",
                 );
                 if let Some(protocol) = protocol {
-                    response.push_str(&format!("Sec-WebSocket-Protocol: {protocol}\r\n"));
+                    write!(response, "Sec-WebSocket-Protocol: {protocol}\r\n")
+                        .expect("writing into a String cannot fail");
                 }
                 response.push_str("\r\n");
                 if socket.write_all(response.as_bytes()).await.is_err() {
@@ -394,7 +396,7 @@ async fn ws_unknown_protocol_is_refused_with_501() {
         response
             .headers()
             .get("server")
-            .map(|value| value.as_bytes()),
+            .map(http::HeaderValue::as_bytes),
         Some(&b"EQProxy"[..]),
         "a refused extended CONNECT carries the product banner"
     );
@@ -435,7 +437,7 @@ async fn ws_classic_connect_keeps_its_501() {
         response
             .headers()
             .get("server")
-            .map(|value| value.as_bytes()),
+            .map(http::HeaderValue::as_bytes),
         Some(&b"EQProxy"[..]),
         "a refused classic h2 CONNECT carries the product banner"
     );
@@ -476,9 +478,9 @@ async fn ws_silent_tunnel_is_cut_by_the_idle_timeout() {
     // staying open forever, and that the origin sees its socket close.
     loop {
         match tokio::time::timeout(Duration::from_secs(3), body.data()).await {
-            Ok(Some(Ok(chunk))) if chunk.is_empty() => continue,
+            Ok(Some(Ok(chunk))) if chunk.is_empty() => {}
             Ok(Some(Ok(_))) => panic!("a silent tunnel must not receive payload"),
-            Ok(None) | Ok(Some(Err(_))) | Err(_) => break,
+            Ok(None | Some(Err(_))) | Err(_) => break,
         }
     }
     let deadline = tokio::time::Instant::now() + WAIT;

@@ -1,4 +1,4 @@
-//! WebSockets over HTTP/2 (RFC 8441 extended CONNECT, B-I18).
+//! `WebSockets` over HTTP/2 (RFC 8441 extended CONNECT, B-I18).
 //!
 //! A client keeps using `WebSocket` after perfecting the h2 handshake: it
 //! sends `CONNECT` with `:protocol = websocket`, `:scheme`, `:authority` and
@@ -62,6 +62,7 @@ static KEY_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Serves one extended CONNECT, or hands the pair back when the stream is not
 /// a WebSocket request (the caller keeps the classic CONNECT refusal).
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn serve(
     request: Request<RecvStream>,
     mut respond: SendResponse<Bytes>,
@@ -97,15 +98,12 @@ pub(crate) async fn serve(
     }
 
     let key = websocket_key();
-    let head = match build_head(request.uri(), request.headers(), &key) {
-        Some(head) => head,
-        None => {
-            metrics
-                .http_requests_rejected
-                .fetch_add(1, Ordering::Relaxed);
-            refuse(&mut respond, StatusCode::BAD_REQUEST);
-            return Ok(());
-        }
+    let Some(head) = build_head(request.uri(), request.headers(), &key) else {
+        metrics
+            .http_requests_rejected
+            .fetch_add(1, Ordering::Relaxed);
+        refuse(&mut respond, StatusCode::BAD_REQUEST);
+        return Ok(());
     };
 
     // One h1 exchange on a bounded pipe: the engine owns the server half,
@@ -142,21 +140,18 @@ pub(crate) async fn serve(
         pos: 0,
         inner: &mut reader,
     };
-    let (head_bytes, mut carry) = match read_head(
+    let Ok((head_bytes, mut carry)) = read_head(
         &mut source,
         cfg.server_header_timeout,
         cfg.limits.max_head_bytes,
     )
     .await
-    {
-        Ok(pair) => pair,
-        Err(_) => {
-            engine.abort();
-            metrics.ws_failures.fetch_add(1, Ordering::Relaxed);
-            metrics.header_timeouts.fetch_add(1, Ordering::Relaxed);
-            refuse(&mut respond, StatusCode::GATEWAY_TIMEOUT);
-            return Ok(());
-        }
+    else {
+        engine.abort();
+        metrics.ws_failures.fetch_add(1, Ordering::Relaxed);
+        metrics.header_timeouts.fetch_add(1, Ordering::Relaxed);
+        refuse(&mut respond, StatusCode::GATEWAY_TIMEOUT);
+        return Ok(());
     };
     carry.extend(source.prefix.split_off(source.pos));
     let response = match parse_response_head(
@@ -222,13 +217,10 @@ pub(crate) async fn serve(
     out.headers_mut().remove("sec-websocket-accept");
     out.headers_mut().remove("upgrade");
     out.headers_mut().remove("connection");
-    let mut send = match respond.send_response(out, false) {
-        Ok(send) => send,
-        Err(_) => {
-            engine.abort();
-            metrics.ws_failures.fetch_add(1, Ordering::Relaxed);
-            return Ok(());
-        }
+    let Ok(mut send) = respond.send_response(out, false) else {
+        engine.abort();
+        metrics.ws_failures.fetch_add(1, Ordering::Relaxed);
+        return Ok(());
     };
     metrics.ws_tunnels.fetch_add(1, Ordering::Relaxed);
     metrics
@@ -331,8 +323,7 @@ fn build_head(uri: &Uri, headers: &HeaderMap, key: &str) -> Option<Vec<u8>> {
     let authority = uri.authority()?.as_str();
     let path = uri
         .path_and_query()
-        .map(|value| value.as_str())
-        .unwrap_or("/");
+        .map_or("/", http::uri::PathAndQuery::as_str);
     if !path.starts_with('/') {
         return None;
     }
@@ -381,8 +372,7 @@ fn websocket_key() -> String {
     let counter = KEY_COUNTER.fetch_add(1, Ordering::Relaxed);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |elapsed| elapsed.as_nanos());
     // Nanoseconds since the epoch fit in 64 bits for the next five centuries;
     // if that ever stops being true the fallback still yields a valid key.
     let stamp = u64::try_from(nanos).unwrap_or(u64::MAX);

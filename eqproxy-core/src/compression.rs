@@ -28,6 +28,11 @@ pub enum MediaType {
 
 impl MediaType {
     /// Parses a configuration entry; the error names the accepted forms.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` naming the accepted forms when the spec is empty, has
+    /// no `/`, more than one `/`, or an invalid type or subtype token.
     pub fn parse(spec: &str) -> Result<Self, String> {
         let spec = spec.trim().to_ascii_lowercase();
         if spec.is_empty() {
@@ -180,9 +185,8 @@ pub fn choose_encoding(header: Option<&str>, enabled: EnabledCodings) -> Option<
     let brotli = if enabled.brotli { quality("br") } else { 0 };
     match (brotli > 0, gzip > 0) {
         (true, true) if brotli >= gzip => Some(Encoding::Brotli),
-        (true, true) => Some(Encoding::Gzip),
+        (_, true) => Some(Encoding::Gzip),
         (true, false) => Some(Encoding::Brotli),
-        (false, true) => Some(Encoding::Gzip),
         (false, false) => None,
     }
 }

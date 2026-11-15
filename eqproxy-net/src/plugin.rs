@@ -183,6 +183,11 @@ fn new_runtime() -> Result<Arc<Runtime>, String> {
 impl PluginHost {
     /// Loads and compiles a plugin. Every error is a configuration error: the
     /// caller rejects the snapshot instead of serving with a broken filter.
+    ///
+    ///# Errors
+    ///
+    ///Returns `Err` naming the module, import, export or budget that fails
+    ///validation at load time.
     pub fn load(settings: PluginSettings, base_dir: &Path) -> Result<Self, String> {
         let path = if settings.path.is_absolute() {
             settings.path.clone()
@@ -238,7 +243,13 @@ impl PluginHost {
     ///
     /// This is synchronous and CPU-bound on purpose: the guest has no import
     /// that can block, and fuel/epoch interrupt a loop. See ADR-0031 §4.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a pointer, length or status does not fit the wasm32 integer
+    /// width; the configured budgets bound every one of them below that.
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn run(&self, head: &[u8]) -> PluginOutcome {
         if head.len() > MAX_PLUGIN_INPUT {
             return PluginOutcome::Failed {
@@ -265,7 +276,10 @@ impl PluginHost {
                 reason: format!("could not set the fuel budget: {error:#}"),
             };
         }
-        store.set_epoch_deadline(self.settings.timeout.as_millis().max(1) as u64);
+        store.set_epoch_deadline(
+            u64::try_from(self.settings.timeout.as_millis().max(1))
+                .expect("the value fits in the destination type"),
+        );
 
         let instance = match self.linker.instantiate(&mut store, &self.module) {
             Ok(instance) => instance,
@@ -292,7 +306,10 @@ impl PluginHost {
                     };
                 }
             };
-        let pointer = match alloc.call(&mut store, head.len() as i32) {
+        let pointer = match alloc.call(
+            &mut store,
+            i32::try_from(head.len()).expect("the request head fits in a wasm32 pointer"),
+        ) {
             Ok(pointer) => pointer,
             Err(error) => {
                 return PluginOutcome::Failed {
@@ -300,17 +317,16 @@ impl PluginHost {
                 };
             }
         };
-        if pointer < 0 {
+        let Ok(start) = usize::try_from(pointer) else {
             return PluginOutcome::Failed {
                 reason: format!("eqproxy_alloc returned a negative pointer ({pointer})"),
             };
-        }
+        };
         let Some(memory) = instance.get_memory(&mut store, "memory") else {
             return PluginOutcome::Failed {
                 reason: "the module has no exported memory".to_owned(),
             };
         };
-        let start = pointer as usize;
         if start
             .checked_add(head.len())
             .is_none_or(|end| end > memory.data_size(&store))
@@ -327,7 +343,13 @@ impl PluginHost {
                 reason: format!("could not write the request head into the plugin: {error:#}"),
             };
         }
-        let status = match call.call(&mut store, (pointer, head.len() as i32)) {
+        let status = match call.call(
+            &mut store,
+            (
+                pointer,
+                i32::try_from(head.len()).expect("the request head fits in a wasm32 pointer"),
+            ),
+        ) {
             Ok(status) => status,
             Err(error) => {
                 return PluginOutcome::Failed {
@@ -352,7 +374,9 @@ impl PluginHost {
                 }
                 PluginOutcome::Allow { set, remove }
             }
-            status if (400..=599).contains(&status) => PluginOutcome::Deny(status as u16),
+            status if (400..=599).contains(&status) => PluginOutcome::Deny(
+                u16::try_from(status).expect("the value fits in the destination type"),
+            ),
             status => PluginOutcome::Failed {
                 reason: format!(
                     "eqproxy_on_request returned {status}; expected 0 (continue) or 400..=599 (reject)"
@@ -448,7 +472,7 @@ fn validate_value(value: &str) -> Result<(), String> {
 fn guest_memory(caller: &mut Caller<'_, HostState>) -> Result<Memory, wasmtime::Error> {
     caller
         .get_export("memory")
-        .and_then(|export| export.into_memory())
+        .and_then(wasmtime::Extern::into_memory)
         .ok_or_else(|| wasmtime::Error::msg("plugin has no exported memory"))
 }
 
@@ -459,19 +483,18 @@ fn read_bytes(
     what: &str,
     maximum: usize,
 ) -> Result<Vec<u8>, wasmtime::Error> {
-    if pointer < 0 || length < 0 {
+    let (Ok(pointer), Ok(length)) = (usize::try_from(pointer), usize::try_from(length)) else {
         return Err(wasmtime::Error::msg(format!(
             "{what}: negative pointer or length"
         )));
-    }
-    let length = length as usize;
+    };
     if length > maximum {
         return Err(wasmtime::Error::msg(format!(
             "{what}: {length} bytes exceeds the {maximum}-byte limit"
         )));
     }
     let memory = guest_memory(caller)?;
-    let start = pointer as usize;
+    let start = pointer;
     let end = start
         .checked_add(length)
         .ok_or_else(|| wasmtime::Error::msg(format!("{what}: pointer overflow")))?;

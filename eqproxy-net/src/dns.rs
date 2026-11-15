@@ -15,7 +15,7 @@
 //!   attempt (`timeout`); a changed address is swapped in hot (new
 //!   endpoint: the health machine and the slow-start ramp restart).
 //! - A failed or empty resolution keeps the last-known address (nginx
-//!   `valid=` / HAProxy `init-addr last` semantics) and counts in
+//!   `valid=` / `HAProxy` `init-addr last` semantics) and counts in
 //!   `dns_resolution_failures`.
 //! - The first round runs immediately; `interval = 0` resolves once at
 //!   startup and stops (no periodic re-resolution).
@@ -106,7 +106,7 @@ pub async fn run(
         }
         tokio::select! {
             _ = shutdown.wait() => return,
-            _ = tokio::time::sleep(settings.interval) => {}
+            () = tokio::time::sleep(settings.interval) => {}
         }
     }
 }

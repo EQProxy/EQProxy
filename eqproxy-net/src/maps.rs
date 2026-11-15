@@ -32,7 +32,7 @@ pub async fn run(map: Arc<HotMap>, metrics: Arc<Metrics>, mut shutdown: Shutdown
     loop {
         tokio::select! {
             _ = shutdown.wait() => return,
-            _ = tokio::time::sleep(interval) => {}
+            () = tokio::time::sleep(interval) => {}
         }
         // Change detection on the raw bytes: an untouched file costs
         // one read and one hash, never a re-parse or a swap. The read,

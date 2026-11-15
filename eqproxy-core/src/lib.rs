@@ -1,4 +1,4 @@
-//! Shared EQProxy types: dataplane counters and graceful shutdown.
+//! Shared `EQProxy` types: dataplane counters and graceful shutdown.
 //!
 //! 100 % safe Rust code (`#![forbid(unsafe_code)]`, project decision).
 

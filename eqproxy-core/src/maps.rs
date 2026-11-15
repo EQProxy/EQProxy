@@ -78,6 +78,11 @@ fn map_err(line: Option<usize>, cause: impl Into<String>, example: impl Into<Str
 }
 
 /// Validates one map key (shared by the file parser and the config gate).
+///
+/// # Errors
+///
+/// Returns `Err` naming the rule when the key is empty, is over
+/// [`MAX_MAP_KEY_BYTES`], or carries whitespace or control characters.
 pub fn validate_key(key: &str) -> Result<(), String> {
     if key.is_empty() {
         return Err("the key is empty (example key: \"acme\")".to_owned());
@@ -101,6 +106,11 @@ pub fn validate_key(key: &str) -> Result<(), String> {
 
 /// Validates one map value (shared by the file parser and the config
 /// gate). Values may be empty (presence-style maps).
+///
+/// # Errors
+///
+/// Returns `Err` when the value is over [`MAX_MAP_VALUE_BYTES`] or carries
+/// control characters.
 pub fn validate_value(value: &str) -> Result<(), String> {
     if value.len() > MAX_MAP_VALUE_BYTES {
         return Err(format!(
@@ -126,6 +136,12 @@ pub struct MapData {
 
 impl MapData {
     /// Parses map text: `key value` per line (see the module docs).
+    ///
+    /// # Errors
+    ///
+    /// Returns `MapError` with line, cause and example on a malformed line,
+    /// an invalid key or value, a duplicate key, or more than
+    /// [`MAX_MAP_ENTRIES`] entries.
     pub fn parse(text: &str, default: Option<String>) -> Result<Self, MapError> {
         if let Some(value) = &default {
             validate_value(value).map_err(|why| map_err(None, why, "default = \"deny\""))?;
@@ -171,6 +187,11 @@ impl MapData {
     }
 
     /// Parses raw file bytes (UTF-8; a leading BOM is ignored).
+    ///
+    /// # Errors
+    ///
+    /// Returns `MapError` when the bytes are not UTF-8, or for every reason
+    /// [`MapData::parse`] reports.
     pub fn parse_bytes(bytes: &[u8], default: Option<String>) -> Result<Self, MapError> {
         let text = std::str::from_utf8(bytes).map_err(|_| {
             map_err(
@@ -185,6 +206,11 @@ impl MapData {
     }
 
     /// Builds a map from inline `[maps.*.entries]` config (no file).
+    ///
+    /// # Errors
+    ///
+    /// Returns `MapError` naming the entry when a key or value is invalid or
+    /// the entry budget is exceeded.
     pub fn from_entries(
         entries: &BTreeMap<String, String>,
         default: Option<String>,
@@ -315,6 +341,11 @@ impl HotMap {
     /// parses with the map's `default` and swaps atomically. On error
     /// the current data keeps serving untouched (C10: a bad update
     /// never breaks live traffic).
+    ///
+    /// # Errors
+    ///
+    /// Returns `MapError` when the new bytes do not parse; the map keeps
+    /// serving the previous data.
     pub fn update_bytes(&self, bytes: &[u8]) -> Result<(), MapError> {
         let default = self.get().default_value().cloned();
         let data = MapData::parse_bytes(bytes, default)?;
@@ -427,6 +458,11 @@ pub enum MapKey {
 
 impl MapKey {
     /// Parses the `key = "…"` selector of a map condition.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` listing the valid selectors when `raw` is not one of
+    /// `ip`, `host`, `path` or `method`.
     pub fn parse(raw: &str) -> Result<Self, String> {
         match raw {
             "ip" => Ok(Self::Ip),
@@ -452,8 +488,7 @@ impl MapKey {
                 .headers
                 .iter()
                 .find(|(header, _)| header.eq_ignore_ascii_case(name))
-                .map(|(_, value)| value.clone())
-                .unwrap_or_default(),
+                .map_or_default(|(_, value)| value.clone()),
         }
     }
 }
@@ -517,9 +552,10 @@ mod tests {
 
     #[test]
     fn entry_budget_is_enforced() {
+        use std::fmt::Write as _;
         let mut text = String::new();
         for i in 0..=MAX_MAP_ENTRIES {
-            text.push_str(&format!("k{i} v\n"));
+            writeln!(text, "k{i} v").expect("writing into a String cannot fail");
         }
         let err = MapData::parse(&text, None).expect_err("too many");
         assert!(err.cause.contains("too many entries"), "{err}");

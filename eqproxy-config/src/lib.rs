@@ -1,4 +1,4 @@
-//! EQProxy configuration: typed TOML schema, semantic validation and
+//! `EQProxy` configuration: typed TOML schema, semantic validation and
 //! errors with file, line, field, cause and fix example.
 //!
 //! Format decision: ADR-0002 (canonical TOML). 100 % safe Rust code.
@@ -25,6 +25,16 @@ pub use validate::CheckResult;
 ///
 /// Semantic validation (references, ranges, warnings) runs in
 /// [`check`]; this parse only guarantees structure and types.
+///
+/// # Panics
+///
+/// Panics when the file size does not fit in `usize`, a file larger than the
+/// address space (only reachable on 32-bit targets).
+///
+///# Errors
+///
+///Returns `ConfigError` with the file, field and cause when the file cannot
+///be read or the text is not a valid configuration.
 pub fn load(path: impl AsRef<Path>) -> Result<Config, ConfigError> {
     let path = path.as_ref();
     let meta = std::fs::metadata(path).map_err(|e| ConfigError {
@@ -36,7 +46,10 @@ pub fn load(path: impl AsRef<Path>) -> Result<Config, ConfigError> {
             .to_owned(),
     })?;
     if meta.len() > MAX_CONFIG_BYTES as u64 {
-        return Err(oversized(path, meta.len() as usize));
+        return Err(oversized(
+            path,
+            usize::try_from(meta.len()).expect("the value fits in the destination type"),
+        ));
     }
     let source = std::fs::read_to_string(path).map_err(|e| ConfigError {
         file: path.to_path_buf(),
@@ -50,6 +63,11 @@ pub fn load(path: impl AsRef<Path>) -> Result<Config, ConfigError> {
 }
 
 /// Parses already-read TOML text. `file` is only used for error messages.
+///
+///# Errors
+///
+///Returns `ConfigError` with file, field and cause when the text is not
+///valid TOML or does not match the schema.
 pub fn parse_str(source: &str, file: &Path) -> Result<Config, ConfigError> {
     if source.len() > MAX_CONFIG_BYTES {
         return Err(oversized(file, source.len()));
@@ -86,6 +104,11 @@ pub fn parse_str(source: &str, file: &Path) -> Result<Config, ConfigError> {
 /// **complete section** copied from the file (`[backend.<name>]` and its
 /// nested `[backend.<name>.…]` tables). The caller inserts the result into a
 /// candidate document and validates the whole document.
+///
+///# Errors
+///
+///Returns `ConfigError` naming the key when a backend entry is unknown or
+///has the wrong type.
 pub fn parse_backend_table(
     source: &str,
     file: &Path,
@@ -95,6 +118,11 @@ pub fn parse_backend_table(
 }
 
 /// Parses one `[listener.<name>]` table for a hot write (ADR-0019).
+///
+///# Errors
+///
+///Returns `ConfigError` naming the key when a listener entry is unknown or
+///has the wrong type.
 pub fn parse_listener_table(
     source: &str,
     file: &Path,
@@ -240,6 +268,10 @@ fn example_for(field_path: &str, cause: &str) -> String {
 /// or pointing the editor at the file). `deny_unknown_fields` is reflected
 /// as `additionalProperties: false`, so a typo is flagged before the gate
 /// rejects it.
+///
+///# Errors
+///
+///Returns the `serde_json` error when the schema cannot be rendered.
 pub fn json_schema() -> Result<String, serde_json::Error> {
     let schema = schemars::schema_for!(Config);
     // Reported, never swallowed: a rendering failure would otherwise print
@@ -292,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn listener_table_accepts_a_full_section_and_requires_its_keys() {
+    fn listener_table_accepts_a_full_section_and_requires_listen() {
         let file = PathBuf::from("http.toml");
         let listener = parse_listener_table(
             "[listener.web]\nlisten = \"127.0.0.1:8080\"\nbackend = \"api\"\n",
@@ -301,9 +333,10 @@ mod tests {
         )
         .expect("listener section");
         assert_eq!(listener.listen, "127.0.0.1:8080");
-        assert_eq!(listener.backend, "api");
-        let err = parse_listener_table("mode = \"http\"\n", &file, "web")
-            .expect_err("missing listen/backend");
+        assert_eq!(listener.backend.as_deref(), Some("api"));
+        assert_eq!(listener.redirect, None);
+        let err =
+            parse_listener_table("mode = \"http\"\n", &file, "web").expect_err("missing listen");
         assert_eq!(err.field.as_deref(), Some("listener.web"));
     }
 

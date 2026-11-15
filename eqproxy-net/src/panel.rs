@@ -29,6 +29,7 @@
 //! session.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -42,7 +43,7 @@ use crate::balancer::ServerMode;
 
 /// Idle window of a panel session. A session that has not been used for this
 /// long is gone, whatever the cookie still says.
-pub const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+pub const SESSION_IDLE_TIMEOUT: Duration = Duration::from_mins(30);
 
 /// Sessions kept at once. An expired one goes first; past the bound the oldest
 /// is evicted, so the panel cannot grow the process without limit.
@@ -134,7 +135,7 @@ impl Panel {
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Session>> {
         self.sessions
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Opens a session for `role`: the cookie value and the CSRF token. `None`
@@ -234,7 +235,7 @@ impl Panel {
         // Borrowed from the head on purpose: an `Apply` outcome carries the
         // path to the applier's audit line.
         let path = target.split('?').next().unwrap_or(target);
-        let query = target.split_once('?').map(|(_, query)| query).unwrap_or("");
+        let query = target.split_once('?').map_or("", |(_, query)| query);
         match method {
             "GET" => self.get(path, head, state, query),
             "POST" => self.post(path, head, body, tokens, state, peer),
@@ -259,7 +260,7 @@ impl Panel {
         }
         let session = cookie(head).and_then(|sid| self.touch(&sid));
         match session {
-            Some((role, csrf)) => Outcome::done(self.dashboard(state, role, &csrf, query)),
+            Some((role, csrf)) => Outcome::done(Self::dashboard(state, role, &csrf, query)),
             None => Outcome::done(login_page(None)),
         }
     }
@@ -300,7 +301,7 @@ impl Panel {
                 "POST",
                 path,
                 status,
-                AuditFields::default(),
+                &AuditFields::default(),
             ))
         };
         // Cross-site first: a browser that says it came from elsewhere is
@@ -330,7 +331,7 @@ impl Panel {
             return Outcome::done_with(audit_response(403, code), record(403));
         }
         if let Some((backend, target)) = server_state_route(path) {
-            return self.server_state(state, &backend, &target, &fields, peer, role);
+            return Self::server_state(state, &backend, &target, &fields, peer, role);
         }
         if path == "/panel/certificates/reload" {
             return Outcome::Apply {
@@ -385,7 +386,7 @@ impl Panel {
                 "POST",
                 "/panel/login",
                 status,
-                AuditFields::default(),
+                &AuditFields::default(),
             ))
         };
         if !same_site(head) {
@@ -412,7 +413,6 @@ impl Panel {
 
     /// Applies one state to one slot through the shared implementation.
     fn server_state<'a>(
-        &self,
         state: &'a AdminState,
         backend: &str,
         target: &str,
@@ -427,7 +427,7 @@ impl Panel {
                 "POST",
                 "/panel/servers/{backend}/{target}/state",
                 status,
-                AuditFields::default(),
+                &AuditFields::default(),
             ))
         };
         let Some(mode) = fields
@@ -446,23 +446,26 @@ impl Panel {
     }
 
     /// The page: live topology, the per-server actions and the table editors.
-    fn dashboard(&self, state: &AdminState, role: Role, csrf: &str, query: &str) -> Response {
+    #[allow(clippy::too_many_lines)]
+    fn dashboard(state: &AdminState, role: Role, csrf: &str, query: &str) -> Response {
         let topology = state.read_topology();
         let write = role == Role::Write;
         let mut body = String::new();
-        body.push_str(&format!(
+        let _ = writeln!(
+            body,
             "<h1>EQProxy <span class=\"muted\">panel</span></h1>\n\
-             <p class=\"muted\">version {} · uptime {}s · revision {} · role {}</p>\n",
+             <p class=\"muted\">version {} · uptime {}s · revision {} · role {}</p>",
             escape(state.version),
             state.started.elapsed().as_secs(),
             escape(&topology.revision),
             role.as_str()
-        ));
-        body.push_str(&format!(
+        );
+        let _ = writeln!(
+            body,
             "<form method=\"post\" action=\"/panel/logout\">{}\
-             <button type=\"submit\">Log out</button></form>\n",
+             <button type=\"submit\">Log out</button></form>",
             csrf_field(csrf)
-        ));
+        );
         body.push_str(&notice(query));
         if !write {
             body.push_str(
@@ -476,8 +479,9 @@ impl Panel {
              <th>backend</th><th>maxconn</th><th>TLS (sha256)</th></tr>\n",
         );
         for listener in &topology.listeners {
-            body.push_str(&format!(
-                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n",
+            let _ = writeln!(
+                body,
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
                 escape(&listener.name),
                 escape(&listener.listen),
                 escape(&listener.mode),
@@ -487,21 +491,22 @@ impl Panel {
                     Some(fingerprint) => escape(fingerprint),
                     None => "—".to_owned(),
                 }
-            ));
+            );
         }
         body.push_str("</table>\n");
 
         for backend in &topology.backends {
-            body.push_str(&format!(
+            let _ = writeln!(
+                body,
                 "<h2>Backend {}</h2>\n<p class=\"muted\">balance {} · all_backups {} · \
                  health_check {}</p>\n<table>\n<tr><th>server</th><th>state</th>\
                  <th>healthy</th><th>active</th><th>drained</th><th>weight</th><th>backup</th>\
-                 <th>priority</th><th>state change</th></tr>\n",
+                 <th>priority</th><th>state change</th></tr>",
                 escape(&backend.name),
                 escape(backend.balancer.algorithm().as_str()),
                 backend.balancer.all_backups(),
-                backend.health_check.is_some(),
-            ));
+                backend.health_check.is_some()
+            );
             for server in backend.balancer.servers_view() {
                 let action = format!(
                     "/panel/servers/{}/{}/state",
@@ -526,9 +531,10 @@ impl Panel {
                 } else {
                     String::new()
                 };
-                body.push_str(&format!(
+                let _ = writeln!(
+                    body,
                     "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td>\
-                     <td>{}</td><td>{}</td><td>{}</td></tr>\n",
+                     <td>{}</td><td>{}</td><td>{}</td></tr>",
                     escape(&server.target),
                     escape(server.mode.as_str()),
                     server.up,
@@ -538,7 +544,7 @@ impl Panel {
                     server.backup,
                     server.priority,
                     buttons
-                ));
+                );
             }
             body.push_str("</table>\n");
         }
@@ -550,26 +556,30 @@ impl Panel {
                  subtable left out really is removed. `If-Match` is the revision above.</p>\n",
             );
             for (kind, label) in [("backends", "backend"), ("listeners", "listener")] {
-                body.push_str(&format!(
+                let _ = write!(
+                    body,
                     "<form method=\"post\" action=\"/panel/{kind}/{{name}}\">{}",
                     csrf_field(csrf)
-                ));
-                body.push_str(&format!(
+                );
+                let _ = writeln!(
+                    body,
                     "<p class=\"form-row\"><input type=\"text\" name=\"name\" value=\"\" \
                      placeholder=\"{label} name\" required> <input type=\"text\" name=\"revision\" \
                      value=\"{}\" readonly size=\"6\"> <button type=\"submit\">Apply {label}\
-                     </button></p>\n",
+                     </button></p>",
                     escape(&topology.revision)
-                ));
-                body.push_str(&format!(
-                    "<textarea name=\"table\" placeholder=\"[{label}.NAME]&#10;…\"></textarea></form>\n"
-                ));
+                );
+                let _ = writeln!(
+                    body,
+                    "<textarea name=\"table\" placeholder=\"[{label}.NAME]&#10;…\"></textarea></form>"
+                );
             }
-            body.push_str(&format!(
+            let _ = writeln!(
+                body,
                 "<form method=\"post\" action=\"/panel/certificates/reload\">{}<button \
-                 type=\"submit\">Reload certificates</button></form>\n",
+                 type=\"submit\">Reload certificates</button></form>",
                 csrf_field(csrf)
-            ));
+            );
         } else {
             body.push_str("<p class=\"muted\">Read-only session.</p>\n");
         }
@@ -705,7 +715,7 @@ fn same_site(head: &str) -> bool {
 fn form(head: &str, body: Option<&[u8]>) -> Result<HashMap<String, String>, Response> {
     let media = header_values(head, "content-type")
         .first()
-        .cloned()
+        .copied()
         .unwrap_or_default();
     if !media.starts_with("application/x-www-form-urlencoded") {
         return Err(Response::error(415, "unsupported_media_type"));
@@ -739,18 +749,18 @@ fn percent_decode(input: &str) -> String {
             }
             b'%' if index + 2 < bytes.len() => {
                 let digit = |byte: u8| (byte as char).to_digit(16);
-                match (
+                if let (Some((high, low)), true) = (
                     digit(bytes[index + 1]).zip(digit(bytes[index + 2])),
                     index + 2 < bytes.len(),
                 ) {
-                    (Some((high, low)), true) => {
-                        out.push((high * 16 + low) as u8);
-                        index += 3;
-                    }
-                    _ => {
-                        out.push(bytes[index]);
-                        index += 1;
-                    }
+                    out.push(
+                        u8::try_from(high * 16 + low)
+                            .expect("the value fits in the destination type"),
+                    );
+                    index += 3;
+                } else {
+                    out.push(bytes[index]);
+                    index += 1;
                 }
             }
             byte => {
@@ -992,7 +1002,7 @@ mod tests {
     fn the_notice_line_is_escaped_and_only_known_shapes_are_shown() {
         assert!(notice("applied=maintenance").contains("Applied: maintenance"));
         assert!(notice("error=swap_rejected").contains("Refused: swap_rejected"));
-        assert!(notice("").is_empty());
+        assert_eq!(notice(""), "");
         assert!(!notice("error=%3Cscript%3E").contains("<script>"));
     }
 }

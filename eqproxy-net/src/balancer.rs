@@ -5,7 +5,7 @@
 //!
 //! - `roundrobin`: *smooth weighted round-robin* (deterministic; ties follow
 //!   configuration order).
-//! - `leastconn`: weighted least-connections (HAProxy `leastconn`, nginx
+//! - `leastconn`: weighted least-connections (`HAProxy` `leastconn`, nginx
 //!   `least_conn`, Envoy `LEAST_REQUEST`): the server with the smallest
 //!   `active / effective_weight` ratio wins; ties keep the SWRR smoothing.
 //!
@@ -21,7 +21,7 @@
 //!
 //! Health state: `fall`/`rise` machine — `fall` consecutive failures drop
 //! the server, `rise` consecutive successes raise it. Servers start
-//! operational (like HAProxy before the first check); with no health check
+//! operational (like `HAProxy` before the first check); with no health check
 //! configured they stay operational forever.
 
 use std::collections::HashMap;
@@ -102,7 +102,7 @@ impl ServerModes {
         let inner = self
             .inner
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner
             .get(backend)
             .and_then(|servers| servers.get(target))
@@ -116,7 +116,7 @@ impl ServerModes {
         let mut inner = self
             .inner
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner
             .entry(backend.to_owned())
             .or_default()
@@ -135,7 +135,7 @@ pub struct ServerView {
     pub weight: u32,
     /// Backup class (B8): selected only when no primary is eligible.
     pub backup: bool,
-    /// Failover order among backups (EQProxy extension): higher first, ties
+    /// Failover order among backups (`EQProxy` extension): higher first, ties
     /// by configuration order. Always `0` on a primary.
     pub priority: u32,
     /// Health machine (B11), independent of [`mode`](Self::mode).
@@ -274,10 +274,10 @@ pub struct ResolvedServer {
     pub weight: u32,
     /// Backup class (B8): never selected while any primary is eligible.
     pub backup: bool,
-    /// Failover order among backups (EQProxy extension, 0..=255): higher
+    /// Failover order among backups (`EQProxy` extension, 0..=255): higher
     /// serves first; only the first operational rung is used at a time.
     pub priority: u32,
-    /// Concurrent exchanges this server accepts (B-H16: HAProxy
+    /// Concurrent exchanges this server accepts (B-H16: `HAProxy`
     /// `server … maxconn`). `0` = no per-server cap. At the cap the slot is
     /// skipped by the selection — like a drained one — and its load moves to
     /// the siblings; with every slot capped the request fails explicitly
@@ -304,7 +304,7 @@ struct ServerState {
     weight: u32,
     /// Backup class (B8), copied from [`ResolvedServer`] at construction.
     backup: bool,
-    /// Failover order among backups (EQProxy extension), copied too.
+    /// Failover order among backups (`EQProxy` extension), copied too.
     priority: u32,
     up: bool,
     current_weight: i64,
@@ -553,7 +553,7 @@ impl Balancer {
     fn state(&self) -> MutexGuard<'_, Vec<ServerState>> {
         self.state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Resolved server endpoints (configuration order). Unresolved name
@@ -611,7 +611,7 @@ impl Balancer {
     /// `HOSTNAME:PORT` slot matching `host`/`port` gets the **first**
     /// resolved address (nginx `server name:port` semantics; multi-A
     /// expansion is a declared gap). An empty result keeps the
-    /// last-known address (nginx `valid=` / HAProxy `init-addr last`
+    /// last-known address (nginx `valid=` / `HAProxy` `init-addr last`
     /// semantics). A **changed** address resets the health machine and
     /// the slow-start ramp: the endpoint is new and cold. Returns how
     /// many slots changed address.
@@ -718,11 +718,11 @@ impl Balancer {
     #[must_use]
     pub fn pick_pinned(
         &self,
-        preferred: Option<Endpoint>,
+        preferred: Option<&Endpoint>,
         exclude: &[Endpoint],
     ) -> Option<Endpoint> {
         let mut state = self.state();
-        let idx = self.select(&mut state, preferred.as_ref(), exclude)?;
+        let idx = self.select(&mut state, preferred, exclude)?;
         state[idx].addr.clone()
     }
 
@@ -731,11 +731,11 @@ impl Balancer {
     #[must_use]
     pub fn pick_pinned_tracked(
         &self,
-        preferred: Option<Endpoint>,
+        preferred: Option<&Endpoint>,
         exclude: &[Endpoint],
     ) -> Option<(Endpoint, ActiveGuard<'_>)> {
         let mut state = self.state();
-        let idx = self.select(&mut state, preferred.as_ref(), exclude)?;
+        let idx = self.select(&mut state, preferred, exclude)?;
         state[idx].active = state[idx].active.saturating_add(1);
         let addr = state[idx].addr.clone()?;
         Some((
@@ -759,7 +759,7 @@ impl Balancer {
     /// - the reference default: one **ladder**, rungs ordered by `priority`
     ///   (higher first), then configuration order, and only the first
     ///   operational rung serves — "only the first operational backup server
-    ///   is used" (HAProxy 3.4 `backup`);
+    ///   is used" (`HAProxy` 3.4 `backup`);
     /// - `option allbackups` ([`Self::with_all_backups`]): every eligible
     ///   backup is a candidate, so the algorithm and the weights spread load
     ///   across them — the reference states there is no priority order among
@@ -1200,7 +1200,9 @@ mod tests {
         // recovered (fresh ramp).
         {
             let mut state = balancer.state();
-            state[0].up_since = Instant::now() - Duration::from_secs(7200);
+            state[0].up_since = Instant::now()
+                .checked_sub(Duration::from_secs(7200))
+                .unwrap();
         }
         balancer.report_fail(&b);
         balancer.report_ok(&b);
@@ -1223,7 +1225,9 @@ mod tests {
         // Once the ramp is over the weights are equal again.
         {
             let mut state = balancer.state();
-            state[1].up_since = Instant::now() - Duration::from_secs(7200);
+            state[1].up_since = Instant::now()
+                .checked_sub(Duration::from_secs(7200))
+                .unwrap();
         }
         assert_eq!(balancer.effective_weight(&b), eff_a, "ramp complete");
         let picks: Vec<u16> = (0..4)
@@ -1429,9 +1433,7 @@ mod tests {
     fn pinned_tracked_picks_honor_affinity_and_hold_a_slot() {
         let b = ep(2);
         let balancer = Balancer::new(vec![server(1, 1), server(2, 1)], 1, 1);
-        let (addr, guard) = balancer
-            .pick_pinned_tracked(Some(b.clone()), &[])
-            .expect("pick");
+        let (addr, guard) = balancer.pick_pinned_tracked(Some(&b), &[]).expect("pick");
         assert_eq!(addr, b, "the pin wins over load");
         assert_eq!(balancer.active_count(&b), 1);
         drop(guard);
@@ -1606,10 +1608,10 @@ mod tests {
         let balancer = Balancer::new(vec![server(1, 1), server(2, 1)], 1, 1)
             .with_modes("api", Arc::clone(&modes));
         let (_, first) = balancer
-            .pick_pinned_tracked(Some(ep(1)), &[])
+            .pick_pinned_tracked(Some(&ep(1)), &[])
             .expect("first");
         let (_, second) = balancer
-            .pick_pinned_tracked(Some(ep(1)), &[])
+            .pick_pinned_tracked(Some(&ep(1)), &[])
             .expect("second");
         // An exchange finishing on a ready slot is not a drain event.
         drop(first);
@@ -1698,7 +1700,7 @@ mod tests {
         let balancer = Balancer::new(vec![server(1, 1), server(2, 1)], 1, 1)
             .with_modes("api", Arc::clone(&modes));
         let (_, guard) = balancer
-            .pick_pinned_tracked(Some(ep(1)), &[])
+            .pick_pinned_tracked(Some(&ep(1)), &[])
             .expect("pick");
         assert_eq!(guard.mode(), ServerMode::Ready, "a fresh slot is ready");
         modes.set("api", "127.0.0.1:2", ServerMode::Maintenance);
@@ -1721,7 +1723,7 @@ mod tests {
         let balancer =
             Balancer::new(vec![server(1, 1)], 1, 1).with_modes("api", Arc::clone(&modes));
         let (_, guard) = balancer
-            .pick_pinned_tracked(Some(ep(1)), &[])
+            .pick_pinned_tracked(Some(&ep(1)), &[])
             .expect("pick");
         modes.set("api", "127.0.0.1:1", ServerMode::Maintenance);
         let view = balancer.servers_view().remove(0);
@@ -1832,13 +1834,13 @@ mod tests {
     fn affinity_never_pins_to_a_backup_while_a_primary_is_up() {
         let balancer = Balancer::new(vec![server(1, 1), backup(2, 1)], 1, 1);
         assert_eq!(
-            balancer.pick_pinned(Some(ep(2)), &[]),
+            balancer.pick_pinned(Some(&ep(2)), &[]),
             Some(ep(1)),
             "a sticky key aimed at a backup is served by the eligible primary"
         );
         balancer.report_fail(&ep(1));
         assert_eq!(
-            balancer.pick_pinned(Some(ep(2)), &[]),
+            balancer.pick_pinned(Some(&ep(2)), &[]),
             Some(ep(2)),
             "with the primary down the pinned backup serves"
         );
@@ -1930,11 +1932,11 @@ mod tests {
     fn affinity_lands_on_the_active_backup_rung() {
         let balancer = Balancer::new(vec![backup_with(1, 1, 5), backup_with(2, 1, 10)], 1, 1);
         assert_eq!(
-            balancer.pick_pinned(Some(ep(1)), &[]),
+            balancer.pick_pinned(Some(&ep(1)), &[]),
             Some(ep(2)),
             "a sticky key aimed at a lower rung is served by the active one"
         );
-        assert_eq!(balancer.pick_pinned(Some(ep(2)), &[]), Some(ep(2)));
+        assert_eq!(balancer.pick_pinned(Some(&ep(2)), &[]), Some(ep(2)));
     }
 
     #[test]
@@ -2093,14 +2095,14 @@ mod tests {
     fn affinity_pins_inside_the_backup_pool() {
         let balancer = Balancer::new(vec![backup(1, 1), backup(2, 1)], 1, 1).with_all_backups(true);
         assert_eq!(
-            balancer.pick_pinned(Some(ep(1)), &[]),
+            balancer.pick_pinned(Some(&ep(1)), &[]),
             Some(ep(1)),
             "a sticky key keeps its pool member while that member is eligible"
         );
-        assert_eq!(balancer.pick_pinned(Some(ep(2)), &[]), Some(ep(2)));
+        assert_eq!(balancer.pick_pinned(Some(&ep(2)), &[]), Some(ep(2)));
         balancer.report_fail(&ep(1));
         assert_eq!(
-            balancer.pick_pinned(Some(ep(1)), &[]),
+            balancer.pick_pinned(Some(&ep(1)), &[]),
             Some(ep(2)),
             "a sticky key aimed at a dead member falls to the next one in configuration order"
         );

@@ -21,7 +21,7 @@
 //!   case-sensitive).
 //! - `headers`: the name is case-insensitive; `present` only checks
 //!   existence, `exact` compares the value byte-for-byte and `regex` is
-//!   unanchored. Several header conditions are ANDed.
+//!   unanchored. Several header conditions are `ANDed`.
 //! - `ip`: the effective source address (the PROXY v1 claim when enabled)
 //!   must fall inside one of the CIDR blocks.
 //! - `cookies` (B-I11): the `cookie` request header is parsed RFC 6265
@@ -33,7 +33,7 @@
 //!   `path`, `method` or a header value) must exist in the named hot
 //!   data map and — when `equals` is set — map to that exact value.
 //!
-//! All conditions of one rule are ANDed. A rule with no conditions is
+//! All conditions of one rule are `ANDed`. A rule with no conditions is
 //! rejected at the config gate: the catch-all case is the listener's
 //! default backend.
 
@@ -325,7 +325,7 @@ struct MapMatch {
     equals: Option<String>,
 }
 
-/// Compiled rule: conditions ANDed, evaluated by [`Self::matches`] /
+/// Compiled rule: conditions `ANDed`, evaluated by [`Self::matches`] /
 /// [`Self::explain`].
 #[derive(Debug, Clone)]
 pub struct Rule {
@@ -354,6 +354,14 @@ fn err(field: &str, cause: impl Into<String>, example: impl Into<String>) -> Rul
 
 impl Rule {
     /// Compiles and validates a rule. Every error names its field.
+    ///
+    /// # Errors
+    ///
+    /// Returns `RuleError` with field, cause and example when the spec has
+    /// conflicting host variants, no action or several actions, an unknown
+    /// map, an invalid regex or template, or a condition without a value.
+    // One linear validation pipeline: every gate must stay visible in order.
+    #[allow(clippy::too_many_lines)]
     pub fn compile(spec: &RuleSpec) -> Result<Self, RuleError> {
         let host_variants = [
             spec.host.is_some(),
@@ -649,6 +657,13 @@ impl Rule {
 
     /// `Ok(())` when the rule matches; `Err(reason)` names the first
     /// condition that failed (the "why not", for `config explain`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with the human reason of the first condition that did
+    /// not match: that reason is the `config explain` output, not a failure.
+    // One condition per block, in rule order: the output reads like `explain`.
+    #[allow(clippy::too_many_lines)]
     pub fn explain(&self, facts: &RequestFacts<'_>) -> Result<(), String> {
         if let Some(host) = &self.host {
             let got = host_key(facts.host);
@@ -772,14 +787,13 @@ fn value_match_reason(
         (ValueMatch::Present, Some(_)) => None,
         (ValueMatch::Exact(want), Some(got)) if got == want => None,
         (ValueMatch::Regex(regex), Some(got)) if regex.is_match(got) => None,
-        (ValueMatch::Present, None) => Some(format!("{kind} {name:?}: not present")),
+        (_, None) => Some(format!("{kind} {name:?}: not present")),
         (ValueMatch::Exact(want), Some(got)) => {
             Some(format!("{kind} {name:?}: expected {want:?}, got {got:?}"))
         }
         (ValueMatch::Regex(_), Some(got)) => {
             Some(format!("{kind} {name:?}: pattern does not match {got:?}"))
         }
-        (_, None) => Some(format!("{kind} {name:?}: not present")),
     }
 }
 
@@ -889,6 +903,12 @@ pub fn path_of(target: &str) -> &str {
 
 /// Validates a redirect `location` template (placeholders only, no
 /// control characters). Called by the config gate, once per rule.
+///
+/// # Errors
+///
+/// Returns `RenderError` when the template is empty, carries control
+/// characters, or uses a placeholder other than `$host`, `$uri` and
+/// `$request_uri`.
 pub fn validate_location(template: &str) -> Result<(), RenderError> {
     if template.is_empty() {
         return Err(RenderError::EmptyLocation);
@@ -921,6 +941,11 @@ pub fn validate_location(template: &str) -> Result<(), RenderError> {
 /// is the Host header as received (may carry `:port`) and `target` the
 /// full request target as received (path + query). Errors only on an
 /// unvalidated template (defense in depth at runtime).
+///
+/// # Errors
+///
+/// Returns `RenderError` only when `template` fails [`validate_location`]
+/// (defense in depth: the config gate already checked it).
 pub fn render_location(template: &str, host: &str, target: &str) -> Result<String, RenderError> {
     validate_location(template)?;
     let mut out = String::with_capacity(template.len() + 16);
@@ -948,6 +973,11 @@ pub fn render_location(template: &str, host: &str, target: &str) -> Result<Strin
 /// (CR/LF in a value would smuggle headers). Every `$` must start one
 /// of those placeholders — a literal `$` has no escape, write the value
 /// without one. Called by the config gate, once per header action.
+///
+/// # Errors
+///
+/// Returns `RenderError` when the template carries control characters or a
+/// `$` that starts no supported placeholder.
 pub fn validate_header_value(template: &str) -> Result<(), RenderError> {
     if template.bytes().any(|b| b < 0x20 || b == 0x7f) {
         return Err(RenderError::ControlCharacters { field: "value" });
@@ -973,6 +1003,12 @@ pub fn validate_header_value(template: &str) -> Result<(), RenderError> {
 /// reception is on), `host` the Host header as received and `scheme`
 /// the client-facing scheme (`http`/`https`). Errors only on an
 /// unvalidated template (defense in depth at runtime).
+///
+/// # Errors
+///
+/// Returns `RenderError` only when `template` fails
+/// [`validate_header_value`] (defense in depth: the config gate already
+/// checked it).
 pub fn render_header_value(
     template: &str,
     remote_addr: &str,
@@ -1089,14 +1125,14 @@ mod tests {
         }
     }
 
-    fn compile(spec: RuleSpec) -> Rule {
-        Rule::compile(&spec).expect("rule compiles")
+    fn compile(spec: &RuleSpec) -> Rule {
+        Rule::compile(spec).expect("rule compiles")
     }
 
     #[test]
     fn malformed_hosts_keep_the_existing_host_key_semantics() {
         let exact = |host: &str| {
-            compile(RuleSpec {
+            compile(&RuleSpec {
                 name: "h".to_owned(),
                 host: Some(host.to_owned()),
                 ..RuleSpec::default()
@@ -1112,7 +1148,7 @@ mod tests {
 
     #[test]
     fn host_exact_ignores_case_and_port() {
-        let rule = compile(RuleSpec {
+        let rule = compile(&RuleSpec {
             name: "api".to_owned(),
             host: Some("API.Example.com".to_owned()),
             ..RuleSpec::default()
@@ -1125,7 +1161,7 @@ mod tests {
 
     #[test]
     fn host_exact_ignores_one_trailing_dns_dot() {
-        let rule = compile(RuleSpec {
+        let rule = compile(&RuleSpec {
             name: "api".to_owned(),
             host: Some("API.Example.com.".to_owned()),
             ..RuleSpec::default()
@@ -1135,7 +1171,7 @@ mod tests {
         assert!(rule.matches(&facts("GET", "api.example.com.:8443", "/")));
         assert!(!rule.matches(&facts("GET", "api.example.com.evil", "/")));
 
-        let plain = compile(RuleSpec {
+        let plain = compile(&RuleSpec {
             name: "plain".to_owned(),
             host: Some("api.example.com".to_owned()),
             ..RuleSpec::default()
@@ -1145,7 +1181,7 @@ mod tests {
 
     #[test]
     fn host_prefix_and_regex() {
-        let prefix = compile(RuleSpec {
+        let prefix = compile(&RuleSpec {
             name: "p".to_owned(),
             host_prefix: Some("api.".to_owned()),
             ..RuleSpec::default()
@@ -1155,7 +1191,7 @@ mod tests {
         // The trailing dot in `api.` is a label boundary, never stripped.
         assert!(!prefix.matches(&facts("GET", "apix.example.com", "/")));
 
-        let regex = compile(RuleSpec {
+        let regex = compile(&RuleSpec {
             name: "r".to_owned(),
             host_regex: Some(r"^api-[0-9]+\.".to_owned()),
             ..RuleSpec::default()
@@ -1166,7 +1202,7 @@ mod tests {
 
     #[test]
     fn path_matching_is_literal_and_case_sensitive() {
-        let exact = compile(RuleSpec {
+        let exact = compile(&RuleSpec {
             name: "e".to_owned(),
             path: Some("/Health".to_owned()),
             ..RuleSpec::default()
@@ -1175,7 +1211,7 @@ mod tests {
         assert!(!exact.matches(&facts("GET", "x", "/health")));
 
         // Literal prefix: `/v1` reaches `/v10` too (documented ceiling).
-        let prefix = compile(RuleSpec {
+        let prefix = compile(&RuleSpec {
             name: "p".to_owned(),
             path_prefix: Some("/v1".to_owned()),
             ..RuleSpec::default()
@@ -1185,7 +1221,7 @@ mod tests {
         assert!(prefix.matches(&facts("GET", "x", "/v1/users")));
         assert!(!prefix.matches(&facts("GET", "x", "/v0")));
 
-        let regex = compile(RuleSpec {
+        let regex = compile(&RuleSpec {
             name: "r".to_owned(),
             path_regex: Some(r"\.json$".to_owned()),
             ..RuleSpec::default()
@@ -1196,7 +1232,7 @@ mod tests {
 
     #[test]
     fn methods_headers_and_ip_conditions_and_with_the_rest() {
-        let rule = compile(RuleSpec {
+        let rule = compile(&RuleSpec {
             name: "all".to_owned(),
             methods: vec!["GET".to_owned(), "HEAD".to_owned()],
             headers: vec![
@@ -1242,7 +1278,7 @@ mod tests {
 
     #[test]
     fn explain_names_the_first_failing_condition() {
-        let rule = compile(RuleSpec {
+        let rule = compile(&RuleSpec {
             name: "api".to_owned(),
             host: Some("api.example.com".to_owned()),
             path_prefix: Some("/v1/".to_owned()),
@@ -1303,7 +1339,7 @@ mod tests {
     /// request looks like (the explain path is what operators read).
     #[test]
     fn matches_agrees_with_explain_on_a_generated_cross_product() {
-        let rule = compile(RuleSpec {
+        let rule = compile(&RuleSpec {
             name: "prop".to_owned(),
             host_prefix: Some("api.".to_owned()),
             path_regex: Some("^/v[0-9]/".to_owned()),
@@ -1379,7 +1415,7 @@ mod tests {
 
     #[test]
     fn cookie_conditions_match_and_explain() {
-        let rule = compile(RuleSpec {
+        let rule = compile(&RuleSpec {
             name: "canary".to_owned(),
             cookies: vec![
                 CookieSpec::exact("Canary", "always"),
@@ -1443,7 +1479,7 @@ mod tests {
             "tenants",
             "acme.example vip\nother.example free\nacme tenant\n",
         );
-        let rule = compile(RuleSpec {
+        let rule = compile(&RuleSpec {
             name: "vip".to_owned(),
             map: Some(MapConditionSpec {
                 name: "tenants".to_owned(),
@@ -1480,7 +1516,7 @@ mod tests {
         );
 
         // Presence-only form (no `equals`): any entry matches.
-        let rule = compile(RuleSpec {
+        let rule = compile(&RuleSpec {
             name: "known".to_owned(),
             map: Some(MapConditionSpec {
                 name: "tenants".to_owned(),
@@ -1522,7 +1558,7 @@ mod tests {
         let err = Rule::compile(&RuleSpec {
             name: "x".to_owned(),
             map: Some(MapConditionSpec {
-                name: "".to_owned(),
+                name: String::new(),
                 key: Some("ip".to_owned()),
                 header: None,
                 equals: None,
@@ -1538,7 +1574,7 @@ mod tests {
     #[test]
     fn matches_agrees_with_explain_with_cookies_and_maps() {
         let registry = registry_with("t", "api.example.com on\n");
-        let rule = compile(RuleSpec {
+        let rule = compile(&RuleSpec {
             name: "prop".to_owned(),
             cookies: vec![CookieSpec::regex("canary", "^v[0-9]+$")],
             map: Some(MapConditionSpec {

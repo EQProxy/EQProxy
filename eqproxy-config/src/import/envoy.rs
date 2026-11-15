@@ -1,4 +1,4 @@
-//! Envoy (v3 bootstrap) → EQProxy.
+//! Envoy (v3 bootstrap) → `EQProxy`.
 //!
 //! Reads `static_resources.clusters` (endpoints, weights, health checks, TLS,
 //! h2), `static_resources.listeners` (socket address, TLS context,
@@ -130,6 +130,7 @@ fn socket_address(value: &Value) -> Option<String> {
 // Clusters
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_lines)]
 fn cluster(conv: &mut Conv, cluster: &Value) -> Result<(), ImportError> {
     let name = cluster
         .get("name")
@@ -193,7 +194,7 @@ fn cluster(conv: &mut Conv, cluster: &Value) -> Result<(), ImportError> {
                     conv.done(1, &text, &context, "balance = \"roundrobin\"");
                 }
                 "LEAST_REQUEST" => {
-                    backend.balance = "leastconn".to_owned();
+                    "leastconn".clone_into(&mut backend.balance);
                     conv.done(1, &text, &context, "balance = \"leastconn\"");
                 }
                 other => conv.gap(
@@ -204,11 +205,10 @@ fn cluster(conv: &mut Conv, cluster: &Value) -> Result<(), ImportError> {
                 ),
             },
             "load_assignment" => {
-                for endpoint in value.get("endpoints").map(Value::items).unwrap_or(&[]) {
+                for endpoint in value.get("endpoints").map_or_default(Value::items) {
                     for balancer in endpoint
                         .get("lb_endpoints")
-                        .map(Value::items)
-                        .unwrap_or(&[])
+                        .map_or_default(Value::items)
                     {
                         let Some(address) = balancer
                             .get("endpoint")
@@ -411,7 +411,7 @@ fn health_check(conv: &mut Conv, check: &Value, context: &str, backend: &mut sup
             .map(str::to_owned);
     }
     health.kind = if kind == "http" { Some("http") } else { None };
-    health.http_path = path.clone();
+    health.http_path.clone_from(&path);
     backend.health_check = Some(health);
     let text = format!(
         "health_check {}{}",
@@ -433,6 +433,7 @@ fn health_check(conv: &mut Conv, check: &Value, context: &str, backend: &mut sup
 // Listeners
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_lines)]
 fn listener(conv: &mut Conv, listener: &Value) -> Result<(), ImportError> {
     let name = listener
         .get("name")
@@ -468,10 +469,7 @@ fn listener(conv: &mut Conv, listener: &Value) -> Result<(), ImportError> {
         return Ok(());
     };
 
-    let chains = listener
-        .get("filter_chains")
-        .map(Value::items)
-        .unwrap_or(&[]);
+    let chains = listener.get("filter_chains").map_or_default(Value::items);
     if chains.len() > 1 {
         conv.gap(
             1,
@@ -499,8 +497,7 @@ fn listener(conv: &mut Conv, listener: &Value) -> Result<(), ImportError> {
         let far = typed.get("common_tls_context").unwrap_or(typed);
         if let Some(cert) = far
             .get("tls_certificates")
-            .map(Value::items)
-            .unwrap_or(&[])
+            .map_or_default(Value::items)
             .first()
         {
             let cert_file = cert
@@ -514,8 +511,7 @@ fn listener(conv: &mut Conv, listener: &Value) -> Result<(), ImportError> {
             if let (Some(cert_file), Some(key_file)) = (cert_file, key_file) {
                 let alpn = far
                     .get("alpn_protocols")
-                    .map(Value::items)
-                    .unwrap_or(&[])
+                    .map_or_default(Value::items)
                     .iter()
                     .filter_map(|item| item.text().map(str::to_owned))
                     .collect();
@@ -546,9 +542,10 @@ fn listener(conv: &mut Conv, listener: &Value) -> Result<(), ImportError> {
                     let raw = tls_params
                         .and_then(|params| params.get(key))
                         .and_then(Value::text);
-                    raw.and_then(|raw| match version(raw) {
-                        Some(version) => Some(version),
-                        None => {
+                    raw.and_then(|raw| {
+                        if let Some(version) = version(raw) {
+                            Some(version)
+                        } else {
                             conv.review(
                                 1,
                                 format!("{key}: {raw}"),
@@ -562,6 +559,7 @@ fn listener(conv: &mut Conv, listener: &Value) -> Result<(), ImportError> {
                 let min_version = read_version("tls_minimum_protocol_version");
                 let max_version = read_version("tls_maximum_protocol_version");
                 tls = Some(ListenerTls {
+                    certs: Vec::new(),
                     cert: cert_file.to_owned(),
                     key: key_file.to_owned(),
                     alpn,
@@ -603,7 +601,7 @@ fn listener(conv: &mut Conv, listener: &Value) -> Result<(), ImportError> {
     // locally. EQProxy models them per listener (ADR-0045).
     let mut error_pages: Vec<super::ErrorPageIr> = Vec::new();
 
-    for filter in chain.get("filters").map(Value::items).unwrap_or(&[]) {
+    for filter in chain.get("filters").map_or_default(Value::items) {
         let filter_name = filter.get("name").and_then(Value::text).unwrap_or_default();
         let typed = filter.get("typed_config").unwrap_or(filter);
         let before = conv.notes.len();
@@ -621,7 +619,7 @@ fn listener(conv: &mut Conv, listener: &Value) -> Result<(), ImportError> {
                         convert_duration(conv, value, "s", "request_headers_timeout", &context);
                 }
                 if let Some(local) = typed.get("local_reply_config") {
-                    for mapper in local.get("mappers").map(Value::items).unwrap_or(&[]) {
+                    for mapper in local.get("mappers").map_or_default(Value::items) {
                         let code = match local_reply_code(mapper) {
                             Ok(code) => code,
                             Err(reason) => {
@@ -701,21 +699,24 @@ fn listener(conv: &mut Conv, listener: &Value) -> Result<(), ImportError> {
                 if let Some(route_config) = typed.get("route_config") {
                     for host in route_config
                         .get("virtual_hosts")
-                        .map(Value::items)
-                        .unwrap_or(&[])
+                        .map_or_default(Value::items)
                     {
                         let (host_regex, host_exact) = domains(host, conv, &context);
-                        for route in host.get("routes").map(Value::items).unwrap_or(&[]) {
-                            let Some(rule) =
-                                route_rule(conv, route, &context, &host_regex, &host_exact)
-                            else {
+                        for route in host.get("routes").map_or_default(Value::items) {
+                            let Some(rule) = route_rule(
+                                conv,
+                                route,
+                                &context,
+                                host_regex.as_ref(),
+                                host_exact.as_ref(),
+                            ) else {
                                 continue;
                             };
                             rules.push(rule);
                         }
                     }
                 }
-                for http_filter in typed.get("http_filters").map(Value::items).unwrap_or(&[]) {
+                for http_filter in typed.get("http_filters").map_or_default(Value::items) {
                     let filter = http_filter
                         .get("name")
                         .and_then(Value::text)
@@ -835,7 +836,7 @@ fn listener(conv: &mut Conv, listener: &Value) -> Result<(), ImportError> {
             1,
             format!("listener {name}"),
             &context,
-            "sin backend de respaldo: EQProxy exige uno por listener",
+            "sin backend de respaldo ni redirect traducible para el listener",
         );
         return Ok(());
     };
@@ -918,11 +919,11 @@ fn local_reply_parse(raw: &str) -> Result<u16, String> {
         .map_err(|_| format!("«{raw}» no es un código de estado"))
 }
 
-/// Translates Envoy `domains` into EQProxy host conditions.
+/// Translates Envoy `domains` into `EQProxy` host conditions.
 fn domains(host: &Value, conv: &mut Conv, context: &str) -> (Option<String>, Option<String>) {
     let mut exact = None;
     let mut regex = None;
-    for domain in host.get("domains").map(Value::items).unwrap_or(&[]) {
+    for domain in host.get("domains").map_or_default(Value::items) {
         let Some(domain) = domain.text() else {
             continue;
         };
@@ -963,12 +964,13 @@ fn domains(host: &Value, conv: &mut Conv, context: &str) -> (Option<String>, Opt
 }
 
 /// One Envoy route → one `[[listener.*.rules]]`.
+#[allow(clippy::too_many_lines)]
 fn route_rule(
     conv: &mut Conv,
     route: &Value,
     context: &str,
-    host_regex: &Option<String>,
-    host_exact: &Option<String>,
+    host_regex: Option<&String>,
+    host_exact: Option<&String>,
 ) -> Option<Rule> {
     let matched = route.get("match")?;
     let (path, prefix) = match (
@@ -991,16 +993,18 @@ fn route_rule(
     let mut rule = Rule {
         name: format!(
             "{}{path}",
-            host_exact.clone().unwrap_or_else(|| "-".to_owned())
+            host_exact.cloned().unwrap_or_else(|| "-".to_owned())
         ),
-        host: host_exact.clone(),
+        host: host_exact.cloned(),
         path_prefix: if prefix { Some(path.clone()) } else { None },
         path: if prefix { None } else { Some(path.clone()) },
         ..Rule::default()
     };
     // A wildcard domain (`*.ejemplo.com`) becomes a one-label host regex.
-    if rule.host.is_none() {
-        rule.host_regex = host_regex.clone();
+    if rule.host.is_none()
+        && let Some(regex) = host_regex
+    {
+        rule.host_regex = Some(regex.clone());
     }
     if let Some(cluster) = action.get("cluster").and_then(Value::text) {
         let resolved = super::sanitize_name(cluster);
@@ -1040,25 +1044,22 @@ fn route_rule(
                     .and_then(Value::text)
                     .map(|host| format!("https://{host}$request_uri"))
             });
-        match location {
-            Some(location) => {
-                rule.redirect = Some((None, location));
-                conv.done(
-                    1,
-                    format!("route {path} redirect"),
-                    context,
-                    "regla con redirect (302 por defecto; fije el código en el TOML)",
-                );
-            }
-            None => {
-                conv.gap(
-                    1,
-                    format!("route {path} redirect"),
-                    context,
-                    "redirección con plantilla de Envoy sin traducción",
-                );
-                return None;
-            }
+        if let Some(location) = location {
+            rule.redirect = Some((None, location));
+            conv.done(
+                1,
+                format!("route {path} redirect"),
+                context,
+                "regla con redirect (302 por defecto; fije el código en el TOML)",
+            );
+        } else {
+            conv.gap(
+                1,
+                format!("route {path} redirect"),
+                context,
+                "redirección con plantilla de Envoy sin traducción",
+            );
+            return None;
         }
     } else if let Some(direct) = action.get("direct_response") {
         let status = direct
@@ -1121,7 +1122,6 @@ fn route_rule(
 /// Extra keys of a cluster with a known place in `eqproxy.toml`.
 fn cluster_pointer(key: &str) -> Option<String> {
     match key {
-        "alt_stat_name" | "metadata" | "transport_socket_matches" => None,
         "dns_lookup_family" | "dns_refresh_rate" => {
             Some("[backend.*].resolve_interval (re-resolución en caliente del nombre)".to_owned())
         }

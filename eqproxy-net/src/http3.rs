@@ -70,7 +70,7 @@ type H3Stream = h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>;
 /// Serves every QUIC connection of one listener until shutdown.
 ///
 /// `maxconn` is enforced per QUIC connection exactly like TCP: when full the
-/// handshake is refused (quinn sends CONNECTION_CLOSE) and `connections_rejected`
+/// handshake is refused (quinn sends `CONNECTION_CLOSE`) and `connections_rejected`
 /// counts it — there is never an unbounded accept queue.
 pub(crate) async fn serve_endpoint(
     endpoint: quinn::Endpoint,
@@ -283,6 +283,7 @@ fn h3_close_log_line(
 }
 
 /// One h3 request stream: translate to h1, run the engine, relay the answer.
+#[allow(clippy::too_many_lines)]
 async fn exchange(
     request: Request<()>,
     mut stream: H3Stream,
@@ -302,26 +303,20 @@ async fn exchange(
     // Whether the client sent END_STREAM on the HEADERS frame is not exposed
     // by h3: peek once without waiting, so a body-less GET keeps an exact
     // translation (no synthetic `transfer-encoding: chunked` upstream).
-    let (body_empty, first_chunk) = match peek_first_chunk(&mut stream).await {
-        Ok(pair) => pair,
-        Err(()) => {
-            metrics
-                .http_requests_rejected
-                .fetch_add(1, Ordering::Relaxed);
-            stream.stop_stream(h3::error::Code::H3_REQUEST_INCOMPLETE);
-            return;
-        }
+    let Ok((body_empty, first_chunk)) = peek_first_chunk(&mut stream).await else {
+        metrics
+            .http_requests_rejected
+            .fetch_add(1, Ordering::Relaxed);
+        stream.stop_stream(h3::error::Code::H3_REQUEST_INCOMPLETE);
+        return;
     };
-    let translated = match build_request_head(&method, request.uri(), request.headers(), body_empty)
-    {
-        Ok(translated) => translated,
-        Err(()) => {
-            metrics
-                .http_requests_rejected
-                .fetch_add(1, Ordering::Relaxed);
-            refuse(&mut stream, StatusCode::BAD_REQUEST).await;
-            return;
-        }
+    let Ok(translated) = build_request_head(&method, request.uri(), request.headers(), body_empty)
+    else {
+        metrics
+            .http_requests_rejected
+            .fetch_add(1, Ordering::Relaxed);
+        refuse(&mut stream, StatusCode::BAD_REQUEST).await;
+        return;
     };
     let head_request = method == Method::HEAD;
     let framing = translated.framing;
@@ -511,7 +506,7 @@ async fn exchange(
 }
 
 /// Reads the first body chunk without waiting when there is none:
-/// `poll_recv_data` knows END_STREAM synchronously. A pending body leaves the
+/// `poll_recv_data` knows `END_STREAM` synchronously. A pending body leaves the
 /// request on the chunked path (the stream is still open).
 async fn peek_first_chunk(stream: &mut H3Stream) -> Result<(bool, Option<Bytes>), ()> {
     match std::future::poll_fn(|cx| std::task::Poll::Ready(stream.poll_recv_data(cx))).await {
@@ -786,6 +781,7 @@ async fn relay_response<R: AsyncRead + Unpin>(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn relay_inner<R: AsyncRead + Unpin>(
     reader: &mut BufReader<R>,
     sink: &mut Sink<'_>,
@@ -802,15 +798,14 @@ async fn relay_inner<R: AsyncRead + Unpin>(
             pos: 0,
             inner: &mut *reader,
         };
-        let (head, rest) = match read_head(
+        let Ok((head, rest)) = read_head(
             &mut source,
             cfg.server_header_timeout,
             cfg.limits.max_head_bytes,
         )
         .await
-        {
-            Ok(pair) => pair,
-            Err(_) => return Err(StreamError::Io),
+        else {
+            return Err(StreamError::Io);
         };
         carry = rest;
         carry.extend(source.prefix.split_off(source.pos));
@@ -871,7 +866,14 @@ async fn relay_inner<R: AsyncRead + Unpin>(
         BodyFraming::ContentLength(len) => {
             let mut remaining = len;
             while remaining > 0 {
-                let chunk = read_bytes(&mut body, DATA_CHUNK.min(remaining as usize), idle).await?;
+                let chunk = read_bytes(
+                    &mut body,
+                    DATA_CHUNK.min(
+                        usize::try_from(remaining).expect("the value fits in the destination type"),
+                    ),
+                    idle,
+                )
+                .await?;
                 if chunk.is_empty() {
                     return Err(StreamError::Truncated);
                 }
@@ -952,7 +954,14 @@ async fn relay_chunked<R: AsyncRead + Unpin>(
         }
         let mut remaining = size;
         while remaining > 0 {
-            let chunk = read_bytes(body, DATA_CHUNK.min(remaining as usize), idle).await?;
+            let chunk = read_bytes(
+                body,
+                DATA_CHUNK.min(
+                    usize::try_from(remaining).expect("the value fits in the destination type"),
+                ),
+                idle,
+            )
+            .await?;
             if chunk.is_empty() {
                 return Err(StreamError::Truncated);
             }
@@ -1053,7 +1062,7 @@ mod tests {
             0x0110,    // H3_VERSION_FALLBACK
             0x0111,    // first unassigned code after the assigned range
             0x0200,    // unassigned space
-            u32::MAX as u64,
+            u64::from(u32::MAX),
         ];
         for code in codes {
             assert!(

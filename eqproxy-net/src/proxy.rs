@@ -311,7 +311,7 @@ pub struct ResolvedAuth {
 /// Session affinity of a backend (B-H8/B-N13/B-I8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AffinityMode {
-    /// Sticky cookie inserted by the proxy (HAProxy `cookie insert`).
+    /// Sticky cookie inserted by the proxy (`HAProxy` `cookie insert`).
     Cookie,
     /// Hash of the client IP (nginx `ip_hash`).
     Source,
@@ -352,6 +352,7 @@ const BUCKET_IDLE_PRUNE: Duration = Duration::from_secs(60);
 
 impl RateLimiter {
     /// `rate` tokens per `per` window, `burst` capacity.
+    #[must_use]
     pub fn new(rate: u32, per: Duration, burst: u32) -> Self {
         Self {
             rate,
@@ -466,8 +467,9 @@ pub struct ResolvedHeaders {
     pub mirror: Option<Arc<MirrorPolicy>>,
 }
 
-impl<'a> RouteDecision<'a> {
+impl RouteDecision<'_> {
     /// The matched rule's rate limiter (B-N8), whatever the action.
+    #[must_use]
     pub fn rate_limiter(&self) -> Option<&Arc<RateLimiter>> {
         match self {
             RouteDecision::Proxy { headers, .. }
@@ -479,6 +481,7 @@ impl<'a> RouteDecision<'a> {
     }
 
     /// The matched rule's mirror policy (B-H3), when it has one.
+    #[must_use]
     pub fn mirror(&self) -> Option<&Arc<MirrorPolicy>> {
         match self {
             RouteDecision::Proxy { headers, .. }
@@ -490,6 +493,7 @@ impl<'a> RouteDecision<'a> {
     }
 
     /// The matched rule's authentication gate (B-N9), whatever the action.
+    #[must_use]
     pub fn auth(&self) -> Option<&ResolvedAuth> {
         match self {
             RouteDecision::Proxy { headers, .. }
@@ -530,6 +534,11 @@ impl HashPolicy {
     /// `cookie:NAME` or `header:NAME`. The config gate validates the
     /// same grammar (`eqproxy-config`), so a failure here means the two
     /// halves disagree — an error, never a silent fallback.
+    ///
+    ///# Errors
+    ///
+    ///Returns `Err` naming the field and the accepted forms when the address is
+    ///invalid.
     pub fn parse(raw: &str) -> Result<Self, String> {
         let key = raw.trim();
         let kind = match key {
@@ -675,7 +684,11 @@ impl SplitTargets {
             let hash = mix64(fnv1a(&target.backend.name, key));
             // 53 random-ish bits → (0, 1); weighted rendezvous score
             // `weight / -ln(u)` keeps the share proportional to weight.
-            let u = ((hash >> 11) as f64 + 0.5) / (1_u64 << 53) as f64;
+            // `hash >> 11` has 53 bits, exactly the `f64` mantissa: the cast
+            // is lossless, so the precision lint does not apply here.
+            #[allow(clippy::cast_precision_loss)]
+            let bits = (hash >> 11) as f64;
+            let u = (bits + 0.5) / 9_007_199_254_740_992.0;
             // `u` is at least 2^-53, so `-ln(u)` is at least ~36 and the
             // division can never be zero: the guard is the explicit proof
             // of that, not a behavioural change.
@@ -823,19 +836,33 @@ impl Default for ResolvedLimits {
     }
 }
 
+/// Default redirect of a listener that has no backend (nginx
+/// `server { return 301 …; }`): rendered per request like a rule redirect.
+#[derive(Debug, Clone)]
+pub struct ListenerRedirect {
+    pub status: u16,
+    pub location: String,
+}
+
 /// Resolved listener (already-validated config: parsed addresses, sound refs).
 ///
 /// `#[non_exhaustive]`: adding fields is not a breaking change for
-/// consumers (ADR-0004 semver policy). Built with [`Self::new`].
+/// consumers (ADR-0004 semver policy). Built with [`Self::new`] or
+/// [`Self::redirect`].
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct ResolvedListener {
     pub name: String,
     pub listen: SocketAddr,
+    /// Backend name, or `redirect` when the fallback is a local 3xx.
     pub backend_name: String,
     /// Default backend (servers + balancing + TLS + PROXY): the fallback
-    /// when no rule matches (and the only backend in `tcp` mode).
-    pub backend: Arc<ResolvedBackend>,
+    /// when no rule matches (and the only backend in `tcp` mode). `None`
+    /// only when [`redirect`](Self::redirect) is set.
+    pub backend: Option<Arc<ResolvedBackend>>,
+    /// Default local redirect, used when no rule matches and there is no
+    /// backend. The two fallbacks are mutually exclusive.
+    pub redirect: Option<ListenerRedirect>,
     /// Ordered routing rules (`http` only, B-H3/B-H4): first match wins.
     pub routes: Vec<ResolvedRoute>,
     pub mode: ProxyMode,
@@ -903,12 +930,78 @@ impl ResolvedListener {
         server_header_timeout: Duration,
     ) -> Self {
         let backend_name = backend_name.into();
+        let mut listener = Self::bare(
+            name,
+            listen,
+            mode,
+            maxconn,
+            connect_timeout,
+            idle_timeout,
+            client_header_timeout,
+            server_header_timeout,
+        );
+        listener.backend_name.clone_from(&backend_name);
+        listener.backend = Some(Arc::new(ResolvedBackend::single(
+            backend_name,
+            server.into(),
+        )));
+        listener
+    }
+
+    /// Builds a listener whose default action is a local 3xx, with no
+    /// backend at all. Immutable configuration is attached with the same
+    /// `with_*` builders as any other listener.
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn redirect(
+        name: impl Into<String>,
+        listen: SocketAddr,
+        status: u16,
+        location: impl Into<String>,
+        mode: ProxyMode,
+        maxconn: u32,
+        connect_timeout: Duration,
+        idle_timeout: Duration,
+        client_header_timeout: Duration,
+        server_header_timeout: Duration,
+    ) -> Self {
+        let mut listener = Self::bare(
+            name,
+            listen,
+            mode,
+            maxconn,
+            connect_timeout,
+            idle_timeout,
+            client_header_timeout,
+            server_header_timeout,
+        );
+        "redirect".clone_into(&mut listener.backend_name);
+        listener.redirect = Some(ListenerRedirect {
+            status,
+            location: location.into(),
+        });
+        listener
+    }
+
+    /// Shared field initialisation for [`Self::new`] and [`Self::redirect`].
+    #[allow(clippy::too_many_arguments)]
+    fn bare(
+        name: impl Into<String>,
+        listen: SocketAddr,
+        mode: ProxyMode,
+        maxconn: u32,
+        connect_timeout: Duration,
+        idle_timeout: Duration,
+        client_header_timeout: Duration,
+        server_header_timeout: Duration,
+    ) -> Self {
         Self {
             name: name.into(),
             listen,
-            backend: Arc::new(ResolvedBackend::single(backend_name.clone(), server.into())),
+            backend_name: String::new(),
+            backend: None,
+            redirect: None,
             routes: Vec::new(),
-            backend_name,
             mode,
             maxconn,
             connect_timeout,
@@ -972,8 +1065,9 @@ impl ResolvedListener {
     /// Replaces the backend with a full one (multi-server, TLS, PROXY, …).
     #[must_use]
     pub fn with_backend(mut self, backend: Arc<ResolvedBackend>) -> Self {
-        self.backend_name = backend.name.clone();
-        self.backend = backend;
+        self.backend_name.clone_from(&backend.name);
+        self.backend = Some(backend);
+        self.redirect = None;
         self
     }
 
@@ -994,9 +1088,9 @@ impl ResolvedListener {
             .any(|route| route.rule.has_host_condition())
     }
 
-    /// Decision for one request: first matching rule wins, the default
-    /// backend is the fallback (per-request: keep-alive connections may
-    /// route each exchange differently).
+    /// Decision for one request: first matching rule wins; the listener's
+    /// default backend or redirect is the fallback (per-request: keep-alive
+    /// connections may route each exchange differently).
     #[must_use]
     pub fn decide(&self, facts: &eqproxy_core::rules::RequestFacts<'_>) -> RouteDecision<'_> {
         self.decide_routed(facts).0
@@ -1004,17 +1098,41 @@ impl ResolvedListener {
 
     /// [`decide`](Self::decide) plus the **name** of the rule that produced
     /// the decision (CE4): `None` when no rule matched and the listener's
-    /// default backend took the request. The name is borrowed from the
-    /// listener, so attributing an exchange allocates nothing.
+    /// default backend or redirect took the request. The name is borrowed
+    /// from the listener, so attributing an exchange allocates nothing.
     #[must_use]
     pub fn decide_routed(
         &self,
         facts: &eqproxy_core::rules::RequestFacts<'_>,
     ) -> (RouteDecision<'_>, Option<&str>) {
         let Some(route) = self.routes.iter().find(|route| route.rule.matches(facts)) else {
+            if let Some(redirect) = &self.redirect {
+                return (
+                    RouteDecision::Redirect {
+                        status: redirect.status,
+                        location: &redirect.location,
+                        headers: None,
+                    },
+                    None,
+                );
+            }
+            let Some(backend) = &self.backend else {
+                // The configuration gate requires exactly one fallback. This
+                // is unreachable for validated input; fail closed instead of
+                // panicking if a caller builds a listener by hand.
+                return (
+                    RouteDecision::Direct {
+                        status: 500,
+                        content_type: "text/plain",
+                        body: "listener has no fallback",
+                        headers: None,
+                    },
+                    None,
+                );
+            };
             return (
                 RouteDecision::Proxy {
-                    backend: &self.backend,
+                    backend,
                     rewrite: None,
                     headers: None,
                 },
@@ -1071,17 +1189,19 @@ impl ResolvedListener {
     /// Every distinct backend this listener can route to (default +
     /// rule actions of the forwarding kind: `use_backend` and `split`).
     pub fn all_backends(&self) -> impl Iterator<Item = &Arc<ResolvedBackend>> {
-        std::iter::once(&self.backend).chain(self.routes.iter().flat_map(|route| {
-            let mut backends: Vec<&Arc<ResolvedBackend>> = Vec::new();
-            match &route.action {
-                RouteAction::Backend { backend, .. } => backends.push(backend),
-                RouteAction::Split { targets, .. } => {
-                    backends.extend(targets.targets().iter().map(|t| &t.backend));
+        self.backend
+            .iter()
+            .chain(self.routes.iter().flat_map(|route| {
+                let mut backends: Vec<&Arc<ResolvedBackend>> = Vec::new();
+                match &route.action {
+                    RouteAction::Backend { backend, .. } => backends.push(backend),
+                    RouteAction::Split { targets, .. } => {
+                        backends.extend(targets.targets().iter().map(|t| &t.backend));
+                    }
+                    RouteAction::Redirect { .. } | RouteAction::Direct { .. } => {}
                 }
-                RouteAction::Redirect { .. } | RouteAction::Direct { .. } => {}
-            }
-            backends
-        }))
+                backends
+            }))
     }
 
     /// Enables TLS termination on the listener (A11).
@@ -1341,11 +1461,16 @@ struct Entry {
 }
 
 /// One live QUIC endpoint: QUIC endpoint + h3 accept task. Dropping it stops
-/// the task and sends CONNECTION_CLOSE to every live connection.
+/// the task and sends `CONNECTION_CLOSE` to every live connection.
 struct QuicEntry {
     /// A second handle so a stop closes the endpoint immediately instead of
     /// waiting for the accept loop to drop its own clone.
     endpoint: quinn::Endpoint,
+    /// The acceptor whose certificate resolver this endpoint captured when it
+    /// was built. A live QUIC endpoint freezes its rustls config, so a renewal
+    /// must update **this** resolver; the acceptor of the current config
+    /// generation is a different object after the first swap.
+    server_tls: Option<tls::ServerTls>,
     stop: ShutdownHandle,
     task: JoinHandle<()>,
 }
@@ -1462,6 +1587,11 @@ const QUIC_BIND_ATTEMPTS: u32 = 8;
 /// Opens all listeners and starts their accept loops. Fails whole when
 /// any one cannot open (SPEC §7.2): the already-opened ones close and an
 /// error returns — never partially started.
+///
+///# Errors
+///
+///Returns `ProxyError` when a listener cannot be bound or a target cannot
+///be resolved.
 pub async fn bind(
     listeners: Vec<ResolvedListener>,
     metrics: Arc<Metrics>,
@@ -1593,6 +1723,9 @@ fn spawn_quic(
     name: String,
     metrics: Arc<Metrics>,
 ) -> QuicEntry {
+    // Capture the acceptor whose resolver the endpoint was built from. It is
+    // the only one a live endpoint consults, regardless of later generations.
+    let server_tls = current_cfg(&shared).server_tls.clone();
     let (stop, shutdown) = eqproxy_core::shutdown::channel();
     let task = tokio::spawn(crate::http3::serve_endpoint(
         endpoint.clone(),
@@ -1603,6 +1736,7 @@ fn spawn_quic(
     ));
     QuicEntry {
         endpoint,
+        server_tls,
         stop,
         task,
     }
@@ -1651,6 +1785,12 @@ impl BoundProxy {
     /// were accepted with. Known edge: renaming a listener while keeping
     /// its exact address is rejected (the socket is still held); keep the
     /// name to keep the socket.
+    #[allow(clippy::too_many_lines)]
+    ///
+    ///# Errors
+    ///
+    ///Returns `ProxyError` when the new snapshot does not bind or resolve; the
+    ///running configuration keeps serving untouched.
     pub async fn apply(
         &mut self,
         listeners: Vec<ResolvedListener>,
@@ -1694,11 +1834,12 @@ impl BoundProxy {
             let quic = if !cfg.quic {
                 KeptQuic::None
             } else if running.quic {
-                let old = running.server_tls.as_ref().map(tls::ServerTls::fingerprint);
-                let new = cfg.server_tls.as_ref().map(tls::ServerTls::fingerprint);
-                if old == new {
-                    KeptQuic::None
-                } else if running
+                // Always install the candidate in the endpoint's resolver,
+                // even when its material fingerprint matches the acceptor's:
+                // that fingerprint belongs to the generation the acceptor was
+                // built from, not necessarily to the material it serves now
+                // after a renewal. Adopting is an idempotent lock write.
+                if running
                     .server_tls
                     .as_ref()
                     .zip(cfg.server_tls.as_ref())
@@ -1726,7 +1867,7 @@ impl BoundProxy {
             removed: 0,
         };
         let mut keep = vec![false; self.entries.len()];
-        for (cfg, prepared) in prepared {
+        for (mut cfg, prepared) in prepared {
             let name = cfg.name.clone();
             match prepared {
                 PreparedSocket::Kept { index, quic } => {
@@ -1736,14 +1877,25 @@ impl BoundProxy {
                     let stop_quic = current_cfg(&entry.cfg).quic && !cfg.quic;
                     if matches!(quic, KeptQuic::Adopt) {
                         // Install the new chains/keys in the resolver the live
-                        // endpoint reads, before the config the TCP side will
-                        // use replaces this generation: both sides then serve
-                        // the same certificate from the same atomic swap.
+                        // endpoint captured when it was opened. Updating the
+                        // current generation's acceptor would leave QUIC on
+                        // the first generation's resolver forever: after a
+                        // prior swap those are different objects. The new
+                        // config then reuses the endpoint's acceptor, so TCP
+                        // and QUIC keep one resolver and one atomic swap.
                         let running = current_cfg(&entry.cfg);
-                        if let (Some(old), Some(new)) =
-                            (running.server_tls.as_ref(), cfg.server_tls.as_ref())
-                        {
-                            old.adopt_certificates(new);
+                        let new = cfg.server_tls.as_ref();
+                        if let Some(new) = new {
+                            if let Some(live) = entry
+                                .quic
+                                .as_ref()
+                                .and_then(|quic| quic.server_tls.as_ref())
+                            {
+                                live.adopt_certificates(new);
+                                cfg.server_tls = Some(live.clone());
+                            } else if let Some(old) = running.server_tls.as_ref() {
+                                old.adopt_certificates(new);
+                            }
                         }
                     }
                     // The endpoint reads the new config from the shared slot
@@ -1860,6 +2012,11 @@ impl BoundProxy {
     }
 
     /// Serves until the shutdown signal; then drains until `grace`.
+    ///
+    ///# Errors
+    ///
+    ///Returns `ProxyError` when a listener fails to serve or a reload is
+    ///rejected.
     pub async fn serve(self, shutdown: Shutdown, grace: Duration) -> Result<(), ProxyError> {
         // No reload source: the channel stays silent for the whole life
         // of the dataplane.
@@ -1871,6 +2028,11 @@ impl BoundProxy {
     /// swaps that arrive through `reloads` (S-CFG-01). A rejected swap
     /// keeps serving the running config; a closed channel only disables
     /// the reloads.
+    ///
+    ///# Errors
+    ///
+    ///Returns `ProxyError` when a listener fails to serve or a reload is
+    ///rejected.
     pub async fn serve_with_reloads(
         mut self,
         mut shutdown: Shutdown,
@@ -2041,7 +2203,7 @@ impl Drop for ConnectionGuard {
 fn select_server<'a>(
     backend: &'a ResolvedBackend,
     exclude: &[Endpoint],
-    preferred: Option<Endpoint>,
+    preferred: Option<&Endpoint>,
 ) -> Result<(Endpoint, ActiveGuard<'a>), OutboundError> {
     // `preferred = None` is the plain pick (roundrobin / leastconn); with
     // affinity the pin wins and falls forward past down/excluded servers
@@ -2063,7 +2225,7 @@ async fn pick_server<'a>(
     preferred: Option<Endpoint>,
     metrics: &Arc<Metrics>,
 ) -> Result<(Endpoint, ActiveGuard<'a>), OutboundError> {
-    match select_server(backend, tried, preferred.clone()) {
+    match select_server(backend, tried, preferred.as_ref()) {
         Ok(picked) => Ok(picked),
         Err(OutboundError::NoServer) if !tried.is_empty() => {
             // Every candidate already failed this exchange: the class is
@@ -2084,18 +2246,17 @@ async fn pick_server<'a>(
             let result = tokio::time::timeout_at(deadline, async {
                 loop {
                     tokio::time::sleep(Duration::from_millis(50)).await;
-                    if let Ok(picked) = select_server(backend, &[], preferred.clone()) {
+                    if let Ok(picked) = select_server(backend, &[], preferred.as_ref()) {
                         return picked;
                     }
                 }
             })
             .await;
-            match result {
-                Ok(picked) => Ok(picked),
-                Err(_) => {
-                    metrics.queue_timeout.fetch_add(1, Ordering::Relaxed);
-                    Err(OutboundError::QueueTimeout)
-                }
+            if let Ok(picked) = result {
+                Ok(picked)
+            } else {
+                metrics.queue_timeout.fetch_add(1, Ordering::Relaxed);
+                Err(OutboundError::QueueTimeout)
             }
         }
         Err(err) => Err(err),
@@ -2107,7 +2268,7 @@ fn affinity_hash(ip: IpAddr) -> usize {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     ip.hash(&mut hasher);
-    hasher.finish() as usize
+    usize::try_from(hasher.finish()).expect("the value fits in the destination type")
 }
 
 /// Passive health (B12/B-N10): a connect-phase failure feeds the balancer's
@@ -2149,6 +2310,7 @@ struct DialOpts<'a> {
     http: bool,
 }
 
+#[allow(clippy::too_many_lines)]
 async fn dial_with_retries<'a>(
     cfg: &ResolvedListener,
     backend: &'a ResolvedBackend,
@@ -2285,7 +2447,9 @@ async fn dial_with_retries<'a>(
                 tried.push(addr.clone());
                 // Passive mark (when safe to restart) + exclusion.
                 report_passive(backend, &addr);
-                if tried.len() as u32 > max_attempts {
+                if u32::try_from(tried.len()).expect("value fits in the destination type")
+                    > max_attempts
+                {
                     // Retry budget spent: final error.
                     return Err(OutboundError::Connect);
                 }
@@ -2297,6 +2461,10 @@ async fn dial_with_retries<'a>(
 }
 
 /// Connects to the balancer-chosen backend (TCP/TLS + PROXY send).
+///
+///# Errors
+///
+///Returns `OutboundError` when no server is available or the dial fails.
 pub async fn connect_backend<'a>(
     cfg: &'a ResolvedListener,
     peer: SocketAddr,
@@ -2306,9 +2474,10 @@ pub async fn connect_backend<'a>(
     // TCP has no replay-safety knowledge: conservative non-idempotent,
     // and no pooling (streams have no message boundaries). TCP has no
     // routing rules: always the default backend.
+    let backend = cfg.backend.as_ref().ok_or(OutboundError::NoServer)?;
     let (conn, active) = dial_with_retries(
         cfg,
-        &cfg.backend,
+        backend,
         peer,
         local,
         metrics,
@@ -2343,6 +2512,10 @@ pub struct BackendConn {
 /// balancer-chosen server, with B-H7 retry/queue semantics.
 ///
 /// `ctx` decides retry safety (idempotent unless explicit opt-in).
+///
+///# Errors
+///
+///Returns `OutboundError` when both the pool checkout and the dial fail.
 pub async fn checkout_or_connect<'a>(
     cfg: &ResolvedListener,
     backend: &'a ResolvedBackend,
@@ -2552,8 +2725,8 @@ async fn open_h2_exchange(
         // The peer's GOAWAY arrived between the lookup and the admission, so
         // the session was retired before a stream was opened: nothing reached
         // the origin and the exchange belongs on a fresh session.
-        let (fresh, dialed) = session_for(hub, &dialer, addr).await?;
-        opened |= dialed;
+        let (fresh, new_session) = session_for(hub, &dialer, addr).await?;
+        opened |= new_session;
         stream = stream_on_session(&fresh, dialer, name, idle, limits, pipe_buffer);
     }
     let (read, write) = stream.map_err(|err| {
@@ -2680,7 +2853,9 @@ pub(crate) async fn open_grpc_stream<'a>(
             Err(OutboundError::Connect) => {
                 tried.push(picked.clone());
                 report_passive(backend, &picked);
-                if tried.len() as u32 > max_attempts {
+                if u32::try_from(tried.len()).expect("value fits in the destination type")
+                    > max_attempts
+                {
                     return Err(OutboundError::Connect);
                 }
                 metrics.retry_attempts.fetch_add(1, Ordering::Relaxed);
@@ -2692,7 +2867,9 @@ pub(crate) async fn open_grpc_stream<'a>(
             // The session closed between the lookup and the admission.
             tried.push(picked.clone());
             report_passive(backend, &picked);
-            if tried.len() as u32 > max_attempts {
+            if u32::try_from(tried.len()).expect("value fits in the destination type")
+                > max_attempts
+            {
                 return Err(OutboundError::Connect);
             }
             metrics.retry_attempts.fetch_add(1, Ordering::Relaxed);
@@ -3022,6 +3199,7 @@ async fn tcp_connect(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn handle_connection(
     mut client: TcpStream,
     peer: SocketAddr,
@@ -3296,15 +3474,15 @@ mod tests {
             });
             client.write_all(b"hello").await.expect("write");
             drop(client); // EOF
-            let copied = tokio::time::timeout(Duration::from_secs(2), copier)
+            let finished = tokio::time::timeout(Duration::from_secs(2), copier)
                 .await
                 .expect("the copier must finish")
                 .expect("join")
                 .expect("no error on EOF");
-            assert_eq!(copied, 5);
+            assert_eq!(finished, 5);
             assert_eq!(bytes.load(Ordering::Relaxed), 5);
             assert_eq!(idles.load(Ordering::Relaxed), 0);
-        })
+        });
     }
 
     #[test]
@@ -3324,7 +3502,7 @@ mod tests {
             let err = result.expect_err("must expire on inactivity");
             assert_eq!(err.kind(), io::ErrorKind::TimedOut);
             assert_eq!(idles.load(Ordering::Relaxed), 1);
-        })
+        });
     }
 
     // --- B-I11: weighted traffic split (smooth WRR across targets) ---

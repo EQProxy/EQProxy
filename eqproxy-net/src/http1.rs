@@ -1,6 +1,6 @@
 //! Strict-framing HTTP/1.1 proxy (A2) with ambiguity rejection (T01–T03).
 //!
-//! Security policy (THREAT_MODEL §2.1): **single shared parser between
+//! Security policy (`THREAT_MODEL` §2.1): **single shared parser between
 //! analysis and forwarding** — every ambiguous message is rejected BEFORE
 //! touching the backend, and what is forwarded is the parser-validated
 //! message after hop-by-hop sanitization (F1): `Connection` and every header
@@ -50,6 +50,7 @@ use crate::proxy::{
     ResolvedCors, ResolvedHeaders, ResolvedLimits, ResolvedListener, ResolvedRewrite, RetryContext,
     RouteDecision, checkout_or_connect,
 };
+use std::fmt::Write as _;
 
 /// Maximum message-head size (final line included) (T03).
 pub const MAX_HEAD_BYTES: usize = 16 * 1024;
@@ -886,6 +887,12 @@ mod normalization_tests {
 }
 
 /// Parses the request head with strict rules (T01–T03).
+#[allow(clippy::too_many_lines)]
+///
+///# Errors
+///
+///Returns `Reject` with status, reason and the budget that failed when the
+///request head is malformed or exceeds a limit.
 pub fn parse_request_head(head: &[u8], limits: HeadLimits) -> Result<RequestHead, Reject> {
     let lines = parse_lines(head)?;
     let request_line = lines.first().ok_or(Reject {
@@ -1005,7 +1012,7 @@ pub fn parse_request_head(head: &[u8], limits: HeadLimits) -> Result<RequestHead
         return Err(bad_request("CONNECT host does not match authority"));
     }
     if let Some((_, value)) = headers.iter_mut().find(|(name, _)| name == "host") {
-        *value = host.clone();
+        value.clone_from(&host);
     }
     Ok(RequestHead {
         method: String::from_utf8_lossy(method).into_owned(),
@@ -1047,6 +1054,11 @@ impl ResponseHeadError {
 /// Parses the response head with the same line rules (T02) and the
 /// RFC 9112 §6 framing. An ambiguous backend answers 502 (never forwarded
 /// a framing the client could interpret differently).
+///
+///# Errors
+///
+///Returns `Reject` with status, reason and the budget that failed when the
+///response head is malformed or exceeds a limit.
 pub fn parse_response_head(
     head: &[u8],
     head_request: bool,
@@ -1078,7 +1090,7 @@ fn parse_response_head_checked(
         _ => return Err(bad_gateway),
     };
     let status_bytes = parts[1];
-    if status_bytes.len() != 3 || !status_bytes.iter().all(|b| b.is_ascii_digit()) {
+    if status_bytes.len() != 3 || !status_bytes.iter().all(u8::is_ascii_digit) {
         return Err(bad_gateway);
     }
     let status: u16 = std::str::from_utf8(status_bytes)
@@ -1218,7 +1230,8 @@ async fn copy_exact<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 ) -> Result<(), CopyError> {
     let mut buf = vec![0u8; READ_BUF];
     while remaining > 0 {
-        let want = remaining.min(buf.len() as u64) as usize;
+        let want = usize::try_from(remaining.min(buf.len() as u64))
+            .expect("the value fits in the destination type");
         let got = match tokio::time::timeout(idle, reader.read(&mut buf[..want])).await {
             Err(_) => return Err(idle_copy_error(idle_counter)),
             Ok(Err(_)) => return Err(CopyError::Io),
@@ -1254,7 +1267,7 @@ async fn copy_to_eof<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 }
 
 /// Reads a CRLF-terminated line (terminator included), strict (T02).
-/// `ponytail`: byte-by-byte reading via BufReader; optimize when Phase 9
+/// `ponytail`: byte-by-byte reading via `BufReader`; optimize when Phase 9
 /// benchmarks demand it.
 pub(crate) async fn read_crlf_line<R: AsyncRead + Unpin>(
     reader: &mut R,
@@ -1311,7 +1324,7 @@ pub(crate) fn parse_chunk_size(line: &[u8]) -> Result<u64, CopyError> {
     {
         return Err(bad());
     }
-    if size_part.is_empty() || !size_part.iter().all(|b| b.is_ascii_hexdigit()) {
+    if size_part.is_empty() || !size_part.iter().all(u8::is_ascii_hexdigit) {
         return Err(bad());
     }
     let text = std::str::from_utf8(size_part).map_err(|_| bad())?;
@@ -1948,11 +1961,12 @@ async fn write_rule_response<W: AsyncWrite + Unpin>(
     }
     response.push_str("content-type: ");
     response.push_str(content_type.unwrap_or("text/plain"));
-    response.push_str(&format!(
+    let _ = write!(
+        response,
         "\r\ncontent-length: {}\r\n\r\n{}",
         body.len(),
         body
-    ));
+    );
     let _ = tokio::time::timeout(
         Duration::from_secs(5),
         writer.write_all(response.as_bytes()),
@@ -1979,11 +1993,12 @@ async fn write_deny<W: AsyncWrite + Unpin>(writer: &mut W, deny: &crate::auth::D
         response.push_str(value);
         response.push_str("\r\n");
     }
-    response.push_str(&format!(
+    let _ = write!(
+        response,
         "content-length: {}\r\n\r\n{}",
         deny.body.len(),
         deny.body
-    ));
+    );
     let _ = tokio::time::timeout(
         Duration::from_secs(5),
         writer.write_all(response.as_bytes()),
@@ -2197,8 +2212,7 @@ fn bodyless_backend_close(head: &[u8], status: u16, head_request: bool) -> bool 
 /// exchange (which would fail with 502 while reading the response head).
 pub(crate) async fn peer_gone<R: AsyncBufRead + Unpin>(read: &mut R) -> bool {
     std::future::poll_fn(|cx| match Pin::new(&mut *read).poll_fill_buf(cx) {
-        Poll::Ready(Ok(_)) => Poll::Ready(true),
-        Poll::Ready(Err(_)) => Poll::Ready(true),
+        Poll::Ready(Ok(_) | Err(_)) => Poll::Ready(true),
         Poll::Pending => Poll::Ready(false),
     })
     .await
@@ -2719,25 +2733,6 @@ struct CacheFetch {
     stale: Option<Arc<cache::StoredEntry>>,
 }
 
-/// A storable origin response, fully assembled in memory (B-N7/H1): only
-/// `Content-Length` bodies under the entry bound assemble; chunked and
-/// close-delimited responses stream through uncached, never re-framed.
-struct StorePlan {
-    key: cache::CacheKey,
-    /// A lock waiter's fallback fetch stores without touching the
-    /// in-flight table (the owner already published).
-    direct: bool,
-    vary: Vec<String>,
-    vary_values: Vec<String>,
-    status: u16,
-    reason: String,
-    headers: Vec<(String, String)>,
-    etag: Option<String>,
-    last_modified: Option<String>,
-    ttl: Duration,
-    len: u64,
-}
-
 /// Decides the cache action for one parsed request. Pure except for the
 /// lookup registration and the bypass counter.
 fn plan_cache(
@@ -2762,19 +2757,17 @@ fn plan_cache(
     // mutations applied): two requests that reach the backend differently
     // never share an entry. A rule-injected session header bypasses here,
     // exactly like a client-sent one.
-    let forwarded = match parse_request_head(forwarded_head, head_limits) {
-        Ok(forwarded) => forwarded,
-        Err(_) => return bypass(),
+    let Ok(forwarded) = parse_request_head(forwarded_head, head_limits) else {
+        return bypass();
     };
     let framing_none = matches!(request.framing, BodyFraming::None);
-    let policy = match cache::decide_policy(
+    let Ok(policy) = cache::decide_policy(
         &request.method,
         framing_none,
         &forwarded.headers,
         backend_affinity_cookie,
-    ) {
-        Ok(policy) => policy,
-        Err(_) => return bypass(),
+    ) else {
+        return bypass();
     };
     let fetch = CacheFetch {
         key: cache::base_key(&request.method, scheme, &forwarded.host, &forwarded.target),
@@ -2872,54 +2865,12 @@ impl Drop for CacheGuard {
     }
 }
 
-/// Whether the parsed origin response may assemble into a store entry.
-/// `None` streams through untouched (chunked and close-delimited bodies
-/// are never re-framed; oversized and unstorable responses never store).
-fn store_plan(
-    cache: &cache::Cache,
-    fetch: &CacheFetch,
-    direct: bool,
-    method: &str,
-    framing: BodyFraming,
-    response_head: &[u8],
-) -> Option<StorePlan> {
-    // `HEAD` populates nothing (served from `GET` entries); only
-    // `Content-Length` bodies under the entry bound assemble.
-    if method != "GET" {
-        return None;
-    }
-    let BodyFraming::ContentLength(len) = framing else {
-        return None;
-    };
-    if len > cache.max_entry_bytes() as u64 {
-        return None;
-    }
-    let facts = cache::parse_origin_head(response_head)?;
-    let vary = cache::storable_vary(&facts)?;
-    let ttl = cache::effective_ttl(cache.default_ttl(), &facts.cache_control);
-    if ttl.is_zero() && facts.etag.is_none() && facts.last_modified.is_none() {
-        return None;
-    }
-    Some(StorePlan {
-        key: fetch.key.clone(),
-        direct,
-        vary_values: cache::vary_values(&fetch.headers, &vary),
-        vary,
-        status: facts.status,
-        reason: facts.reason,
-        headers: cache::end_to_end(&facts.headers),
-        etag: facts.etag,
-        last_modified: facts.last_modified,
-        ttl,
-        len,
-    })
-}
-
 /// Serves a stored entry without dialing (B-N7/H1): rule response headers
 /// and CORS re-apply per request, compression re-negotiates from the
 /// client's `Accept-Encoding`, and the answer carries `X-Cache` plus its
 /// age. A matching client `If-None-Match` earns a `304` with no body.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 async fn serve_cached<CW: AsyncWrite + Unpin>(
     client_write: &mut CW,
     cfg: &ResolvedListener,
@@ -2955,8 +2906,7 @@ async fn serve_cached<CW: AsyncWrite + Unpin>(
         cache::render_head(entry)
     };
     let mut extra = rule_headers
-        .map(|actions| render_header_lines(&actions.response, peer, host, scheme))
-        .unwrap_or_default();
+        .map_or_default(|actions| render_header_lines(&actions.response, peer, host, scheme));
     if let Some(cors) = rule_headers.and_then(|actions| actions.cors.as_ref()) {
         extra.extend(cors_response_lines(cors, false));
     }
@@ -3068,6 +3018,9 @@ async fn serve_cached<CW: AsyncWrite + Unpin>(
 /// backend connection under the A16 reuse contract or drops it.
 /// Returns `true` when the client connection closes with it.
 #[allow(clippy::too_many_arguments)]
+// The flags travel together through the exchange: naming each one at the call
+// site is what keeps the four outcomes readable.
+#[allow(clippy::fn_params_excessive_bools)]
 fn finish_exchange(
     metrics: &Metrics,
     listener: &str,
@@ -3272,9 +3225,8 @@ where
     let mut mirror_body: Option<Vec<u8>> = mirror.map(|_| Vec::new());
     let result = until_deadline(stream_deadline, async {
         match request.framing {
-            BodyFraming::None => Ok(()),
-            BodyFraming::ContentLength(len) => match mirror.is_some() {
-                true => {
+            BodyFraming::ContentLength(len) => {
+                if mirror.is_some() {
                     let mut tee = MirrorTee::new(&mut *backend_write, mirror::BODY_BUDGET);
                     let copied = copy_exact(
                         from_client,
@@ -3287,8 +3239,7 @@ where
                     .await;
                     mirror_body = tee.finish();
                     copied
-                }
-                false => {
+                } else {
                     copy_exact(
                         from_client,
                         &mut *backend_write,
@@ -3299,9 +3250,9 @@ where
                     )
                     .await
                 }
-            },
-            BodyFraming::Chunked => match mirror.is_some() {
-                true => {
+            }
+            BodyFraming::Chunked => {
+                if mirror.is_some() {
                     let mut tee = MirrorTee::new(&mut *backend_write, mirror::BODY_BUDGET);
                     let copied = copy_chunked_capped(
                         from_client,
@@ -3315,8 +3266,7 @@ where
                     .await;
                     mirror_body = tee.finish();
                     copied
-                }
-                false => {
+                } else {
                     copy_chunked_capped(
                         from_client,
                         &mut *backend_write,
@@ -3328,8 +3278,8 @@ where
                     )
                     .await
                 }
-            },
-            BodyFraming::UntilEof => Ok(()),
+            }
+            BodyFraming::None | BodyFraming::UntilEof => Ok(()),
         }
     })
     .await;
@@ -3601,6 +3551,7 @@ where
     /// Reads interim responses until the final one, forwards every interim,
     /// and refreshes a stale entry on `304`. `None` means the caller must
     /// stop the exchange (the local answer was already written).
+    #[allow(clippy::too_many_lines)]
     async fn read(self) -> Option<OriginHead> {
         // Interim (1xx) responses are never final (RFC 9112 §6.2): forward
         // them and keep reading until the final message, so a stale head is
@@ -3629,7 +3580,7 @@ where
                 ),
             )
             .await
-            .map_err(|_| HeadError::Timeout)
+            .map_err(|()| HeadError::Timeout)
             .and_then(|result| result)
             {
                 Ok(pair) => pair,
@@ -3851,6 +3802,7 @@ impl RequestPrepPhase<'_, '_> {
     /// mutable borrows must end with this call, and storing them behind the
     /// same `'a` as `h1` made the borrow checker hold them for the rest of
     /// the exchange.
+    #[allow(clippy::too_many_lines)]
     async fn run<CR, CW>(
         self,
         client_write: &mut CW,
@@ -3985,13 +3937,9 @@ impl RequestPrepPhase<'_, '_> {
                 && drain_body(from_client, &request.framing, cfg.idle_timeout, metrics).await;
             let close = !aligned || request.wants_close;
             let mut extra_headers = cors_response_lines(cors, true);
-            extra_headers.extend(
-                rule_headers
-                    .map(|actions| {
-                        render_header_lines(&actions.response, peer, &request.host, scheme)
-                    })
-                    .unwrap_or_default(),
-            );
+            extra_headers.extend(rule_headers.map_or_default(|actions| {
+                render_header_lines(&actions.response, peer, &request.host, scheme)
+            }));
             if let Some(record) = access.as_mut() {
                 record.status(204);
                 record.bytes(0);
@@ -4186,6 +4134,9 @@ struct ResponseAssembly<'a, 'ctx> {
     request: &'a RequestHead,
     response: &'a ResponseHead,
     head_bytes: &'a [u8],
+    /// The origin's response head, before any client-facing rewrite: what the
+    /// store is decided from.
+    store_head: Option<&'a [u8]>,
     cache_action: &'a CacheAction,
     encoding: Option<compression::Encoding>,
     settings: Option<&'a crate::compression::ResolvedCompression>,
@@ -4196,6 +4147,7 @@ struct ResponseAssembly<'a, 'ctx> {
 impl ResponseAssembly<'_, '_> {
     /// The streams, the carry, the access record and the guard travel as
     /// arguments: their mutable borrows end with this call.
+    #[allow(clippy::too_many_lines)]
     async fn run<BR, CW>(
         self,
         backend_read: &mut BR,
@@ -4227,25 +4179,33 @@ impl ResponseAssembly<'_, '_> {
         // re-framing): they stream through uncached below. The guard
         // stays armed until the store completes, so any failure here
         // publishes `Gone` for the waiters.
+        // The entry is decided from the origin's own head (`store_head`),
+        // never from `response_head_bytes`, which by now carries the client's
+        // rule headers, the product banner and the negotiated coding.
         // Planned from `Some`; `None` skips the store instead of
         // panicking the exchange.
-        let store_plan = match &cache_action {
+        let planned = match &cache_action {
             CacheAction::Origin(fetch) | CacheAction::Direct(fetch) => {
-                let direct = matches!(cache_action, CacheAction::Direct(_));
-                cfg.cache.as_ref().and_then(|cache| {
-                    store_plan(
-                        cache,
-                        fetch,
-                        direct,
+                let declared_len = match response.framing {
+                    BodyFraming::ContentLength(len) => Some(len),
+                    _ => None,
+                };
+                let stored = match (self.store_head, cfg.cache.as_ref()) {
+                    (Some(head), Some(cache)) => cache::store_representation(
+                        cache.settings(),
+                        &fetch.key,
+                        &fetch.headers,
                         &request.method,
-                        response.framing,
-                        response_head_bytes,
-                    )
-                })
+                        declared_len,
+                        head,
+                    ),
+                    _ => None,
+                };
+                stored.map(|plan| (plan, matches!(cache_action, CacheAction::Direct(_))))
             }
             CacheAction::Off | CacheAction::Serve(_) | CacheAction::Wait(_, _) => None,
         };
-        let Some(plan) = store_plan else {
+        let Some((plan, direct)) = planned else {
             return AssemblyOutcome::NotStorable;
         };
         let mut from_backend = Prefixed {
@@ -4256,13 +4216,14 @@ impl ResponseAssembly<'_, '_> {
         // Exact-length read with per-chunk idle timeout: the same
         // contract as `copy_exact` (a slow trickle trips idle, a
         // short close truncates), with the same counters.
-        let mut body = vec![0u8; plan.len as usize];
+        let mut body =
+            vec![0u8; usize::try_from(plan.len).expect("the value fits in the destination type")];
         let mut read = 0usize;
         let mut clean_read = true;
         while read < body.len() {
             match tokio::time::timeout(cfg.idle_timeout, from_backend.read(&mut body[read..])).await
             {
-                Ok(Ok(0)) => {
+                Ok(Ok(0) | Err(_)) => {
                     clean_read = false;
                     break;
                 }
@@ -4271,10 +4232,6 @@ impl ResponseAssembly<'_, '_> {
                     metrics
                         .bytes_backend_to_client
                         .fetch_add(n as u64, Ordering::Relaxed);
-                }
-                Ok(Err(_)) => {
-                    clean_read = false;
-                    break;
                 }
                 Err(_) => {
                     metrics.idle_timeouts.fetch_add(1, Ordering::Relaxed);
@@ -4293,38 +4250,35 @@ impl ResponseAssembly<'_, '_> {
             write_with_timeout(client_write, response_head_bytes, cfg.idle_timeout).await?;
             write_with_timeout(client_write, HEAD_END, cfg.idle_timeout).await?;
             head_forwarded = true;
-            match encoding {
-                Some(encoding) => {
-                    let settings = compression_settings.ok_or(CopyError::Io)?;
-                    let mut slice = &body[..];
-                    copy_compressed_body(
-                        &mut slice,
-                        client_write,
-                        CompressPlan {
-                            framing: BodyFraming::ContentLength(plan.len),
-                            encoding,
-                            settings,
-                            pipe: limits
-                                .stream_buffer_bytes
-                                .unwrap_or(DEFAULT_COMPRESSION_PIPE),
-                        },
-                        cfg.idle_timeout,
-                        metrics,
-                    )
-                    .await
-                }
-                None => {
-                    let mut slice = &body[..];
-                    copy_exact(
-                        &mut slice,
-                        client_write,
-                        plan.len,
-                        cfg.idle_timeout,
-                        &metrics.bytes_backend_to_client,
-                        &metrics.idle_timeouts,
-                    )
-                    .await
-                }
+            if let Some(encoding) = encoding {
+                let settings = compression_settings.ok_or(CopyError::Io)?;
+                let mut slice = &body[..];
+                copy_compressed_body(
+                    &mut slice,
+                    client_write,
+                    CompressPlan {
+                        framing: BodyFraming::ContentLength(plan.len),
+                        encoding,
+                        settings,
+                        pipe: limits
+                            .stream_buffer_bytes
+                            .unwrap_or(DEFAULT_COMPRESSION_PIPE),
+                    },
+                    cfg.idle_timeout,
+                    metrics,
+                )
+                .await
+            } else {
+                let mut slice = &body[..];
+                copy_exact(
+                    &mut slice,
+                    client_write,
+                    plan.len,
+                    cfg.idle_timeout,
+                    &metrics.bytes_backend_to_client,
+                    &metrics.idle_timeouts,
+                )
+                .await
             }
         })
         .await;
@@ -4372,7 +4326,7 @@ impl ResponseAssembly<'_, '_> {
                 ttl: plan.ttl,
                 stored_at_unix: cache::unix_now(),
             };
-            if plan.direct {
+            if direct {
                 cache.store_direct(plan.key, parts).await;
             } else {
                 cache
@@ -4393,6 +4347,7 @@ impl ResponseAssembly<'_, '_> {
 /// exchange gets 503 (customizable via `local_response`, C9); when the chosen
 /// server fails, 502 (SPEC §7.4). Connect-phase failures retry per the
 /// backend retry policy (B-H7: idempotent unless explicit opt-in).
+#[allow(clippy::too_many_lines)]
 pub async fn serve_http<CR, CW>(
     client_read: CR,
     client_write: CW,
@@ -4556,11 +4511,9 @@ pub async fn serve_http<CR, CW>(
                     )
                     .await;
                 let close = !aligned || request.wants_close;
-                let mut extra_headers = headers
-                    .map(|actions| {
-                        render_header_lines(&actions.response, peer, &request.host, scheme)
-                    })
-                    .unwrap_or_default();
+                let mut extra_headers = headers.map_or_default(|actions| {
+                    render_header_lines(&actions.response, peer, &request.host, scheme)
+                });
                 if let Some(cors) = headers.and_then(|actions| actions.cors.as_ref()) {
                     extra_headers.extend(cors_response_lines(cors, false));
                 }
@@ -4605,11 +4558,9 @@ pub async fn serve_http<CR, CW>(
                     )
                     .await;
                 let close = !aligned || request.wants_close;
-                let mut extra_headers = headers
-                    .map(|actions| {
-                        render_header_lines(&actions.response, peer, &request.host, scheme)
-                    })
-                    .unwrap_or_default();
+                let mut extra_headers = headers.map_or_default(|actions| {
+                    render_header_lines(&actions.response, peer, &request.host, scheme)
+                });
                 if let Some(cors) = headers.and_then(|actions| actions.cors.as_ref()) {
                     extra_headers.extend(cors_response_lines(cors, false));
                 }
@@ -4770,7 +4721,7 @@ pub async fn serve_http<CR, CW>(
                     .await;
                     return;
                 }
-                Err(OutboundError::QueueFull) | Err(OutboundError::QueueTimeout) => {
+                Err(OutboundError::QueueFull | OutboundError::QueueTimeout) => {
                     // B-H7: bounded queue rejected explicitly (never silent).
                     if let Some(record) = access.as_mut() {
                         record.status(
@@ -4970,9 +4921,8 @@ pub async fn serve_http<CR, CW>(
                     .await;
                     return;
                 }
-                Err(CopyError::Idle) => return,
+                Err(CopyError::Idle | CopyError::Io) => return,
                 // A19: client abort → the backend is dropped on exit.
-                Err(CopyError::Io) => return,
             };
             // Bytes past the request body belong to the next pipelined
             // exchange on this client connection. A full-fetch retry already
@@ -5180,9 +5130,9 @@ pub async fn serve_http<CR, CW>(
 
             // Response header actions (B-N4/B-I4/B-E17) on the proxied
             // response the client sees.
-            let mut response_lines = rule_headers
-                .map(|actions| render_header_lines(&actions.response, peer, &request.host, scheme))
-                .unwrap_or_default();
+            let mut response_lines = rule_headers.map_or_default(|actions| {
+                render_header_lines(&actions.response, peer, &request.host, scheme)
+            });
             // Sticky cookie (B-H8): re-issued only when the request had none
             // or it did not pin to the server that served.
             if let Some(affinity) = backend.affinity.as_ref()
@@ -5203,6 +5153,16 @@ pub async fn serve_http<CR, CW>(
             if let Some(cors) = rule_headers.and_then(|actions| actions.cors.as_ref()) {
                 response_lines.extend(cors_response_lines(cors, false));
             }
+            // The origin's own head, kept only when this exchange may store:
+            // everything below rewrites the *client's* view (rule headers, the
+            // banner, HTTP/1.0 dechunking, the negotiated coding, the cache
+            // marker), and an entry built from that view is the corrupt `HIT`
+            // P0-10 removes.
+            let store_head = matches!(
+                cache_action,
+                CacheAction::Origin(_) | CacheAction::Direct(_)
+            )
+            .then(|| response_head_bytes.clone());
             let mut response_head_bytes = if response_lines.is_empty() {
                 response_head_bytes
             } else {
@@ -5292,6 +5252,7 @@ pub async fn serve_http<CR, CW>(
                 request: &request,
                 response: &response,
                 head_bytes: &response_head_bytes,
+                store_head: store_head.as_deref(),
                 cache_action: &cache_action,
                 encoding,
                 settings: compression_settings,
@@ -5737,7 +5698,7 @@ mod tests {
     fn too_many_headers_is_431() {
         let mut head = String::from("GET / HTTP/1.1\r\nHost: x\r\n");
         for i in 0..MAX_HEADERS {
-            head.push_str(&format!("X-H{i}: v\r\n"));
+            let _ = write!(head, "X-H{i}: v\r\n");
         }
         let err = req(&head).expect_err("too many headers");
         assert_eq!(err.status, 431);

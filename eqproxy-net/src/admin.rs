@@ -43,6 +43,7 @@
 //! when the new one cannot be written.
 
 use std::fmt;
+use std::fmt::Write as _;
 use std::net::SocketAddr;
 #[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
@@ -159,7 +160,7 @@ impl UnixSocketPolicy {
     pub fn options(&self) -> UnixSocketOptions {
         self.state
             .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
@@ -168,7 +169,7 @@ impl UnixSocketPolicy {
             &self
                 .state
                 .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .allow_uids,
         )
     }
@@ -181,6 +182,10 @@ impl UnixSocketPolicy {
     ///
     /// A few syscalls on a path this process created, called from the
     /// configuration task between swaps, never from the accept loop.
+    ///
+    ///# Errors
+    ///
+    ///Returns the I/O error when the state cannot be written.
     pub fn apply(&self, next: &UnixSocketOptions) -> std::io::Result<()> {
         let current = self.options();
         if (current.gid != next.gid
@@ -200,7 +205,7 @@ impl UnixSocketPolicy {
         *self
             .state
             .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = next.clone();
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = next.clone();
         Ok(())
     }
 }
@@ -250,6 +255,8 @@ pub struct ListenerInfo {
     pub name: String,
     pub listen: String,
     pub mode: String,
+    /// Configured backend name, or `"redirect"` when the listener has a
+    /// `[listener.*.redirect]` fallback and therefore no backend.
     pub backend: String,
     pub maxconn: u32,
     /// `sha256:<hex>` of the certificate this listener is serving (D7);
@@ -315,7 +322,7 @@ impl AdminState {
     pub(crate) fn read_topology(&self) -> RwLockReadGuard<'_, AdminTopology> {
         self.topology
             .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -414,7 +421,7 @@ struct ServerStatus {
     weight: u32,
     /// Backup class (B8): selected only when no primary is eligible.
     backup: bool,
-    /// Failover order among backups (EQProxy extension): higher first, ties
+    /// Failover order among backups (`EQProxy` extension): higher first, ties
     /// by configuration order; `0` on primaries.
     priority: u32,
     /// `ready` or `drain` (ADR-0018).
@@ -509,6 +516,11 @@ impl Drop for AdminHandle {
 /// Binds the admin listener. Unlike the dataplane, failing to bind here is
 /// fatal for the process: a configured plane that cannot open is a
 /// configuration error, not a silent downgrade (the CLI exits with 1).
+///
+///# Errors
+///
+///Returns the I/O error when the endpoint cannot be bound or the socket
+///file prepared.
 pub async fn bind(cfg: ResolvedAdmin, state: Arc<AdminState>) -> std::io::Result<AdminHandle> {
     let tokens = Tokens {
         read: cfg.token,
@@ -543,6 +555,8 @@ pub async fn bind(cfg: ResolvedAdmin, state: Arc<AdminState>) -> std::io::Result
 /// replaces a stale socket left by a crash, never deletes a file that is not
 /// a socket, and applies the configured owner/group mode (`0600` by default,
 /// `0660` with a group).
+// Both platform variants share one signature so the caller stays unconditional.
+#[allow(clippy::unused_async)]
 #[cfg(unix)]
 async fn bind_unix(
     path: PathBuf,
@@ -916,7 +930,7 @@ async fn handle_connection(
         // a body, and only the declared, bounded length is read. A missing or
         // oversized length is answered by the router (411/413) without
         // touching the socket again.
-        if matches!(head.split(' ').next(), Some("PUT") | Some("POST"))
+        if matches!(head.split(' ').next(), Some("PUT" | "POST"))
             && let Some(length) = content_length(&head)
             && length <= MAX_CONFIG_BODY_BYTES
         {
@@ -977,7 +991,7 @@ async fn handle_connection(
                 method,
                 path,
                 status,
-                AuditFields::default(),
+                &AuditFields::default(),
             )));
             let response = if back_to_panel {
                 panel_result_redirect(status, &response)
@@ -1326,7 +1340,7 @@ pub(crate) fn audit<'a>(
     method: &'a str,
     path: &'a str,
     status: u16,
-    fields: AuditFields<'a>,
+    fields: &AuditFields<'a>,
 ) -> Audit<'a> {
     Audit {
         event: "admin_write",
@@ -1398,7 +1412,7 @@ fn respond<'a>(
     let is_write = method == "PUT" || method == "POST";
     let role = tokens.role(bearer(head));
     if role == Role::None {
-        let audit = is_write.then(|| audit(peer, role, method, path, 401, AuditFields::default()));
+        let audit = is_write.then(|| audit(peer, role, method, path, 401, &AuditFields::default()));
         return Outcome::done_with(
             Response::error(401, "unauthorized").with_header(
                 "www-authenticate",
@@ -1541,7 +1555,7 @@ fn put_config<'a>(
             method,
             path,
             status,
-            AuditFields::default(),
+            &AuditFields::default(),
         ))
     };
     let Some((kind, name)) = config_route(path) else {
@@ -1620,7 +1634,7 @@ const CERTIFICATE_RELOAD_PATH: &str = "/api/v1/certificates/reload";
 
 /// `POST /api/v1/certificates/reload`.
 ///
-/// The renewal HAProxy does with `set ssl cert`: the operator writes the new
+/// The renewal `HAProxy` does with `set ssl cert`: the operator writes the new
 /// files where the configuration already points and asks the plane to load
 /// them. It is an **action**, not a document edit — it declares no state and
 /// carries no body — so it needs no `If-Match` (ADR-0025), but it does need
@@ -1643,7 +1657,7 @@ fn post_certificates<'a>(
             "POST",
             path,
             status,
-            AuditFields::default(),
+            &AuditFields::default(),
         ))
     };
     if role != Role::Write {
@@ -1706,14 +1720,15 @@ fn prometheus_body(
     // budget is the configured topology. `drains_completed_total` counts
     // drain completions only: maintenance has no counter (ADR-0028), its
     // window opening is the `INFO server ready for maintenance` line.
-    body.push_str(&format!(
+    let _ = write!(
+        body,
         "# TYPE eqproxy_backend_servers_draining gauge\n\
          eqproxy_backend_servers_draining {draining}\n\
          # TYPE eqproxy_backend_servers_maintenance gauge\n\
          eqproxy_backend_servers_maintenance {maintenance}\n\
          # TYPE eqproxy_backend_drains_completed_total counter\n\
          eqproxy_backend_drains_completed_total {completed}\n"
-    ));
+    );
     body
 }
 
@@ -1749,6 +1764,7 @@ fn backend_status(backend: &ResolvedBackend) -> BackendStatus<'_> {
 /// accepted one is idempotent and reports the previous state. An accepted
 /// `maintenance` additionally closes the slot's idle pooled connections
 /// (h1 pool and backend h2 session) at the transition (ADR-0028).
+#[allow(clippy::too_many_lines)]
 fn put_server_state<'a>(
     head: &str,
     body: Option<&[u8]>,
@@ -1769,7 +1785,7 @@ fn put_server_state<'a>(
             "PUT",
             path,
             status,
-            AuditFields {
+            &AuditFields {
                 backend,
                 server,
                 from,
@@ -2063,7 +2079,7 @@ mod tests {
     fn request(method: &str, path: &str, authorization: Option<&str>) -> String {
         let mut head = format!("{method} {path} HTTP/1.1\r\nhost: admin\r\n");
         if let Some(value) = authorization {
-            head.push_str(&format!("authorization: {value}\r\n"));
+            let _ = write!(head, "authorization: {value}\r\n");
         }
         head.push_str("\r\n");
         head
@@ -2710,7 +2726,7 @@ mod tests {
             body.len()
         );
         if let Some(value) = if_match {
-            head.push_str(&format!("if-match: {value}\r\n"));
+            let _ = write!(head, "if-match: {value}\r\n");
         }
         head.push_str("\r\n");
         head.push_str(body);
@@ -2799,7 +2815,7 @@ mod tests {
     fn certificate_reload(secret: Option<&str>, extra_headers: &str) -> String {
         let mut head = format!("POST {CERTIFICATE_RELOAD_PATH} HTTP/1.1\r\nhost: admin\r\n");
         if let Some(secret) = secret {
-            head.push_str(&format!("authorization: Bearer {secret}\r\n"));
+            let _ = write!(head, "authorization: Bearer {secret}\r\n");
         }
         head.push_str(extra_headers);
         head.push_str("\r\n");

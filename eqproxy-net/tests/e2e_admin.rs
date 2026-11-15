@@ -7,6 +7,7 @@
 //! keeps serving after the admin task dies (SPEC §9: the panel is not required
 //! to operate the proxy).
 
+use std::fmt::Write as _;
 use std::net::SocketAddr;
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -156,7 +157,7 @@ async fn request(addr: SocketAddr, head: &str) -> String {
 fn get(path: &str, authorization: Option<&str>) -> String {
     let mut head = format!("GET {path} HTTP/1.1\r\nhost: admin\r\n");
     if let Some(value) = authorization {
-        head.push_str(&format!("authorization: {value}\r\n"));
+        write!(head, "authorization: {value}\r\n").expect("writing into a String cannot fail");
     }
     head.push_str("\r\n");
     head
@@ -175,10 +176,7 @@ fn status_line(answer: &str) -> &str {
 }
 
 fn body(answer: &str) -> &str {
-    answer
-        .split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .unwrap_or("")
+    answer.split_once("\r\n\r\n").map_or("", |(_, body)| body)
 }
 
 /// HTTP origin that answers after `delay_ms` with `body` and closes.
@@ -375,7 +373,7 @@ async fn metrics_export_is_prometheus_with_a_fixed_series_count() {
         .lines()
         .filter(|line| !line.starts_with('#') && !line.is_empty())
         .collect();
-    assert!(!series.is_empty());
+    assert_ne!(series, [] as [&str; 0]);
     for line in &series {
         assert_eq!(
             line.matches('{').count(),
@@ -600,6 +598,7 @@ fn reload(secret: &str) -> String {
 /// applier (here absent, so `503 config_unavailable`, which is not an
 /// authorization answer).
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn every_route_is_authorized_by_the_matrix() {
     let (addr, handle, _metrics, modes) = start_admin_with(TOKEN, Some(WRITE)).await;
     let state_path = format!("/api/v1/backends/{BACKEND}/servers/{SERVER_A}/state");
@@ -952,6 +951,16 @@ async fn draining_every_server_yields_an_explicit_503() {
         .expect("serve");
 }
 
+async fn roundtrip(addr: SocketAddr, payload: &[u8]) -> Vec<u8> {
+    let mut stream = TcpStream::connect(addr).await.expect("connect proxy");
+    stream.write_all(payload).await.expect("write payload");
+    let mut echoed = vec![0u8; payload.len()];
+    tokio::time::timeout(WAIT, stream.read_exact(&mut echoed))
+        .await
+        .expect("echo before the deadline")
+        .expect("read echo");
+    echoed
+}
 #[tokio::test]
 async fn the_dataplane_keeps_serving_when_the_admin_task_dies() {
     // A real echo backend and a TCP listener through the dataplane.
@@ -997,16 +1006,6 @@ async fn the_dataplane_keeps_serving_when_the_admin_task_dies() {
     let (admin_addr, admin, _metrics) = start_admin(TOKEN).await;
 
     // A first round-trip through the dataplane.
-    async fn roundtrip(addr: SocketAddr, payload: &[u8]) -> Vec<u8> {
-        let mut stream = TcpStream::connect(addr).await.expect("connect proxy");
-        stream.write_all(payload).await.expect("write payload");
-        let mut echoed = vec![0u8; payload.len()];
-        tokio::time::timeout(WAIT, stream.read_exact(&mut echoed))
-            .await
-            .expect("echo before the deadline")
-            .expect("read echo");
-        echoed
-    }
     assert_eq!(
         roundtrip(proxy_addr, b"before-admin-death").await,
         b"before-admin-death"

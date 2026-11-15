@@ -4,6 +4,7 @@
 //! `POST`, a read session really cannot write, and a plane without
 //! `[admin] panel` does not serve the pages at all.
 
+use std::fmt::Write as _;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -119,10 +120,7 @@ fn status_line(answer: &str) -> &str {
 }
 
 fn body(answer: &str) -> &str {
-    answer
-        .split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .unwrap_or("")
+    answer.split_once("\r\n\r\n").map_or("", |(_, body)| body)
 }
 
 fn header<'a>(answer: &'a str, name: &str) -> Option<&'a str> {
@@ -137,7 +135,8 @@ fn header<'a>(answer: &'a str, name: &str) -> Option<&'a str> {
 fn panel_get(path: &str, session: Option<&str>) -> String {
     let mut head = format!("GET {path} HTTP/1.1\r\nhost: admin\r\n");
     if let Some(sid) = session {
-        head.push_str(&format!("cookie: eqproxy_session={sid}\r\n"));
+        write!(head, "cookie: eqproxy_session={sid}\r\n")
+            .expect("writing into a String cannot fail");
     }
     head.push_str("\r\n");
     head
@@ -156,7 +155,7 @@ fn panel_post(
         if !encoded.is_empty() {
             encoded.push('&');
         }
-        encoded.push_str(&format!("{name}={value}"));
+        write!(encoded, "{name}={value}").expect("writing into a String cannot fail");
     }
     let mut head = format!(
         "POST {path} HTTP/1.1\r\nhost: admin\r\ncontent-type: \
@@ -164,15 +163,16 @@ fn panel_post(
         encoded.len()
     );
     if let Some(sid) = session {
-        head.push_str(&format!("cookie: eqproxy_session={sid}\r\n"));
+        write!(head, "cookie: eqproxy_session={sid}\r\n")
+            .expect("writing into a String cannot fail");
     }
     if let Some(origin) = origin {
-        head.push_str(&format!("origin: {origin}\r\n"));
+        write!(head, "origin: {origin}\r\n").expect("writing into a String cannot fail");
     }
     if let Some(site) = site {
-        head.push_str(&format!("sec-fetch-site: {site}\r\n"));
+        write!(head, "sec-fetch-site: {site}\r\n").expect("writing into a String cannot fail");
     }
-    head.push_str(&format!("\r\n{encoded}"));
+    write!(head, "\r\n{encoded}").expect("writing into a String cannot fail");
     head
 }
 
@@ -357,6 +357,7 @@ async fn a_session_is_required_and_a_stale_cookie_is_cleared() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn the_csrf_token_and_the_origin_are_what_authorise_a_form_post() {
     let (addr, _handle) = start_panel_admin(true).await;
     let sid = login(addr, WRITE).await;

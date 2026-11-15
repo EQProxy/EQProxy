@@ -92,6 +92,10 @@ pub fn set_access(path: &Path, uids: &[u32]) -> io::Result<()> {
 /// validator rejects the field before a plane is ever bound. An empty list is
 /// the normal case and has nothing to clear, so it is a no-op here.
 #[cfg(not(target_os = "linux"))]
+///
+///# Errors
+///
+///Returns the I/O error when the ACL cannot be installed.
 pub fn set_access(_path: &Path, uids: &[u32]) -> io::Result<()> {
     if uids.is_empty() {
         return Ok(());

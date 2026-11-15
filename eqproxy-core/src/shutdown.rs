@@ -104,7 +104,7 @@ mod tests {
             assert_eq!(outcome, GateOutcome::Triggered);
             assert!(shutdown.is_triggered());
             assert!(handle.is_triggered());
-        })
+        });
     }
 
     #[test]
@@ -117,7 +117,7 @@ mod tests {
                 .await
                 .expect("wait() on an already-triggered signal must be immediate");
             assert_eq!(outcome, GateOutcome::Triggered);
-        })
+        });
     }
 
     #[test]
@@ -130,6 +130,6 @@ mod tests {
                 .expect("a dropped sender must release the waiter");
             assert_eq!(outcome, GateOutcome::Closed);
             assert!(!shutdown.is_triggered());
-        })
+        });
     }
 }

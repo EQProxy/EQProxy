@@ -16,7 +16,7 @@ use std::io::{self, Write};
 use flate2::{Compress, Compression, Crc, FlushCompress, Status};
 
 /// Default gzip level: the middle of the 1–9 range (nginx defaults to 1,
-/// HAProxy to 3; this slice measures 1, 6 and 9 before claiming anything).
+/// `HAProxy` to 3; this slice measures 1, 6 and 9 before claiming anything).
 pub const DEFAULT_LEVEL: u32 = 6;
 
 /// Default Brotli quality: the middle of the 0–11 range. Levels at or above 9
@@ -65,6 +65,11 @@ impl Default for ResolvedCompression {
 impl ResolvedCompression {
     /// Parses and validates the configured codings and media types (the config
     /// gate calls this, so an invalid entry is rejected with field and fix).
+    ///
+    ///# Errors
+    ///
+    ///Returns the config error naming the coding, value and fix when a
+    ///configured entry is invalid.
     pub fn new(
         gzip: bool,
         brotli: bool,
@@ -283,6 +288,10 @@ pub struct GzipEncoder {
 
 impl GzipEncoder {
     /// A gzip member with the given level (validated by the config gate).
+    ///
+    ///# Errors
+    ///
+    ///Returns the I/O error when the encoder cannot be created.
     pub fn new(level: u32) -> io::Result<Self> {
         // Raw deflate: the gzip wrapper is written here, byte for byte.
         let compress = Compress::new(Compression::new(level.clamp(1, 9)), false);
@@ -295,6 +304,10 @@ impl GzipEncoder {
     }
 
     /// Compresses `input` into `out` (appended). No flush.
+    ///
+    ///# Errors
+    ///
+    ///Returns the I/O error when the encoder fails while writing the member.
     pub fn push(&mut self, input: &[u8], out: &mut Vec<u8>) -> io::Result<()> {
         if !self.started {
             out.extend_from_slice(&GZIP_HEADER);
@@ -306,6 +319,10 @@ impl GzipEncoder {
     }
 
     /// Ends the member (writes the trailer) into `out` (appended).
+    ///
+    ///# Errors
+    ///
+    ///Returns the I/O error when the trailer cannot be written.
     pub fn finish(&mut self, out: &mut Vec<u8>) -> io::Result<()> {
         if !self.started {
             out.extend_from_slice(&GZIP_HEADER);
@@ -313,7 +330,9 @@ impl GzipEncoder {
         }
         self.pump(&[], FlushCompress::Finish, out, true)?;
         out.extend_from_slice(&self.crc.sum().to_le_bytes());
-        out.extend_from_slice(&(self.input_len as u32).to_le_bytes());
+        let len = u32::try_from(self.input_len)
+            .map_err(|_| io::Error::other("the gzip member is larger than 4 GiB"))?;
+        out.extend_from_slice(&len.to_le_bytes());
         Ok(())
     }
 
@@ -338,8 +357,13 @@ impl GzipEncoder {
                 .compress
                 .compress(&input[fed..], &mut out[start..], flush)
                 .map_err(|err| io::Error::other(err.to_string()))?;
-            fed += (self.compress.total_in() - before_in) as usize;
-            out.truncate(start + (self.compress.total_out() - before_out) as usize);
+            fed += usize::try_from(self.compress.total_in() - before_in)
+                .expect("value fits in the destination type");
+            out.truncate(
+                start
+                    + usize::try_from(self.compress.total_out() - before_out)
+                        .expect("value fits in the destination type"),
+            );
             if status == Status::StreamEnd {
                 return Ok(());
             }
@@ -371,6 +395,10 @@ pub struct BrotliEncoder {
 
 impl BrotliEncoder {
     /// A Brotli stream with the given quality (validated by the config gate).
+    ///
+    ///# Errors
+    ///
+    ///Returns the I/O error when the encoder cannot be created.
     pub fn new(quality: u32) -> io::Result<Self> {
         if quality > 11 {
             return Err(io::Error::other(format!(
@@ -391,6 +419,10 @@ impl BrotliEncoder {
 
     /// Compresses `input` into `out` (appended) and flushes a decodable
     /// prefix, so the relay never holds the response back.
+    ///
+    ///# Errors
+    ///
+    ///Returns the I/O error when the encoder fails while writing the member.
     pub fn push(&mut self, input: &[u8], out: &mut Vec<u8>) -> io::Result<()> {
         let writer = self
             .writer
@@ -403,6 +435,10 @@ impl BrotliEncoder {
     }
 
     /// Ends the stream (writes the final block) into `out` (appended).
+    ///
+    ///# Errors
+    ///
+    ///Returns the I/O error when the trailer cannot be written.
     pub fn finish(&mut self, out: &mut Vec<u8>) -> io::Result<()> {
         let writer = self
             .writer
@@ -426,6 +462,10 @@ impl Encoder {
     /// Builds the encoder for `encoding` from the listener settings. The
     /// encoder is boxed because the two states differ by an order of
     /// magnitude; one allocation per compressed response buys a small enum.
+    ///
+    ///# Errors
+    ///
+    ///Returns the I/O error when the encoder cannot be created.
     pub fn new(encoding: Encoding, settings: &ResolvedCompression) -> io::Result<Self> {
         Ok(match encoding {
             Encoding::Gzip => Self::Gzip(Box::new(GzipEncoder::new(settings.level)?)),
@@ -436,6 +476,10 @@ impl Encoder {
     }
 
     /// Compresses `input` into `out` (appended).
+    ///
+    ///# Errors
+    ///
+    ///Returns the I/O error when the encoder fails while writing the member.
     pub fn push(&mut self, input: &[u8], out: &mut Vec<u8>) -> io::Result<()> {
         match self {
             Self::Gzip(encoder) => encoder.push(input, out),
@@ -444,6 +488,10 @@ impl Encoder {
     }
 
     /// Ends the compressed stream into `out` (appended).
+    ///
+    ///# Errors
+    ///
+    ///Returns the I/O error when the trailer cannot be written.
     pub fn finish(&mut self, out: &mut Vec<u8>) -> io::Result<()> {
         match self {
             Self::Gzip(encoder) => encoder.finish(out),
@@ -472,7 +520,7 @@ mod tests {
         head.into_bytes()
     }
 
-    fn facts<'a>(head: &'a [u8], len: Option<u64>) -> ResponseFacts<'a> {
+    fn facts(head: &[u8], len: Option<u64>) -> ResponseFacts<'_> {
         ResponseFacts {
             status: 200,
             no_body: false,
@@ -779,7 +827,7 @@ mod tests {
             if let Some(magic) = magic {
                 assert_eq!(&out[..2], &magic);
             }
-            assert!(!out.is_empty());
+            assert_ne!(out, [] as [u8; 0]);
         }
     }
 }

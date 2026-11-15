@@ -1,4 +1,4 @@
-//! HAProxy → EQProxy.
+//! `HAProxy` → `EQProxy`.
 //!
 //! Reads the section grammar (`global`, `defaults`, `frontend`, `backend`,
 //! `listen`, …), the `server`/`default-server` parameter list and the timeout
@@ -15,7 +15,7 @@ use super::{
     Conv, HeaderOp, ImportError, Listener, ListenerTls, Rule, convert_duration, normalize_addr,
 };
 
-/// Directives EQProxy covers in a field the converter does not fill in.
+/// Directives `EQProxy` covers in a field the converter does not fill in.
 fn supported_manually(name: &str) -> Option<&'static str> {
     Some(match name {
         "stats" => "[admin].unix_socket + token_file (plano de administración con bearer token)",
@@ -287,13 +287,14 @@ struct Defaults {
 }
 
 /// Replaces any page covering one of `page`'s codes, so a later `errorfile`
-/// or `errorloc` for the same status wins (HAProxy's last declaration does)
+/// or `errorloc` for the same status wins (`HAProxy`'s last declaration does)
 /// instead of emitting two pages for one code, which validation refuses.
 fn upsert_error_page(pages: &mut Vec<super::ErrorPageIr>, page: super::ErrorPageIr) {
     pages.retain(|existing| !existing.codes.iter().any(|code| page.codes.contains(code)));
     pages.push(page);
 }
 
+#[allow(clippy::too_many_lines)]
 pub(super) fn convert(conv: &mut Conv, text: &str) -> Result<(), ImportError> {
     let sections = sections(text);
     let mut defaults = Defaults::default();
@@ -444,7 +445,7 @@ pub(super) fn convert(conv: &mut Conv, text: &str) -> Result<(), ImportError> {
                     }
                 }
                 "option" => {
-                    let option = args.get(1).map(String::as_str).unwrap_or_default();
+                    let option = args.get(1).map_or_default(String::as_str);
                     if option == "forwardfor" {
                         defaults.forwardfor = true;
                         conv.done(
@@ -540,6 +541,7 @@ fn backend_named(
     backend_body(conv, section, defaults, true)
 }
 
+#[allow(clippy::too_many_lines)]
 fn backend_body(
     conv: &mut Conv,
     section: &Section,
@@ -596,7 +598,7 @@ fn backend_body(
                     .cloned()
                     .unwrap_or_else(|| "roundrobin".to_owned());
                 if algorithm == "roundrobin" || algorithm == "leastconn" {
-                    backend.balance = algorithm.clone();
+                    backend.balance.clone_from(&algorithm);
                     conv.done(1, &text, &context, format!("balance = \"{algorithm}\""));
                 } else if algorithm == "source" {
                     backend.affinity = Some(super::Affinity {
@@ -642,8 +644,7 @@ fn backend_body(
             "option" => {
                 let option = args
                     .get(1)
-                    .map(|v| v.to_ascii_lowercase())
-                    .unwrap_or_default();
+                    .map_or_default(|v| v.to_ascii_lowercase());
                 if option == "httpchk" {
                     let mut health = backend
                         .health_check
@@ -827,6 +828,7 @@ fn backend_body(
 }
 
 /// One `server name address [params]` line.
+#[allow(clippy::too_many_lines)]
 fn server_line(
     conv: &mut Conv,
     args: &[String],
@@ -981,8 +983,8 @@ fn server_line(
     // the schema since v0.8.5. A non-numeric value is a review, never a
     // silent 0.
     let maxconn = match params.get("maxconn") {
-        Some(raw) => match raw.parse::<u32>() {
-            Ok(value) => {
+        Some(raw) => {
+            if let Ok(value) = raw.parse::<u32>() {
                 conv.done(
                     1,
                     format!("server {name} maxconn {value}"),
@@ -992,8 +994,7 @@ fn server_line(
                     ),
                 );
                 value
-            }
-            Err(_) => {
+            } else {
                 conv.review(
                     1,
                     format!("server {name} maxconn {raw}"),
@@ -1002,7 +1003,7 @@ fn server_line(
                 );
                 0
             }
-        },
+        }
         None => 0,
     };
     if params.contains_key("slowstart") {
@@ -1022,6 +1023,7 @@ fn server_line(
 }
 
 /// `frontend { … }` and the frontend half of `listen { … }`.
+#[allow(clippy::too_many_lines)]
 fn frontend(
     conv: &mut Conv,
     section: &Section,
@@ -1261,10 +1263,7 @@ fn frontend(
                 }
             }
             "option" => {
-                let option = args
-                    .get(1)
-                    .map(|v| v.to_ascii_lowercase())
-                    .unwrap_or_default();
+                let option = args.get(1).map_or_default(|v| v.to_ascii_lowercase());
                 if option == "forwardfor" {
                     forwarded = true;
                     conv.done(
@@ -1326,8 +1325,8 @@ fn frontend(
                 None
             }
         }
-        None => match default_backend.clone() {
-            Some(reference) => {
+        None => {
+            if let Some(reference) = default_backend.clone() {
                 let wanted = super::sanitize_name(&reference);
                 if conv.has_backend(&wanted) {
                     Some(wanted)
@@ -1342,31 +1341,27 @@ fn frontend(
                     );
                     None
                 }
-            }
-            None => {
+            } else {
                 let only = conv.only_backend();
-                match only {
-                    Some(name) => {
-                        conv.review(
-                            1,
-                            &context,
-                            &context,
-                            format!("sin default_backend: se asume el único backend «{name}»"),
-                        );
-                        Some(name)
-                    }
-                    None => {
-                        conv.reject(
-                            1,
-                            &context,
-                            &context,
-                            "sin default_backend traducible: EQProxy exige un backend por listener",
-                        );
-                        None
-                    }
+                if let Some(name) = only {
+                    conv.review(
+                        1,
+                        &context,
+                        &context,
+                        format!("sin default_backend: se asume el único backend «{name}»"),
+                    );
+                    Some(name)
+                } else {
+                    conv.reject(
+                    1,
+                    &context,
+                    &context,
+                    "sin default_backend traducible: EQProxy exige un backend o un redirect por listener",
+                );
+                    None
                 }
             }
-        },
+        }
     };
     let Some(backend_name) = backend_name else {
         return Ok(());
@@ -1441,7 +1436,7 @@ fn frontend(
                     "varios certificados por SNI: EQProxy lo soporta en [listener.*.tls].certs; transcríbalo a mano",
                 ),
                 "ssl-min-ver" | "ssl-max-ver" => {
-                    let value = flags.get(index + 1).map(String::as_str).unwrap_or("");
+                    let value = flags.get(index + 1).map_or("", String::as_str);
                     let parsed = match value.to_ascii_lowercase().as_str() {
                         "tlsv1.2" => Some("1.2"),
                         "tlsv1.3" => Some("1.3"),
@@ -1502,34 +1497,32 @@ fn frontend(
         };
 
         let tls = if ssl || cert.is_some() {
-            match cert {
-                Some(cert) => {
-                    conv.review(
-                        1,
-                        format!("crt {cert}"),
-                        &context,
-                        format!(
-                            "HAProxy usa un PEM combinado: EQProxy exige cert y key separados — se emite key = «{cert}.key» y hay que corregirlo"
-                        ),
-                    );
-                    Some(ListenerTls {
-                        key: format!("{cert}.key"),
-                        cert,
-                        alpn: alpn.clone(),
-                        min_version,
-                        max_version,
-                        client_ca: None,
-                    })
-                }
-                None => {
-                    conv.reject(
-                        1,
-                        "bind ssl",
-                        &context,
-                        "TLS sin «crt»: no hay certificado; el listener se emite en claro",
-                    );
-                    None
-                }
+            if let Some(cert) = cert {
+                conv.review(
+                    1,
+                    format!("crt {cert}"),
+                    &context,
+                    format!(
+                        "HAProxy usa un PEM combinado: EQProxy exige cert y key separados — se emite key = «{cert}.key» y hay que corregirlo"
+                    ),
+                );
+                Some(ListenerTls {
+                    certs: Vec::new(),
+                    key: format!("{cert}.key"),
+                    cert,
+                    alpn: alpn.clone(),
+                    min_version,
+                    max_version,
+                    client_ca: None,
+                })
+            } else {
+                conv.reject(
+                    1,
+                    "bind ssl",
+                    &context,
+                    "TLS sin «crt»: no hay certificado; el listener se emite en claro",
+                );
+                None
             }
         } else {
             None
@@ -1643,13 +1636,14 @@ fn frontend(
                 listener.mode
             ),
         );
-        listener.error_pages = error_pages.clone();
+        listener.error_pages.clone_from(&error_pages);
         conv.add_listener(name, listener);
     }
     Ok(())
 }
 
 /// `http-request {action}` in a frontend.
+#[allow(clippy::too_many_lines)]
 fn http_request(
     conv: &mut Conv,
     args: &[String],
@@ -1661,8 +1655,7 @@ fn http_request(
     let text = args.join(" ");
     let action = args
         .get(1)
-        .map(|value| value.to_ascii_lowercase())
-        .unwrap_or_default();
+        .map_or_default(|value| value.to_ascii_lowercase());
     match action.as_str() {
         "set-header" | "add-header" => {
             let (Some(name), Some(value)) = (args.get(2), args.get(3)) else {
@@ -1779,7 +1772,7 @@ fn http_request(
     }
 }
 
-/// A supported HAProxy ACL sample fetch.
+/// A supported `HAProxy` ACL sample fetch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Fetch {
     Path,
@@ -1850,7 +1843,7 @@ fn regex_literal(value: &str) -> String {
 /// Domain matching for `hdr_dom(host) -m dom`: a dot-delimited suffix that
 /// also accepts the bare domain and a leading `*.` wildcard. The host sample
 /// arrives lowercased and without its port; the pattern is lowered to match
-/// HAProxy's case-insensitive domain semantics.
+/// `HAProxy`'s case-insensitive domain semantics.
 fn domain_regex(value: &str) -> Option<String> {
     let value = value.trim().to_ascii_lowercase();
     let name = value
@@ -1916,13 +1909,14 @@ fn apply_header_domain(rule: &mut Rule, method: &str, value: &str) -> Option<()>
     Some(())
 }
 
-/// Parses a HAProxy inline ACL (`{ path_beg /api }`) into a rule.
+/// Parses a `HAProxy` inline ACL (`{ path_beg /api }`) into a rule.
 ///
 /// Only the conditions `[[listener.*.rules]]` evaluates are accepted; anything
 /// else returns `None` so the caller classifies the directive instead of
 /// emitting a rule that would mean something else. `hdr` and `hdr_dom` are
 /// deliberately distinct: `hdr(host)` compares the literal header value
 /// (including any port), while `hdr_dom(host)` matches the port-free domain.
+#[allow(clippy::too_many_lines)]
 fn condition_rule(args: &[String], backend: &str) -> Option<Rule> {
     let mut rule = Rule {
         use_backend: if backend.is_empty() {
@@ -1980,7 +1974,7 @@ fn condition_rule(args: &[String], backend: &str) -> Option<Rule> {
                 rule.path = Some(tokens.get(index)?.to_string());
                 index += 1;
             }
-            Fetch::PathBeg => {
+            Fetch::PathBeg | Fetch::UrlBeg => {
                 if insensitive || method != "str" {
                     return None;
                 }
@@ -2040,13 +2034,6 @@ fn condition_rule(args: &[String], backend: &str) -> Option<Rule> {
                     return None;
                 }
                 rule.methods = vec![tokens.get(index)?.to_string()];
-                index += 1;
-            }
-            Fetch::UrlBeg => {
-                if insensitive || method != "str" {
-                    return None;
-                }
-                rule.path_prefix = Some(tokens.get(index)?.to_string());
                 index += 1;
             }
         }

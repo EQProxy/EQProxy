@@ -39,6 +39,11 @@ pub struct AuthUrl {
 /// Parses an `auth-url`. Only `http://` is accepted: an `https://` URL
 /// is rejected naming the gap (the subrequest is plain http — put the
 /// auth service on localhost or the service mesh).
+///
+/// # Errors
+///
+/// Returns `Err` with the rule when the value has no `://`, a scheme other
+/// than `http`, an empty host, or a missing or invalid port.
 pub fn parse_auth_url(raw: &str) -> Result<AuthUrl, String> {
     let (scheme, rest) = raw
         .split_once("://")
@@ -118,6 +123,12 @@ impl BasicUsers {
     /// Parses `user:hash` entries. Hash schemes: `$apr1$…` (Apache MD5,
     /// `openssl passwd -apr1`) and plain comparison (discouraged).
     /// Known-but-unsupported schemes are a config error naming the fix.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` naming the entry and the rule when an entry has no `:`,
+    /// an empty user or hash, an unsupported or malformed scheme, or repeats
+    /// a user.
     pub fn parse(entries: &[String]) -> Result<BasicUsers, String> {
         let mut users = BasicUsers {
             entries: Vec::with_capacity(entries.len()),
@@ -146,7 +157,7 @@ impl BasicUsers {
                     "\"{user}\" uses {name} ({scheme}…) which is not supported (fix: regenerate the entry with `openssl passwd -apr1`)"
                 ));
             }
-            if hash.starts_with("{") {
+            if hash.starts_with('{') {
                 return Err(format!(
                     "\"{user}\" uses an htpasswd brace scheme which is not supported (fix: regenerate the entry with `openssl passwd -apr1`)"
                 ));
@@ -385,7 +396,7 @@ mod tests {
         ] {
             let err = BasicUsers::parse(&[entry.to_owned()])
                 .expect_err("unsupported scheme must be rejected")
-                .to_string();
+                .clone();
             assert!(
                 err.contains("openssl passwd -apr1"),
                 "the error must name the fix: {err}"
@@ -405,12 +416,12 @@ mod tests {
         ] {
             let err = BasicUsers::parse(&[entry.to_owned()])
                 .expect_err("broken entry must be rejected")
-                .to_string();
+                .clone();
             assert!(err.contains(why), "error must say {why:?}: {err}");
         }
         let err = BasicUsers::parse(&["alice:x".to_owned(), "alice:y".to_owned()])
             .expect_err("duplicate user")
-            .to_string();
+            .clone();
         assert!(err.contains("twice"), "{err}");
     }
 
@@ -483,7 +494,7 @@ mod tests {
         );
         let err = parse_auth_url("https://auth.example/verify")
             .expect_err("https is a declared gap")
-            .to_string();
+            .clone();
         assert!(err.contains("http:// only"), "{err}");
         for bad in [
             "auth.example:8080/x",

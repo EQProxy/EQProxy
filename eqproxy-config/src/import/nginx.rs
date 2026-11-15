@@ -1,4 +1,4 @@
-//! nginx → EQProxy.
+//! nginx → `EQProxy`.
 //!
 //! Parses the `directive args;` / `block { … }` grammar (comments, quoting and
 //! nesting included) and maps what the v1 schema can express today: listeners,
@@ -8,10 +8,14 @@
 //! `deny` and redirects. Everything else is classified, never dropped.
 
 use std::collections::BTreeMap;
+use std::path::{Component, Path, PathBuf};
+
+use eqproxy_core::expectation::RegexMatcher;
+use eqproxy_core::rules::validate_location;
 
 use super::{
-    Conv, Degradation, HeaderOp, ImportError, Listener, ListenerTls, Rule, convert_duration,
-    normalize_addr, parse_size, sanitize_name,
+    Conv, Degradation, HeaderOp, HostRank, ImportError, Listener, ListenerTls, Rule, Severity,
+    SniCertIr, convert_duration, normalize_addr, parse_size, sanitize_name,
 };
 
 /// Global directives that do not affect `eqproxy.toml`.
@@ -28,7 +32,7 @@ const GLOBAL_INFO: &[&str] = &[
     "env",
 ];
 
-/// Directives EQProxy **does** support in a field the converter does not fill
+/// Directives `EQProxy` **does** support in a field the converter does not fill
 /// automatically: the operator gets the exact place to configure it.
 fn supported_manually(name: &str) -> Option<&'static str> {
     Some(match name {
@@ -65,7 +69,7 @@ fn supported_manually(name: &str) -> Option<&'static str> {
     })
 }
 
-/// Directives with no equivalent in EQProxy today.
+/// Directives with no equivalent in `EQProxy` today.
 fn unsupported(name: &str) -> Option<&'static str> {
     Some(match name {
         "root" | "alias" | "index" | "autoindex" | "try_files" | "types" | "default_type"
@@ -291,9 +295,522 @@ fn directive(node: &Node) -> String {
     }
 }
 
+/// First argument, or the empty string when the directive has none.
+fn first_arg(node: &Node) -> &str {
+    node.args.first().map_or("", String::as_str)
+}
+
+// ---------------------------------------------------------------------------
+// include expansion
+// ---------------------------------------------------------------------------
+
+/// Hard caps for one import. They bound the work an `include` graph can make
+/// the converter do before it fails with an actionable error.
+const INCLUDE_MAX_DEPTH: usize = 16;
+const INCLUDE_MAX_FILES: usize = 256;
+const INCLUDE_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy)]
+struct IncludeLimits {
+    depth: usize,
+    files: usize,
+    bytes: usize,
+}
+
+const INCLUDE_LIMITS: IncludeLimits = IncludeLimits {
+    depth: INCLUDE_MAX_DEPTH,
+    files: INCLUDE_MAX_FILES,
+    bytes: INCLUDE_MAX_BYTES,
+};
+
+/// One successful (or empty) `include` directive, kept apart from the AST so
+/// the converter can classify it even though the directive itself is replaced
+/// by the nodes it included.
+#[derive(Debug)]
+struct IncludeEvent {
+    directive: String,
+    context: String,
+    files: usize,
+    empty_glob: bool,
+}
+
+/// Reads `include` directives from disk and splices their parsed nodes at the
+/// directive's position. Paths are canonicalised for cycle detection; glob
+/// matches are sorted before they are read, so the same tree always yields
+/// the same AST.
+struct IncludeExpander {
+    root: PathBuf,
+    canonical_root: PathBuf,
+    limits: IncludeLimits,
+    files_read: usize,
+    bytes_read: usize,
+    stack: Vec<PathBuf>,
+    events: Vec<IncludeEvent>,
+}
+
+impl IncludeExpander {
+    fn new(root: &Path, root_bytes: usize, limits: IncludeLimits) -> Result<Self, ImportError> {
+        let canonical_root = std::fs::canonicalize(root).map_err(|err| {
+            ImportError::new(format!(
+                "--include-root {} is not readable: {err}",
+                root.display()
+            ))
+        })?;
+        if !canonical_root.is_dir() {
+            return Err(ImportError::new(format!(
+                "--include-root {} is not a directory",
+                root.display()
+            )));
+        }
+        Ok(Self {
+            root: root.to_path_buf(),
+            canonical_root,
+            limits,
+            files_read: 0,
+            bytes_read: root_bytes,
+            stack: Vec::new(),
+            events: Vec::new(),
+        })
+    }
+
+    fn expand(
+        mut self,
+        nodes: Vec<Node>,
+        context: &str,
+    ) -> Result<(Vec<Node>, Vec<IncludeEvent>), ImportError> {
+        let nodes = self.expand_nodes(nodes, 0, context)?;
+        Ok((nodes, self.events))
+    }
+
+    fn expand_nodes(
+        &mut self,
+        nodes: Vec<Node>,
+        depth: usize,
+        context: &str,
+    ) -> Result<Vec<Node>, ImportError> {
+        let mut expanded = Vec::new();
+        for mut node in nodes {
+            if node.name == "include" {
+                self.include(&node, depth, context, &mut expanded)?;
+                continue;
+            }
+            let child_context = match node.name.as_str() {
+                "http" => "http".to_owned(),
+                "stream" => "stream".to_owned(),
+                "server" => format!("server {}", server_label(&node)),
+                _ => context.to_owned(),
+            };
+            node.children = self.expand_nodes(node.children, depth, &child_context)?;
+            expanded.push(node);
+        }
+        Ok(expanded)
+    }
+
+    fn include(
+        &mut self,
+        node: &Node,
+        depth: usize,
+        context: &str,
+        out: &mut Vec<Node>,
+    ) -> Result<(), ImportError> {
+        if node.args.len() != 1 {
+            return Err(ImportError::new(format!(
+                "include en «{context}» debe tener exactamente una ruta o patrón (encontrados {})",
+                node.args.len()
+            )));
+        }
+        if !node.children.is_empty() {
+            return Err(ImportError::new(format!(
+                "include «{}» no puede ser un bloque",
+                node.args[0]
+            )));
+        }
+        let pattern = &node.args[0];
+        if pattern.trim().is_empty() {
+            return Err(ImportError::new("include con ruta vacía".to_owned()));
+        }
+        if pattern.contains('$') {
+            return Err(ImportError::new(format!(
+                "include «{pattern}» usa variables de nginx; el importador solo expande rutas estáticas"
+            )));
+        }
+        let (files, is_glob) = self.resolve(pattern)?;
+        if is_glob && files.is_empty() {
+            self.events.push(IncludeEvent {
+                directive: directive(node),
+                context: context.to_owned(),
+                files: 0,
+                empty_glob: true,
+            });
+            return Ok(());
+        }
+        self.events.push(IncludeEvent {
+            directive: directive(node),
+            context: context.to_owned(),
+            files: files.len(),
+            empty_glob: false,
+        });
+        for path in &files {
+            out.extend(self.read_file(path, depth, context)?);
+        }
+        Ok(())
+    }
+
+    fn read_file(
+        &mut self,
+        path: &Path,
+        depth: usize,
+        context: &str,
+    ) -> Result<Vec<Node>, ImportError> {
+        if depth + 1 > self.limits.depth {
+            return Err(ImportError::new(format!(
+                "include «{}»: se supera la profundidad máxima de {} niveles ({} -> {})",
+                path.display(),
+                self.limits.depth,
+                self.chain(),
+                path.display()
+            )));
+        }
+        let canonical = std::fs::canonicalize(path).map_err(|err| {
+            ImportError::new(format!(
+                "include «{}» no se puede leer: {err}",
+                path.display()
+            ))
+        })?;
+        if let Some(start) = self.stack.iter().position(|open| *open == canonical) {
+            let mut cycle: Vec<String> = self.stack[start..]
+                .iter()
+                .map(|open| open.display().to_string())
+                .collect();
+            cycle.push(canonical.display().to_string());
+            return Err(ImportError::new(format!(
+                "include «{}»: ciclo detectado: {}",
+                path.display(),
+                cycle.join(" -> ")
+            )));
+        }
+        let metadata = std::fs::metadata(&canonical).map_err(|err| {
+            ImportError::new(format!(
+                "include «{}» no se puede leer: {err}",
+                path.display()
+            ))
+        })?;
+        if !metadata.is_file() {
+            return Err(ImportError::new(format!(
+                "include «{}» no es un fichero regular",
+                path.display()
+            )));
+        }
+        if self.files_read + 1 > self.limits.files {
+            return Err(ImportError::new(format!(
+                "include «{}»: se supera el máximo de {} ficheros incluidos",
+                path.display(),
+                self.limits.files
+            )));
+        }
+        let size = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
+        if self.bytes_read.saturating_add(size) > self.limits.bytes {
+            return Err(ImportError::new(format!(
+                "include «{}»: el contenido expandido supera el máximo de {} bytes",
+                path.display(),
+                self.limits.bytes
+            )));
+        }
+        let text = std::fs::read_to_string(&canonical).map_err(|err| {
+            ImportError::new(format!(
+                "include «{}» no es UTF-8 legible: {err}",
+                path.display()
+            ))
+        })?;
+        self.files_read += 1;
+        self.bytes_read = self.bytes_read.saturating_add(text.len());
+        if self.bytes_read > self.limits.bytes {
+            return Err(ImportError::new(format!(
+                "include «{}»: el contenido expandido supera el máximo de {} bytes",
+                path.display(),
+                self.limits.bytes
+            )));
+        }
+        let tokens = tokenize(&text).map_err(|err| {
+            ImportError::new(format!("include «{}»: {}", path.display(), err.message))
+        })?;
+        let parsed = parse(&tokens).map_err(|err| {
+            ImportError::new(format!("include «{}»: {}", path.display(), err.message))
+        })?;
+        self.stack.push(canonical);
+        let expanded = self.expand_nodes(parsed, depth + 1, context)?;
+        self.stack.pop();
+        Ok(expanded)
+    }
+
+    fn chain(&self) -> String {
+        if self.stack.is_empty() {
+            "configuración principal".to_owned()
+        } else {
+            self.stack
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(" -> ")
+        }
+    }
+
+    /// Resolves one nginx include argument. Literal paths must exist; a glob
+    /// with no matches is valid in nginx and is reported, not treated as an
+    /// error. The boolean says whether the pattern contains glob syntax.
+    #[allow(clippy::too_many_lines)]
+    fn resolve(&self, pattern: &str) -> Result<(Vec<PathBuf>, bool), ImportError> {
+        let raw = Path::new(pattern);
+        let is_glob = pattern.chars().any(|c| matches!(c, '*' | '?' | '['));
+        let mut candidates = vec![if raw.is_absolute() {
+            PathBuf::new()
+        } else {
+            self.root.clone()
+        }];
+        let components: Vec<Component<'_>> = raw.components().collect();
+        for (idx, component) in components.iter().enumerate() {
+            let last = idx + 1 == components.len();
+            let mut next = Vec::new();
+            for base in std::mem::take(&mut candidates) {
+                match component {
+                    Component::Prefix(prefix) => {
+                        next.push(PathBuf::from(prefix.as_os_str()));
+                    }
+                    Component::RootDir => {
+                        let mut path = base;
+                        path.push(Component::RootDir.as_os_str());
+                        next.push(path);
+                    }
+                    Component::CurDir => next.push(base),
+                    Component::ParentDir => {
+                        if raw.is_absolute() {
+                            let mut path = base;
+                            path.pop();
+                            next.push(path);
+                        } else {
+                            let mut path = base;
+                            if !path.pop() || !path.starts_with(&self.root) {
+                                return Err(ImportError::new(format!(
+                                    "include «{pattern}» sale de --include-root con «..»"
+                                )));
+                            }
+                            next.push(path);
+                        }
+                    }
+                    Component::Normal(name) => {
+                        let name = name.to_str().ok_or_else(|| {
+                            ImportError::new(format!(
+                                "include «{pattern}» contiene un nombre de fichero no UTF-8"
+                            ))
+                        })?;
+                        if has_glob_meta(name) {
+                            match std::fs::read_dir(&base) {
+                                Ok(entries) => {
+                                    let mut matched = Vec::new();
+                                    for entry in entries {
+                                        let entry = entry.map_err(|err| {
+                                            ImportError::new(format!(
+                                                "include «{pattern}»: no se puede listar {}: {err}",
+                                                base.display()
+                                            ))
+                                        })?;
+                                        let Some(entry_name) =
+                                            entry.file_name().to_str().map(str::to_owned)
+                                        else {
+                                            continue;
+                                        };
+                                        if glob_match(name, &entry_name) {
+                                            matched.push(entry.path());
+                                        }
+                                    }
+                                    matched.sort();
+                                    next.extend(matched);
+                                }
+                                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                                Err(err) => {
+                                    return Err(ImportError::new(format!(
+                                        "include «{pattern}»: no se puede listar {}: {err}",
+                                        base.display()
+                                    )));
+                                }
+                            }
+                        } else {
+                            next.push(base.join(name));
+                        }
+                    }
+                }
+            }
+            next.sort();
+            next.dedup();
+            if next.is_empty() {
+                break;
+            }
+            // Intermediate glob matches must be directories; a file would
+            // make the next `read_dir` fail and hide the real reason.
+            if !last {
+                next.retain(|path| path.is_dir());
+            }
+            candidates = next;
+        }
+
+        let mut files = Vec::new();
+        for candidate in candidates {
+            match std::fs::metadata(&candidate) {
+                Ok(metadata) if metadata.is_file() => {
+                    if !raw.is_absolute() {
+                        let canonical = std::fs::canonicalize(&candidate).map_err(|err| {
+                            ImportError::new(format!(
+                                "include «{}» no se puede leer: {err}",
+                                candidate.display()
+                            ))
+                        })?;
+                        if !canonical.starts_with(&self.canonical_root) {
+                            return Err(ImportError::new(format!(
+                                "include «{pattern}» resuelve fuera de --include-root: {}",
+                                canonical.display()
+                            )));
+                        }
+                    }
+                    files.push(candidate);
+                }
+                Ok(_) if is_glob => {}
+                Ok(_) => {
+                    return Err(ImportError::new(format!(
+                        "include «{pattern}» apunta a un directorio, no a un fichero"
+                    )));
+                }
+                Err(err) if is_glob && err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    return Err(ImportError::new(format!(
+                        "include «{pattern}» no se puede leer: {err}"
+                    )));
+                }
+            }
+        }
+        files.sort();
+        files.dedup();
+        Ok((files, is_glob))
+    }
+}
+
+fn has_glob_meta(component: &str) -> bool {
+    component.chars().any(|c| matches!(c, '*' | '?' | '['))
+}
+
+/// POSIX-glob subset used by nginx paths: `*`, `?`, `[...]` and backslash
+/// escaping. `*` does not match a leading dot unless the pattern says so.
+fn glob_match(pattern: &str, name: &str) -> bool {
+    if name.starts_with('.') && !pattern.starts_with('.') {
+        return false;
+    }
+    let pattern: Vec<char> = pattern.chars().collect();
+    let name: Vec<char> = name.chars().collect();
+    let mut p = 0;
+    let mut n = 0;
+    let mut star: Option<usize> = None;
+    let mut star_name = 0;
+    while n < name.len() {
+        if p < pattern.len() && pattern[p] == '*' {
+            star = Some(p);
+            star_name = n;
+            p += 1;
+            continue;
+        }
+        if p < pattern.len() {
+            let (matches, after) = match pattern[p] {
+                '?' => (true, p + 1),
+                '[' => match bracket_match(&pattern, p, name[n]) {
+                    Some((matches, after)) => (matches, after),
+                    None => (name[n] == '[', p + 1),
+                },
+                '\\' if p + 1 < pattern.len() => (name[n] == pattern[p + 1], p + 2),
+                literal => (name[n] == literal, p + 1),
+            };
+            if matches {
+                p = after;
+                n += 1;
+                continue;
+            }
+        }
+        if let Some(star_pos) = star {
+            star_name += 1;
+            n = star_name;
+            p = star_pos + 1;
+            continue;
+        }
+        return false;
+    }
+    while p < pattern.len() && pattern[p] == '*' {
+        p += 1;
+    }
+    p == pattern.len()
+}
+
+/// Matches one `[...]` class. Returns the match and the index after `]`, or
+/// `None` when the class is not terminated (POSIX then treats `[` literally).
+fn bracket_match(pattern: &[char], start: usize, candidate: char) -> Option<(bool, usize)> {
+    let mut i = start + 1;
+    let negated = matches!(pattern.get(i), Some('!' | '^'));
+    if negated {
+        i += 1;
+    }
+    let mut matched = false;
+    let mut any = false;
+    while i < pattern.len() {
+        if pattern[i] == ']' && any {
+            return Some((matched != negated, i + 1));
+        }
+        any = true;
+        let first = if pattern[i] == '\\' && i + 1 < pattern.len() {
+            i += 1;
+            pattern[i]
+        } else {
+            pattern[i]
+        };
+        if i + 2 < pattern.len() && pattern[i + 1] == '-' && pattern[i + 2] != ']' {
+            let last = pattern[i + 2];
+            if first <= candidate && candidate <= last {
+                matched = true;
+            }
+            i += 3;
+        } else {
+            if first == candidate {
+                matched = true;
+            }
+            i += 1;
+        }
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Conversion
 // ---------------------------------------------------------------------------
+
+/// Backend TLS values nginx inherits independently per directive from `http`
+/// to `server` to `location`. `None` means "not declared at this level", which
+/// is what lets a narrower level inherit only the fields it did not set; it is
+/// not the same as nginx's default (`proxy_ssl_verify`/`proxy_ssl_server_name`
+/// default to off).
+#[derive(Debug, Clone, Default)]
+struct ProxySslDefaults {
+    verify: Option<bool>,
+    ca_file: Option<String>,
+    sni: Option<bool>,
+    server_name: Option<String>,
+}
+
+/// Listener TLS values nginx inherits independently per directive from `http`
+/// to `server`. `None` means "not declared at this level"; the server keeps
+/// its own value for that directive and inherits only the others.
+#[derive(Debug, Clone, Default)]
+struct HttpTlsDefaults {
+    cert: Option<String>,
+    key: Option<String>,
+    protocols: Option<Vec<String>>,
+    client_ca: Option<String>,
+    verify_client: Option<String>,
+}
 
 /// Defaults inherited by every listener generated from the `http` block.
 #[derive(Default)]
@@ -307,10 +824,45 @@ struct HttpDefaults {
     server_header_timeout: Option<String>,
     client_header_timeout: Option<String>,
     cache: bool,
+    /// `proxy_ssl_*` at http scope (N-2): inherited by every server and
+    /// location below it, unless a narrower level declares the same directive.
+    proxy_ssl: ProxySslDefaults,
+    /// Listener TLS at http scope: inherited by every `server` that does not
+    /// declare the same directive, then emitted on the listener.
+    tls: HttpTlsDefaults,
 }
 
-pub(super) fn convert(conv: &mut Conv, text: &str) -> Result<(), ImportError> {
-    let nodes = parse(&tokenize(text)?)?;
+pub(super) fn convert(
+    conv: &mut Conv,
+    text: &str,
+    include_root: Option<&Path>,
+) -> Result<(), ImportError> {
+    let mut nodes = parse(&tokenize(text)?)?;
+    if let Some(root) = include_root {
+        let (expanded, events) =
+            IncludeExpander::new(root, text.len(), INCLUDE_LIMITS)?.expand(nodes, "global")?;
+        nodes = expanded;
+        for event in events {
+            if event.empty_glob {
+                conv.review(
+                    1,
+                    &event.directive,
+                    &event.context,
+                    "include sin coincidencias: el patrón no incluye ningún fichero",
+                );
+            } else {
+                conv.info(
+                    1,
+                    &event.directive,
+                    &event.context,
+                    format!(
+                        "include expandido: {} fichero(s) leído(s) en orden lexicográfico",
+                        event.files
+                    ),
+                );
+            }
+        }
+    }
     for node in &nodes {
         let before = conv.notes.len();
         match node.name.as_str() {
@@ -328,6 +880,9 @@ pub(super) fn convert(conv: &mut Conv, text: &str) -> Result<(), ImportError> {
                 "global",
                 "directiva global sin traducción (no afecta a eqproxy.toml)",
             ),
+            name if name.starts_with("proxy_ssl_") => {
+                unknown_proxy_ssl(conv, &directive(node), "global", name);
+            }
             name => conv.gap(
                 1,
                 directive(node),
@@ -337,11 +892,46 @@ pub(super) fn convert(conv: &mut Conv, text: &str) -> Result<(), ImportError> {
         }
         conv.touch(&directive(node), "global", before)?;
     }
+    downgrade_unfulfilled_proxy_ssl_server_name(conv);
     Ok(())
 }
 
+/// `proxy_ssl_server_name on` fills `server_name` only when some HTTPS target
+/// has a DNS name (or an explicit `proxy_ssl_name`). With only IP literals the
+/// directive has no field of its own: turn every still-`Done` row into `Info`
+/// rather than promising a field the TOML does not contain.
+fn downgrade_unfulfilled_proxy_ssl_server_name(conv: &mut Conv) {
+    let has_server_name = conv.backends.values().any(|backend| {
+        backend
+            .tls
+            .as_ref()
+            .and_then(|tls| tls.server_name.as_ref())
+            .is_some()
+    });
+    if has_server_name {
+        return;
+    }
+    for note in &mut conv.notes {
+        if note.severity == Severity::Done && note.directive.starts_with("proxy_ssl_server_name") {
+            note.severity = Severity::Info;
+            "SNI solicitado sin nombre DNS (destino IP o sin proxy_pass https): \
+                            no se emite server_name"
+                .clone_into(&mut note.message);
+        }
+    }
+}
+
 fn http(conv: &mut Conv, http: &Node) -> Result<(), ImportError> {
-    let mut defaults = HttpDefaults::default();
+    // The directives can appear before or after the server blocks, so the
+    // effective http-scope TLS defaults are collected first. The main loop
+    // classifies each directive separately.
+    let mut defaults = HttpDefaults {
+        proxy_ssl: collect_proxy_ssl(http, &ProxySslDefaults::default()),
+        tls: collect_http_tls(http),
+        ..HttpDefaults::default()
+    };
+    let has_https_targets = has_https_target(http);
+    let has_tls_servers = has_tls_server(http, &defaults.tls);
 
     for up in children(http, "upstream") {
         upstream(conv, up)?;
@@ -352,12 +942,20 @@ fn http(conv: &mut Conv, http: &Node) -> Result<(), ImportError> {
             continue;
         }
         let before = conv.notes.len();
-        http_directive(conv, child, &mut defaults);
+        http_directive(
+            conv,
+            child,
+            &mut defaults,
+            has_https_targets,
+            has_tls_servers,
+        );
         conv.touch(&directive(child), "http", before)?;
     }
 
-    // Group server blocks by listen address: EQProxy has one listener per
-    // address, so a second vhost on the same address is a conflict to report.
+    // Group server blocks by listen address. EQProxy has one listener per
+    // IP:port, so the vhosts of one address share it: the `default_server`
+    // (or the first block) defines the listener and every other vhost
+    // contributes its rules (`host`) and its certificate (`certs[]`).
     let mut by_addr: BTreeMap<String, Vec<&Node>> = BTreeMap::new();
     for block in children(http, "server") {
         let listens = children(block, "listen");
@@ -379,45 +977,471 @@ fn http(conv: &mut Conv, http: &Node) -> Result<(), ImportError> {
     }
 
     for (raw_listen, servers) in by_addr {
-        // The vhost that gets translated is the `default_server` one when it
-        // exists, else the first: the identity is its position, so the rest
-        // can be named without comparing pointers.
-        let mut chosen_idx = 0usize;
+        multi_vhost(conv, &raw_listen, &servers, &defaults)?;
+    }
+    Ok(())
+}
+
+/// One listener per IP:port, shared by the vhosts of that address.
+///
+/// The `default_server` (or the first block) owns the listener: its fallback
+/// backend, its certificate as the default (no-SNI) one and its TLS policy,
+/// the only one a listener can hold. Every other vhost keeps its own rules,
+/// tagged with `host`, and its certificate joins `[listener.*.tls].certs[]`; a
+/// TLS policy the listener cannot carry per vhost (mTLS, versions or ciphers)
+/// is `Degraded`, never silently dropped.
+fn multi_vhost(
+    conv: &mut Conv,
+    raw_listen: &str,
+    servers: &[&Node],
+    defaults: &HttpDefaults,
+) -> Result<(), ImportError> {
+    let chosen_idx = servers
+        .iter()
+        .position(|node| is_default_for(node, raw_listen))
+        .unwrap_or(0);
+    let primary_label = server_label(servers[chosen_idx]);
+    let primary_ciphers = ciphers_of(servers[chosen_idx]);
+    // Parse every vhost in file order before choosing the default one, so a
+    // regex in a non-default vhost keeps its nginx position even when the
+    // default_server appears later.
+    let mut regex_order = 0;
+    let host_names: Vec<ServerNames> = servers
+        .iter()
+        .map(|node| server_names(node, &mut regex_order))
+        .collect();
+    let Some((name, mut listener)) = server(
+        conv,
+        servers[chosen_idx],
+        raw_listen,
+        defaults,
+        &VhostRole::Primary,
+        &host_names[chosen_idx],
+    )?
+    else {
         if servers.len() > 1 {
-            if let Some(idx) = servers.iter().position(|node| {
-                children(node, "listen")
-                    .iter()
-                    .any(|l| l.args.iter().any(|a| a == "default_server"))
-            }) {
-                chosen_idx = idx;
-            }
-            let chosen = servers[chosen_idx];
-            let names: Vec<String> = servers
-                .iter()
-                .enumerate()
-                .filter(|(idx, _)| *idx != chosen_idx)
-                .map(|(_, node)| server_label(node))
-                .collect();
             conv.gap(
                 1,
                 "server (varios en la misma dirección)",
                 &format!("listen {raw_listen}"),
                 format!(
-                    "varios vhosts comparten «{raw_listen}»: se traduce «{}» y quedan sin migrar {}. \
-                     EQProxy enruta por host con [[listener.*.rules]].host, pero cada vhost puede traer \
-                     su propio certificado y un listener sirve un solo [listener.*.tls]",
-                    server_label(chosen),
-                    names
-                        .iter()
-                        .map(|n| format!("«{n}»"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                    "varios vhosts comparten «{raw_listen}» y el default_server («{primary_label}») \
+                     no tiene ninguna location con proxy_pass: el listener necesita un backend o un redirect; \
+                     migre los vhosts a mano"
                 ),
             );
         }
-        server(conv, servers[chosen_idx], &raw_listen, &defaults)?;
+        return Ok(());
+    };
+
+    let role = VhostRole::Secondary {
+        primary_tls: listener.tls.as_ref(),
+        primary_ciphers: primary_ciphers.as_deref(),
+        primary_label: &primary_label,
+        primary_listener: &listener,
+    };
+    let mut extra_rules: Vec<Rule> = Vec::new();
+    let mut certs: Vec<SniCertIr> = Vec::new();
+    for (idx, node) in servers.iter().enumerate() {
+        if idx == chosen_idx {
+            continue;
+        }
+        let context = format!("server {}", server_label(node));
+        let names = &host_names[idx];
+        if names.patterns.is_empty() {
+            // A vhost without a host condition would become a catch-all:
+            // appended after the named rules it would shadow them, which
+            // nginx never does (it picks a server first). Unknown Host belongs to the
+            // default_server, never to this secondary vhost.
+            conv.review(
+                1,
+                "server (varios en la misma dirección)",
+                &context,
+                "vhost sin server_name traducible: EQProxy enruta por host, así que sus reglas no \
+                 se emiten y no se convierten en catch-all; los hosts sin coincidencia siguen al \
+                 default_server. Declare server_name o migre el vhost a mano",
+            );
+            // Walk the block for the per-directive report and for the backends
+            // it declares, but never retain the listener: its rules have no
+            // host and would become a catch-all on the shared listener.
+            drop(server(conv, node, raw_listen, defaults, &role, names)?);
+            continue;
+        }
+        let Some((_, vhost)) = server(conv, node, raw_listen, defaults, &role, names)? else {
+            continue;
+        };
+        if let Some(tls) = vhost.tls
+            && listener
+                .tls
+                .as_ref()
+                .is_some_and(|primary| primary.cert != tls.cert || primary.key != tls.key)
+            && !names.cert_names.is_empty()
+        {
+            certs.push(SniCertIr {
+                cert: tls.cert,
+                key: tls.key,
+                names: names.cert_names.clone(),
+            });
+        }
+        // Belt and braces: only the default vhost may contribute a hostless
+        // rule. A secondary must carry a host condition on every rule;
+        // filtering at the merge boundary keeps that invariant even if
+        // `server()` changes later.
+        extra_rules.extend(vhost.rules.into_iter().filter(|rule| {
+            rule.host.is_some() || rule.host_prefix.is_some() || rule.host_regex.is_some()
+        }));
     }
+    if let Some(tls) = listener.tls.as_mut() {
+        tls.certs.extend(certs);
+    }
+    listener.rules.extend(extra_rules);
+    // nginx resolves a virtual server by exact name, then the longest leading
+    // wildcard, then the longest trailing wildcard, then regexes in file
+    // order; the catch-all (the default vhost with no names) stays last.
+    listener.rules.sort_by_key(|rule| rule.host_rank);
+    conv.add_listener(name, listener);
     Ok(())
+}
+
+/// Whether this block is the `default_server` of `raw_listen`. The flag is
+/// per address: one block can be the default of 443 and a secondary vhost of
+/// 8443. Looking at every `listen` of the block would let it steal the primary
+/// role (and its hostless rules) from the real default of another address.
+fn is_default_for(node: &Node, raw_listen: &str) -> bool {
+    children(node, "listen").iter().any(|listen| {
+        listen.args.first().map(String::as_str) == Some(raw_listen)
+            && listen
+                .args
+                .iter()
+                .skip(1)
+                .any(|arg| arg == "default_server")
+    })
+}
+
+/// What `server()` is building: the listener's default vhost, or another vhost
+/// of the same address, which only contributes rules, a certificate and
+/// policy comparisons.
+enum VhostRole<'a> {
+    Primary,
+    Secondary {
+        primary_tls: Option<&'a ListenerTls>,
+        primary_ciphers: Option<&'a str>,
+        primary_label: &'a str,
+        primary_listener: &'a Listener,
+    },
+}
+
+impl VhostRole<'_> {
+    fn is_primary(&self) -> bool {
+        matches!(self, Self::Primary)
+    }
+
+    fn primary_listener(&self) -> Option<&Listener> {
+        match self {
+            Self::Secondary {
+                primary_listener, ..
+            } => Some(*primary_listener),
+            Self::Primary => None,
+        }
+    }
+}
+
+/// Reports a listener-scope value declared by a secondary vhost.
+///
+/// ADR-0051: the listener keeps the `default_server`'s value. A secondary
+/// declaration is not a degradation (timeouts, body limits, compression,
+/// maxconn and cache are not per-vhost security policies), but it must never
+/// read as applied. A matching value is `Info`; a divergent one is `Review`
+/// and names the listener value that wins.
+fn report_secondary_listener_knob(
+    conv: &mut Conv,
+    text: &str,
+    context: &str,
+    role: &VhostRole<'_>,
+    description: &str,
+    mine: &str,
+    primary: Option<&str>,
+) {
+    let VhostRole::Secondary { primary_label, .. } = role else {
+        return;
+    };
+    if primary == Some(mine) {
+        conv.info(
+            1,
+            text,
+            context,
+            format!(
+                "{description} «{mine}» coincide con el default_server «{primary_label}»: el \
+                 listener lo aplica a todos los nombres"
+            ),
+        );
+    } else if let Some(primary) = primary {
+        conv.review(
+            1,
+            text,
+            context,
+            format!(
+                "este vhost declara {description} «{mine}»; el listener conserva el valor del \
+                 default_server «{primary_label}» («{primary}») y no aplica el de este vhost"
+            ),
+        );
+    } else {
+        conv.review(
+            1,
+            text,
+            context,
+            format!(
+                "este vhost declara {description} «{mine}»; el default_server no fija ese \
+                 valor y el listener no aplica el de este vhost: configúrelo en [listener.*] a mano"
+            ),
+        );
+    }
+}
+
+/// One name condition emitted for a vhost, plus the nginx precedence that
+/// decides its position on a shared listener.
+#[derive(Debug, Clone)]
+struct HostPattern {
+    exact: Option<String>,
+    prefix: Option<String>,
+    regex: Option<String>,
+    rank: HostRank,
+}
+
+impl HostPattern {
+    fn same_condition(&self, other: &Self) -> bool {
+        self.exact == other.exact && self.prefix == other.prefix && self.regex == other.regex
+    }
+
+    fn description(&self) -> String {
+        if let Some(host) = &self.exact {
+            format!("host = «{host}»")
+        } else if let Some(prefix) = &self.prefix {
+            format!("host_prefix = «{prefix}»")
+        } else if let Some(regex) = &self.regex {
+            format!("host_regex = «{regex}»")
+        } else {
+            "sin condición de host".to_owned()
+        }
+    }
+
+    fn apply(&self, rule: &mut Rule) {
+        rule.host.clone_from(&self.exact);
+        rule.host_prefix.clone_from(&self.prefix);
+        rule.host_regex.clone_from(&self.regex);
+        rule.host_rank = self.rank;
+    }
+}
+
+/// `server_name` values of one vhost, already translated to `EQProxy` host
+/// conditions and to the names an SNI certificate can announce.
+#[derive(Debug, Clone, Default)]
+struct ServerNames {
+    patterns: Vec<HostPattern>,
+    cert_names: Vec<String>,
+    /// Names that route correctly but cannot be represented in
+    /// `[listener.*.tls].certs[].names`.
+    unrepresented: Vec<String>,
+    /// Invalid or unsupported names, named in the report.
+    issues: Vec<String>,
+    raw: Vec<String>,
+}
+
+impl ServerNames {
+    fn add_pattern(&mut self, pattern: HostPattern) {
+        if !self
+            .patterns
+            .iter()
+            .any(|known| known.same_condition(&pattern))
+        {
+            self.patterns.push(pattern);
+        }
+    }
+
+    fn add_cert_name(&mut self, name: &str, source: &str) {
+        if let Some(why) = crate::validate::sni_name_problem(name) {
+            self.issues.push(format!(
+                "server_name «{source}»: {why}; se usa para enrutar pero no como nombre SNI"
+            ));
+            self.unrepresented.push(source.to_owned());
+            return;
+        }
+        if !self.cert_names.iter().any(|known| known == name) {
+            self.cert_names.push(name.to_owned());
+        }
+    }
+}
+
+/// Parses every `server_name` directive of a vhost with nginx's matching
+/// grammar: exact names, a leading `*.` wildcard (one or more labels), the
+/// leading-dot shorthand (apex plus that wildcard), the trailing `mail.*`
+/// wildcard and `~` regular expressions. `regex_order` is shared across the
+/// listener so regexes keep the order in which they appear in the file.
+#[allow(clippy::too_many_lines)]
+fn server_names(node: &Node, regex_order: &mut usize) -> ServerNames {
+    let mut names = ServerNames::default();
+    // nginx accumulates names across repeated `server_name` directives.
+    for directive in children(node, "server_name") {
+        for raw in &directive.args {
+            let raw = raw.trim();
+            names.raw.push(raw.to_owned());
+            if raw.is_empty() {
+                names.issues.push("server_name vacío: se ignora".to_owned());
+                continue;
+            }
+            let lower = raw.to_ascii_lowercase();
+            if lower == "$hostname" {
+                names.issues.push(
+                    "server_name «$hostname»: el nombre de la máquina se resuelve al arrancar \
+                     nginx y no está en el fichero; declare el nombre real"
+                        .to_owned(),
+                );
+                continue;
+            }
+            let regex_source = raw
+                .strip_prefix("~*")
+                .map(|pattern| (pattern, true))
+                .or_else(|| raw.strip_prefix('~').map(|pattern| (pattern, false)));
+            if let Some((pattern, explicit_case_insensitive)) = regex_source {
+                let order = *regex_order;
+                *regex_order += 1;
+                if pattern.is_empty() {
+                    names.issues.push(format!(
+                        "server_name «{raw}»: expresión regular vacía; se ignora"
+                    ));
+                    continue;
+                }
+                // nginx compiles a server_name regex case-insensitively when
+                // it contains an uppercase ASCII letter, and matches it
+                // against the lowercased host. EQProxy does the same except
+                // for the automatic flag, so add it explicitly.
+                let regex = if explicit_case_insensitive
+                    || pattern.bytes().any(|byte| byte.is_ascii_uppercase())
+                {
+                    format!("(?i){pattern}")
+                } else {
+                    pattern.to_owned()
+                };
+                if let Err(why) = RegexMatcher::parse(&regex) {
+                    names.issues.push(format!(
+                        "server_name «{raw}»: la expresión no se puede evaluar en EQProxy ({why}); \
+                         se ignora"
+                    ));
+                    continue;
+                }
+                names.unrepresented.push(raw.to_owned());
+                names.add_pattern(HostPattern {
+                    exact: None,
+                    prefix: None,
+                    regex: Some(regex),
+                    rank: HostRank::Regex(order),
+                });
+                continue;
+            }
+            if let Some(suffix) = lower.strip_prefix("*.") {
+                if suffix.is_empty() || suffix.contains('*') || suffix.starts_with('.') {
+                    names.issues.push(format!(
+                        "server_name «{raw}»: comodín inicial no válido (debe ser *.dominio); \
+                         se ignora"
+                    ));
+                    continue;
+                }
+                names.add_pattern(HostPattern {
+                    exact: None,
+                    prefix: None,
+                    regex: Some(leading_wildcard_regex(suffix)),
+                    rank: HostRank::LeadingWildcard(std::cmp::Reverse(suffix.len())),
+                });
+                let cert = format!("*.{suffix}");
+                names.add_cert_name(&cert, raw);
+                continue;
+            }
+            if let Some(suffix) = lower.strip_prefix('.') {
+                if suffix.is_empty() || suffix.contains('*') || suffix.starts_with('.') {
+                    names.issues.push(format!(
+                        "server_name «{raw}»: forma de comodín inicial no válida (.dominio); \
+                         se ignora"
+                    ));
+                    continue;
+                }
+                // The leading dot is shorthand for the exact apex plus the
+                // leading wildcard; both are emitted, in that order.
+                names.add_pattern(HostPattern {
+                    exact: Some(suffix.to_owned()),
+                    prefix: None,
+                    regex: None,
+                    rank: HostRank::Exact,
+                });
+                names.add_cert_name(suffix, raw);
+                names.add_pattern(HostPattern {
+                    exact: None,
+                    prefix: None,
+                    regex: Some(leading_wildcard_regex(suffix)),
+                    rank: HostRank::LeadingWildcard(std::cmp::Reverse(suffix.len())),
+                });
+                let cert = format!("*.{suffix}");
+                names.add_cert_name(&cert, raw);
+                continue;
+            }
+            if let Some(prefix) = lower.strip_suffix('*') {
+                if prefix.is_empty() || prefix.contains('*') || !prefix.ends_with('.') {
+                    names.issues.push(format!(
+                        "server_name «{raw}»: comodín final no válido (debe ser dominio.*); \
+                         se ignora"
+                    ));
+                    continue;
+                }
+                names.unrepresented.push(raw.to_owned());
+                names.add_pattern(HostPattern {
+                    exact: None,
+                    prefix: Some(prefix.to_owned()),
+                    regex: None,
+                    rank: HostRank::TrailingWildcard(std::cmp::Reverse(prefix.len())),
+                });
+                continue;
+            }
+            if lower.contains('*') {
+                names.issues.push(format!(
+                    "server_name «{raw}»: comodín no válido (sólo al inicio o al final, en un \
+                     límite de etiqueta); se ignora"
+                ));
+                continue;
+            }
+            names.add_pattern(HostPattern {
+                exact: Some(lower.clone()),
+                prefix: None,
+                regex: None,
+                rank: HostRank::Exact,
+            });
+            names.add_cert_name(&lower, raw);
+        }
+    }
+    names
+}
+
+/// nginx's leading wildcard (`*.example.org`) matches one or more labels
+/// before the suffix, but not the bare suffix.
+fn leading_wildcard_regex(suffix: &str) -> String {
+    format!(r"^[^.]+(?:\.[^.]+)*\.{}$", regex_literal(suffix))
+}
+
+/// Escapes a literal so it can be embedded in a `regex` condition.
+fn regex_literal(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for character in value.chars() {
+        if matches!(
+            character,
+            '\\' | '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|'
+        ) {
+            out.push('\\');
+        }
+        out.push(character);
+    }
+    out
+}
+
+fn ciphers_of(node: &Node) -> Option<String> {
+    first(node, "ssl_ciphers").map(|n| n.args.join(" "))
 }
 
 fn server_label(node: &Node) -> String {
@@ -426,9 +1450,15 @@ fn server_label(node: &Node) -> String {
         .unwrap_or_else(|| "(sin server_name)".to_owned())
 }
 
-fn http_directive(conv: &mut Conv, node: &Node, defaults: &mut HttpDefaults) {
+fn http_directive(
+    conv: &mut Conv,
+    node: &Node,
+    defaults: &mut HttpDefaults,
+    has_https_targets: bool,
+    has_tls_servers: bool,
+) {
     let name = node.name.as_str();
-    let arg = node.args.first().map(String::as_str).unwrap_or_default();
+    let arg = node.args.first().map_or_default(String::as_str);
     let text = directive(node);
     match name {
         "gzip" => {
@@ -542,7 +1572,7 @@ fn http_directive(conv: &mut Conv, node: &Node, defaults: &mut HttpDefaults) {
             format!("include no se expande: revise «{arg}» a mano y vuelva a convertir"),
         ),
         "default_type" | "types" | "charset" | "charset_types" | "source_charset" => {
-            conv.info(1, &text, "http", "cosmético de nginx (tipos MIME): EQProxy solo proxifica")
+            conv.info(1, &text, "http", "cosmético de nginx (tipos MIME): EQProxy solo proxifica");
         }
         "log_format" => conv.review(
             1,
@@ -586,18 +1616,109 @@ fn http_directive(conv: &mut Conv, node: &Node, defaults: &mut HttpDefaults) {
             "http",
             "[[listener.*.rules]].split (reparto ponderado entre backends)",
         ),
-        "ssl_protocols" => conv.review(
-            1,
-            &text,
-            "http",
-            "nivel http: el mínimo TLS se emite por listener desde su propio ssl_protocols",
-        ),
-        "ssl_certificate" | "ssl_certificate_key" => conv.review(
-            1,
-            &text,
-            "http",
-            "nivel http: el certificado se emite por listener desde el bloque server",
-        ),
+        "ssl_protocols" => {
+            let (wanted, has_legacy) = tls_protocol_range(&node.args);
+            if wanted.is_none() {
+                conv.review(
+                    1,
+                    &text,
+                    "http",
+                    "ssl_protocols no incluye TLSv1.2/1.3: EQProxy no puede desactivar ambos",
+                );
+            } else if has_tls_servers {
+                conv.done(
+                    1,
+                    &text,
+                    "http",
+                    "[listener.*.tls].min_version/max_version por defecto (cada server puede \
+                     sobrescribirlo)",
+                );
+            } else {
+                conv.info(
+                    1,
+                    &text,
+                    "http",
+                    "sin server TLS: la política no llega a ningún listener",
+                );
+            }
+            if has_legacy {
+                conv.info(
+                    1,
+                    &text,
+                    "http",
+                    "TLS 1.0/1.1 y SSL nunca se aceptan en EQProxy (se ignoran)",
+                );
+            }
+        }
+        "ssl_certificate" | "ssl_certificate_key" => {
+            if node.args.first().is_some_and(|path| !path.is_empty()) {
+                if has_tls_servers {
+                    conv.done(
+                        1,
+                        &text,
+                        "http",
+                        "valor por defecto de [listener.*.tls] (cada server puede sobrescribirlo)",
+                    );
+                } else {
+                    conv.info(
+                        1,
+                        &text,
+                        "http",
+                        "sin server TLS: el certificado no llega a ningún listener",
+                    );
+                }
+            } else {
+                conv.review(1, &text, "http", "ssl_certificate sin ruta: se ignora");
+            }
+        }
+        "ssl_client_certificate" => {
+            if node.args.first().is_some_and(|path| !path.is_empty()) {
+                if has_tls_servers && http_client_verify_active(node, &defaults.tls) {
+                    conv.done(
+                        1,
+                        &text,
+                        "http",
+                        "valor por defecto de [listener.*.tls].client_ca (mTLS heredado por los \
+                         servers que lo activen)",
+                    );
+                } else {
+                    conv.info(
+                        1,
+                        &text,
+                        "http",
+                        "CA de clientes sin ssl_verify_client activo: no hace nada",
+                    );
+                }
+            } else {
+                conv.review(
+                    1,
+                    &text,
+                    "http",
+                    "ssl_client_certificate sin ruta: se ignora",
+                );
+            }
+        }
+        "ssl_verify_client" => match client_verify_mode(node.args.first().map(String::as_str)) {
+            ClientVerifyMode::Required
+                if has_tls_servers && http_has_client_ca(node, &defaults.tls) =>
+            {
+                conv.done(
+                    1,
+                    &text,
+                    "http",
+                    "activa [listener.*.tls].client_ca con el CA heredado o declarado",
+                );
+            }
+            ClientVerifyMode::Required | ClientVerifyMode::Off => conv.info(
+                1,
+                &text,
+                "http",
+                "sin ssl_client_certificate activo: no exige certificado de cliente",
+            ),
+            ClientVerifyMode::Unsupported(mode) => {
+                reject_optional_client_verify(conv, &text, "http", mode);
+            }
+        },
         "proxy_set_header" => conv.review(
             1,
             &text,
@@ -634,7 +1755,13 @@ fn http_directive(conv: &mut Conv, node: &Node, defaults: &mut HttpDefaults) {
         ),
         "resolver_timeout" => conv.info(1, &text, "http", "timeout del resolver: sin mando en EQProxy"),
         "reset_timedout_connection" | "lingering_close" | "lingering_time" | "lingering_timeout" => {
-            conv.info(1, &text, "http", "cierre de conexiones: lo gestiona el dataplane")
+            conv.info(1, &text, "http", "cierre de conexiones: lo gestiona el dataplane");
+        }
+        // N-2: proxy_ssl_* at http scope is inherited by every server/location
+        // below it. The values were collected before the loop; this row
+        // classifies the directive itself.
+        name if name.starts_with("proxy_ssl_") => {
+            classify_proxy_ssl(conv, node, "http", has_https_targets);
         }
         name => match supported_manually(name) {
             Some(place) => conv.review(
@@ -657,6 +1784,7 @@ fn http_directive(conv: &mut Conv, node: &Node, defaults: &mut HttpDefaults) {
 }
 
 /// `upstream { … }` → `[backend.*]`.
+#[allow(clippy::too_many_lines)]
 fn upstream(conv: &mut Conv, up: &Node) -> Result<(), ImportError> {
     let source_name = up
         .args
@@ -845,6 +1973,9 @@ fn upstream(conv: &mut Conv, up: &Node) -> Result<(), ImportError> {
                 &context,
                 "directiva de upstream sin equivalente en EQProxy",
             ),
+            name if name.starts_with("proxy_ssl_") => {
+                unknown_proxy_ssl(conv, &text, &context, name);
+            }
             other => conv.gap(
                 1,
                 &text,
@@ -881,44 +2012,99 @@ fn upstream(conv: &mut Conv, up: &Node) -> Result<(), ImportError> {
     Ok(())
 }
 
+/// Parses `return 301 URL;` (and the URL-only 302 form) into the listener
+/// redirect model. Anything that is not a local 3xx with a supported
+/// `Location` template is returned as a human-readable reason.
+fn server_return(node: &Node) -> Result<(Option<u16>, String), String> {
+    let (status, location) = match node.args.as_slice() {
+        [code, location] => {
+            let code = code
+                .parse::<u16>()
+                .map_err(|_| format!("return con código no numérico «{code}»: se ignora"))?;
+            (Some(code), location.clone())
+        }
+        [location] if location.contains("://") => (Some(302), location.clone()),
+        [code] => {
+            return Err(format!(
+                "return {code} sin URL: EQProxy necesita un destino para la redirección"
+            ));
+        }
+        _ => return Err("return con argumentos no reconocidos: se ignora".to_owned()),
+    };
+    if !matches!(status, Some(301 | 302 | 303 | 307 | 308)) {
+        return Err(format!(
+            "return {} no es una redirección (301, 302, 303, 307, 308): se ignora",
+            status.unwrap_or_default()
+        ));
+    }
+    validate_location(&location)
+        .map_err(|why| format!("destino «{location}» de return no válido para EQProxy: {why}"))?;
+    Ok((status, location))
+}
+
+/// One compiled location of a `server` block: the rule plus the prefix
+/// length that orders the list (nginx's longest match).
+struct Planned {
+    rule: Rule,
+    /// Length of the path prefix, for nginx's longest-match ordering.
+    length: usize,
+}
+
 /// One `server { … }` block on one address.
+#[allow(clippy::too_many_lines)]
 fn server(
     conv: &mut Conv,
     node: &Node,
     raw_listen: &str,
     defaults: &HttpDefaults,
-) -> Result<(), ImportError> {
+    role: &VhostRole<'_>,
+    hosts: &ServerNames,
+) -> Result<Option<(String, Listener)>, ImportError> {
     let label = server_label(node);
     let context = format!("server {label}");
+    // nginx inherits proxy_ssl_* independently per directive: start from the
+    // http-scope values, then apply this server's own declarations. Locations
+    // below receive the result and override only the fields they declare.
+    let has_https_targets = has_https_target(node);
+    let server_proxy_ssl = collect_proxy_ssl(node, &defaults.proxy_ssl);
 
     let listen_args = children(node, "listen")
         .into_iter()
         .find(|l| l.args.first().map(String::as_str) == Some(raw_listen))
-        .map(|l| l.args.clone())
-        .unwrap_or_else(|| vec![raw_listen.to_owned()]);
-    let flags: Vec<String> = listen_args.iter().skip(1).cloned().collect();
+        .map_or_else(|| vec![raw_listen.to_owned()], |l| l.args.clone());
+    let flags = &listen_args[1..];
     let has = |needle: &str| flags.iter().any(|flag| flag == needle);
     let ssl = has("ssl");
     let http2 = flags
         .iter()
         .any(|flag| flag == "http2" || flag.starts_with("http2"))
-        || first(node, "http2")
-            .map(|n| n.args.first().map(String::as_str) == Some("on"))
-            .unwrap_or(false);
+        || first(node, "http2").is_some_and(|n| n.args.first().map(String::as_str) == Some("on"));
     let http3 = flags
         .iter()
         .any(|flag| flag == "quic" || flag.starts_with("http3") || flag.starts_with("quic"));
     let proxy_protocol = has("proxy_protocol");
-    conv.done(
-        1,
-        format!("listen {raw_listen}"),
-        &context,
-        format!(
-            "listener de EQProxy en {raw_listen}{}{}",
-            if ssl { " con TLS" } else { "" },
-            if http2 { " y ALPN h2" } else { "" }
-        ),
-    );
+    if let VhostRole::Secondary { primary_label, .. } = role {
+        conv.info(
+            1,
+            format!("listen {raw_listen}"),
+            &context,
+            format!(
+                "comparte el listener del default_server «{primary_label}»: EQProxy tiene un \
+                 listener por IP:puerto"
+            ),
+        );
+    } else {
+        conv.done(
+            1,
+            format!("listen {raw_listen}"),
+            &context,
+            format!(
+                "listener de EQProxy en {raw_listen}{}{}",
+                if ssl { " con TLS" } else { "" },
+                if http2 { " y ALPN h2" } else { "" }
+            ),
+        );
+    }
 
     let Some(addr) = normalize_addr(
         conv,
@@ -934,7 +2120,7 @@ fn server(
             &context,
             "listener omitido: la dirección no es IP:PORT ni HOSTNAME:PORT",
         );
-        return Ok(());
+        return Ok(None);
     };
 
     if proxy_protocol {
@@ -947,16 +2133,39 @@ fn server(
         );
     }
 
-    // TLS termination.
+    // TLS termination. nginx resolves ssl_* independently per directive: a
+    // server declaration wins for its directive, otherwise the http-scope
+    // value is inherited. `local_*` keeps what this server declared for the
+    // report and for the extra certificate entry of a secondary vhost.
+    let local_cert = tls_arg(node, "ssl_certificate");
+    let local_key = tls_arg(node, "ssl_certificate_key");
+    let cert = local_cert.as_deref().or(defaults.tls.cert.as_deref());
+    let key = local_key.as_deref().or(defaults.tls.key.as_deref());
+    let local_protocols = first(node, "ssl_protocols");
+    let protocols = local_protocols
+        .map(|directive| directive.args.as_slice())
+        .or(defaults.tls.protocols.as_deref());
+    let local_ca = tls_arg(node, "ssl_client_certificate");
+    let ca = local_ca.as_deref().or(defaults.tls.client_ca.as_deref());
+    let local_verify = tls_arg(node, "ssl_verify_client");
+    let verify = local_verify
+        .as_deref()
+        .or(defaults.tls.verify_client.as_deref());
+    let verify_mode = client_verify_mode(verify);
+    let client_auth = matches!(verify_mode, ClientVerifyMode::Required);
+
+    // A secondary vhost without translatable names only exists to be
+    // reported: its location rules are dropped after the walk, so do not tell
+    // the reader that a `proxy_pass` became a rule.
+    let emit_rules = !hosts.patterns.is_empty() || (role.is_primary() && hosts.raw.is_empty());
+
     let mut tls: Option<ListenerTls> = None;
-    let cert = first(node, "ssl_certificate");
-    let key = first(node, "ssl_certificate_key");
     if ssl || cert.is_some() || key.is_some() {
-        match (cert.and_then(|n| n.args.first()), key.and_then(|n| n.args.first())) {
+        match (cert, key) {
             (Some(cert), Some(key)) => {
                 tls = Some(ListenerTls {
-                    cert: cert.clone(),
-                    key: key.clone(),
+                    cert: cert.to_owned(),
+                    key: key.to_owned(),
                     alpn: if http2 || http3 {
                         let mut alpn = Vec::new();
                         if http2 {
@@ -969,14 +2178,103 @@ fn server(
                     },
                     min_version: None,
                     max_version: None,
-                    client_ca: None,
+                    client_ca: if client_auth {
+                        ca.map(str::to_owned)
+                    } else {
+                        None
+                    },
+                    certs: Vec::new(),
                 });
-                conv.done(
-                    1,
-                    "ssl_certificate / ssl_certificate_key",
-                    &context,
-                    format!("[listener.*.tls] cert = «{cert}», key = «{key}»"),
-                );
+                match role {
+                    VhostRole::Primary => {
+                        // The http-scope row already reports an inherited
+                        // certificate; do not credit the server with a
+                        // directive it did not declare.
+                        if local_cert.is_some() || local_key.is_some() {
+                            conv.done(
+                                1,
+                                "ssl_certificate / ssl_certificate_key",
+                                &context,
+                                format!("[listener.*.tls] cert = «{cert}», key = «{key}»"),
+                            );
+                        }
+                    }
+                    VhostRole::Secondary {
+                        primary_tls,
+                        primary_label,
+                        ..
+                    } => {
+                        let same_as_primary = primary_tls.is_some_and(|primary| {
+                            primary.cert.as_str() == cert && primary.key.as_str() == key
+                        });
+                        if primary_tls.is_none() {
+                            conv.review(
+                                1,
+                                "ssl_certificate / ssl_certificate_key",
+                                &context,
+                                format!(
+                                    "este vhost declara TLS y el default_server «{primary_label}» \
+                                     emite el listener sin TLS: no hay [listener.*.tls] donde poner \
+                                     su certificado; actívelo a mano"
+                                ),
+                            );
+                        } else if same_as_primary {
+                            if local_cert.is_some() || local_key.is_some() {
+                                conv.info(
+                                    1,
+                                    "ssl_certificate / ssl_certificate_key",
+                                    &context,
+                                    format!(
+                                        "mismo certificado que el default_server «{primary_label}»: \
+                                         ya es el certificado por defecto y no se duplica en \
+                                         [listener.*.tls].certs[]"
+                                    ),
+                                );
+                            }
+                        } else if hosts.cert_names.is_empty() {
+                            conv.review(
+                                1,
+                                "ssl_certificate / ssl_certificate_key",
+                                &context,
+                                format!(
+                                    "vhost sin nombre expresable en [listener.*.tls].certs[]: \
+                                     certs[].names solo admite nombres exactos o *.dominio y \
+                                     server_name usa {}; el certificado no se emite",
+                                    if hosts.unrepresented.is_empty() {
+                                        "una forma no representable".to_owned()
+                                    } else {
+                                        hosts.unrepresented.join(", ")
+                                    }
+                                ),
+                            );
+                        } else {
+                            if !hosts.unrepresented.is_empty() {
+                                conv.review(
+                                    1,
+                                    "ssl_certificate / ssl_certificate_key",
+                                    &context,
+                                    format!(
+                                        "[listener.*.tls].certs[] solo anuncia {}; server_name \
+                                         también usa {} y esos nombres recibirán el certificado \
+                                         por defecto del listener",
+                                        hosts.cert_names.join(", "),
+                                        hosts.unrepresented.join(", ")
+                                    ),
+                                );
+                            }
+                            conv.done(
+                                1,
+                                "ssl_certificate / ssl_certificate_key",
+                                &context,
+                                format!(
+                                    "[listener.*.tls].certs[] cert = «{cert}», key = «{key}», \
+                                     names = [{}]",
+                                    hosts.cert_names.join(", ")
+                                ),
+                            );
+                        }
+                    }
+                }
             }
             _ => conv.reject(
                 1,
@@ -986,102 +2284,249 @@ fn server(
             ),
         }
     }
-    if let Some(protocols) = first(node, "ssl_protocols") {
-        let has = |wanted: &str| {
-            protocols
-                .args
-                .iter()
-                .any(|arg| arg.eq_ignore_ascii_case(wanted))
-        };
-        let has_12 = has("TLSv1.2");
-        let has_13 = has("TLSv1.3");
-        let has_legacy = ["TLSv1.1", "TLSv1", "SSLv3", "SSLv2"]
-            .iter()
-            .any(|legacy| has(legacy));
-        if let Some(tls) = tls.as_mut() {
-            match (has_12, has_13) {
-                (true, true) => {
-                    tls.min_version = Some("1.2");
-                    tls.max_version = None;
+    if let Some(protocols) = protocols {
+        let (wanted, has_legacy) = tls_protocol_range(protocols);
+        if let Some(tls) = tls.as_mut()
+            && let Some((min, max)) = wanted
+        {
+            tls.min_version = min;
+            tls.max_version = max;
+        }
+        if let Some(local) = local_protocols {
+            let text = directive(local);
+            match role {
+                VhostRole::Primary => {
+                    if wanted.is_none() {
+                        conv.review(
+                            1,
+                            &text,
+                            &context,
+                            "ssl_protocols no incluye TLSv1.2/1.3: EQProxy no puede desactivar ambos",
+                        );
+                    }
+                    if has_legacy {
+                        conv.info(
+                            1,
+                            &text,
+                            &context,
+                            "TLS 1.0/1.1 y SSL nunca se aceptan en EQProxy (se ignoran)",
+                        );
+                    }
+                    if wanted.is_some() {
+                        if tls.is_none() {
+                            conv.info(
+                                1,
+                                &text,
+                                &context,
+                                "sin [listener.*.tls] no hay política TLS que fijar (listener en claro)",
+                            );
+                        } else {
+                            conv.done(
+                                1,
+                                &text,
+                                &context,
+                                "[listener.*.tls].min_version/max_version (EQProxy nunca acepta TLS 1.0/1.1)",
+                            );
+                        }
+                    }
                 }
-                (true, false) => {
-                    tls.min_version = Some("1.2");
-                    tls.max_version = Some("1.2");
+                VhostRole::Secondary {
+                    primary_tls,
+                    primary_label,
+                    ..
+                } => {
+                    let primary = primary_tls.map(|tls| (tls.min_version, tls.max_version));
+                    if primary == wanted {
+                        conv.info(
+                            1,
+                            &text,
+                            &context,
+                            format!(
+                                "misma política TLS que el default_server «{primary_label}»: el \
+                                 listener la aplica a todos los nombres"
+                            ),
+                        );
+                    } else {
+                        conv.degraded(
+                            1,
+                            &text,
+                            &context,
+                            Degradation::ProtocolPolicy,
+                            format!(
+                                "este vhost declara otra política TLS; el listener aplica la del \
+                                 default_server «{primary_label}» a todos los nombres"
+                            ),
+                        );
+                    }
                 }
-                (false, true) => {
-                    tls.min_version = Some("1.3");
-                    tls.max_version = Some("1.3");
-                }
-                (false, false) => conv.review(
+            }
+        } else if let VhostRole::Secondary {
+            primary_tls,
+            primary_label,
+            ..
+        } = role
+        {
+            // The http-scope policy was inherited by this vhost. It is only
+            // safe when it matches the listener policy selected by the
+            // default_server; otherwise nginx would apply a different range
+            // to this name and EQProxy cannot.
+            let primary = primary_tls.map(|tls| (tls.min_version, tls.max_version));
+            if primary != wanted {
+                conv.degraded(
                     1,
-                    directive(protocols),
+                    format!("ssl_protocols {}", protocols.join(" ")),
                     &context,
-                    "ssl_protocols no incluye TLSv1.2/1.3: EQProxy no puede desactivar ambos",
-                ),
+                    Degradation::ProtocolPolicy,
+                    format!(
+                        "este vhost hereda de http otra política TLS; el listener aplica la del \
+                         default_server «{primary_label}» a todos los nombres"
+                    ),
+                );
             }
         }
-        if has_legacy {
-            conv.info(
-                1,
-                directive(protocols),
-                &context,
-                "TLS 1.0/1.1 y SSL nunca se aceptan en EQProxy (se ignoran)",
-            );
-        }
-        conv.done(
-            1,
-            directive(protocols),
-            &context,
-            "[listener.*.tls].min_version/max_version (EQProxy nunca acepta TLS 1.0/1.1)",
-        );
     }
-    if let Some(ca) = first(node, "ssl_client_certificate") {
-        let verify = first(node, "ssl_verify_client")
-            .and_then(|n| n.args.first())
-            .map(String::as_str)
-            .unwrap_or("off");
-        if verify == "on" || verify == "optional_no_ca" || verify == "optional" {
-            if let Some(tls) = tls.as_mut() {
-                tls.client_ca = ca.args.first().cloned();
-                conv.done(
-                    1,
-                    directive(ca),
-                    &context,
-                    "mTLS: [listener.*.tls].client_ca (los certificados de cliente se exigen y verifican)",
-                );
-            } else {
-                conv.review(
-                    1,
-                    directive(ca),
-                    &context,
-                    "sin [listener.*.tls] no hay dónde configurar el CA de clientes: se ignora",
-                );
+    if let Some(ca) = ca {
+        let ca_text = local_ca.as_deref().map_or_else(
+            || format!("ssl_client_certificate {ca} (heredado de http)"),
+            |value| format!("ssl_client_certificate {value}"),
+        );
+        if client_auth {
+            match role {
+                VhostRole::Primary => {
+                    if local_ca.is_some() {
+                        if tls.is_some() {
+                            conv.done(
+                                1,
+                                &ca_text,
+                                &context,
+                                "mTLS: [listener.*.tls].client_ca (los certificados de cliente se \
+                                 exigen y verifican)",
+                            );
+                        } else {
+                            conv.review(
+                                1,
+                                &ca_text,
+                                &context,
+                                "sin [listener.*.tls] no hay dónde configurar el CA de clientes: se \
+                                 ignora",
+                            );
+                        }
+                    }
+                }
+                VhostRole::Secondary {
+                    primary_tls,
+                    primary_label,
+                    ..
+                } => {
+                    let mine = tls.as_ref().and_then(|tls| tls.client_ca.as_deref());
+                    let primary = primary_tls.and_then(|tls| tls.client_ca.as_deref());
+                    let should_report = local_ca.is_some() || mine != primary;
+                    if should_report && mine == primary {
+                        conv.info(
+                            1,
+                            &ca_text,
+                            &context,
+                            format!("mismo CA de clientes que el default_server «{primary_label}»"),
+                        );
+                    } else if should_report && primary.is_none() {
+                        conv.degraded(
+                            1,
+                            &ca_text,
+                            &context,
+                            Degradation::ClientCertificate,
+                            format!(
+                                "este vhost exige certificado de cliente y el listener no: el \
+                                 default_server «{primary_label}» no declara mTLS"
+                            ),
+                        );
+                    } else if should_report {
+                        conv.degraded(
+                            1,
+                            &ca_text,
+                            &context,
+                            Degradation::ClientCertificate,
+                            format!(
+                                "el listener exige el CA del default_server «{primary_label}» a \
+                                 todos los nombres; este vhost declara otro (o ninguno)"
+                            ),
+                        );
+                    }
+                }
             }
-        } else {
+        } else if local_ca.is_some() {
             conv.info(
                 1,
-                directive(ca),
+                &ca_text,
                 &context,
                 "CA de clientes sin ssl_verify_client activo: no hace nada",
             );
         }
     }
-    if let Some(verify) = first(node, "ssl_verify_client") {
-        conv.info(
-            1,
-            directive(verify),
-            &context,
-            "se aplica junto a ssl_client_certificate (mTLS)",
-        );
+    if let Some(verify_node) = first(node, "ssl_verify_client") {
+        let text = directive(verify_node);
+        match verify_mode {
+            ClientVerifyMode::Required if ca.is_some() && tls.is_some() => conv.done(
+                1,
+                &text,
+                &context,
+                "activa [listener.*.tls].client_ca con el CA local o heredado",
+            ),
+            ClientVerifyMode::Required => conv.info(
+                1,
+                &text,
+                &context,
+                "sin ssl_client_certificate disponible: no hay CA que verificar",
+            ),
+            ClientVerifyMode::Off => conv.info(
+                1,
+                &text,
+                &context,
+                "ssl_verify_client desactivado: no exige certificado de cliente",
+            ),
+            ClientVerifyMode::Unsupported(mode) => {
+                reject_optional_client_verify(conv, &text, &context, mode);
+            }
+        }
+    }
+
+    // The listener has one client-auth policy for every name. A secondary
+    // vhost that disables mTLS while the default_server enforces it loses that
+    // policy on EQProxy's side, so it must be degraded even when the inherited
+    // CA is still present in the http defaults.
+    if let VhostRole::Secondary {
+        primary_tls,
+        primary_label,
+        ..
+    } = role
+    {
+        let mine = tls.as_ref().and_then(|tls| tls.client_ca.as_deref());
+        let primary = primary_tls.and_then(|tls| tls.client_ca.as_deref());
+        if mine.is_none()
+            && primary.is_some()
+            && !matches!(verify_mode, ClientVerifyMode::Unsupported(_))
+        {
+            let text = first(node, "ssl_verify_client").map_or_else(
+                || "ssl_verify_client (heredado de http)".to_owned(),
+                directive,
+            );
+            conv.degraded(
+                1,
+                &text,
+                &context,
+                Degradation::ClientCertificate,
+                format!(
+                    "este vhost no exige certificado de cliente y el default_server «{primary_label}» \
+                     sí: el listener aplica la política mTLS del default_server a todos los nombres"
+                ),
+            );
+        }
     }
 
     // Locations: one routing rule each, longest prefix first (nginx semantics).
-    struct Planned {
-        rule: Rule,
-        /// Length of the path prefix, for nginx's longest-match ordering.
-        length: usize,
-    }
     let mut planned: Vec<Planned> = Vec::new();
+    // A redirect-only server (`return 301 …;` and no locations) becomes the
+    // listener's fallback action, so it needs no backend.
+    let mut server_redirect: Option<(Option<u16>, String)> = None;
     let mut server_headers: Vec<HeaderOp> = Vec::new();
     let mut forwarded = false;
     let mut cache = defaults.cache;
@@ -1089,38 +2534,86 @@ fn server(
     // every location of the block, which is EQProxy's listener scope.
     let mut error_pages: Vec<super::ErrorPageIr> = Vec::new();
     let mut intercept_errors = false;
+    // Listener-scope values declared by this server. They only reach the
+    // generated listener when this is the default_server; a secondary vhost's
+    // values are compared with the primary's and reported as discarded.
+    let mut server_client_header_timeout: Option<String> = None;
+    let mut server_idle_timeout: Option<String> = None;
+    let mut server_connect_timeout: Option<String> = None;
+    let mut server_server_header_timeout: Option<String> = None;
+    let mut server_max_body_bytes: Option<u64> = None;
+    let mut server_gzip: Option<bool> = None;
+    let mut server_gzip_level: Option<u32> = None;
+    let mut server_gzip_min_size: Option<u64> = None;
 
     for child in &node.children {
         let before = conv.notes.len();
         let text = directive(child);
         match child.name.as_str() {
             "listen" | "http2" | "ssl_certificate" | "ssl_certificate_key" | "ssl_protocols"
-            | "ssl_client_certificate" | "ssl_verify_client" => conv.info(
+            | "ssl_client_certificate" => conv.info(
                 1,
                 &text,
                 &context,
-                "binding y TLS del listener: aplicados arriba en [listener.*.tls]",
+                if role.is_primary() {
+                    "binding y TLS del listener: aplicados arriba en [listener.*.tls]"
+                } else {
+                    "TLS del vhost: certificado a [listener.*.tls].certs[] y política comparada \
+                     con el default_server"
+                },
             ),
+            // The specific TLS block above already classified this directive;
+            // falling through to the generic server note would duplicate it.
+            "ssl_verify_client" => continue,
             "server_name" => {
-                let names: Vec<&str> = child.args.iter().map(String::as_str).collect();
-                if names.len() > 1 {
+                let declared: Vec<&str> = child.args.iter().map(String::as_str).collect();
+                if declared.is_empty() {
+                    conv.review(1, &text, &context, "server_name vacío: se ignora");
+                } else if hosts.patterns.is_empty() {
                     conv.review(
                         1,
                         &text,
                         &context,
                         format!(
-                            "varios server_name ({}): EQProxy enruta por host con [[listener.*.rules]].host, \
-                             pero el conversor no genera una regla por nombre",
-                            names.join(", ")
+                            "server_name sin forma traducible: {}",
+                            if hosts.issues.is_empty() {
+                                "no hay nombres válidos".to_owned()
+                            } else {
+                                hosts.issues.join("; ")
+                            }
                         ),
                     );
-                } else {
-                    conv.info(
+                } else if !hosts.issues.is_empty() {
+                    conv.review(
                         1,
                         &text,
                         &context,
-                        "nombre del vhost: se usa como etiqueta del listener (el enrutado por host \
-                         necesita [[listener.*.rules]].host)",
+                        format!(
+                            "server_name traducido parcialmente ({}); {}",
+                            hosts
+                                .patterns
+                                .iter()
+                                .map(HostPattern::description)
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            hosts.issues.join("; ")
+                        ),
+                    );
+                } else {
+                    conv.done(
+                        1,
+                        &text,
+                        &context,
+                        format!(
+                            "{} en cada regla del vhost ({} nombre(s))",
+                            hosts
+                                .patterns
+                                .iter()
+                                .map(HostPattern::description)
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            hosts.raw.len()
+                        ),
                     );
                 }
             }
@@ -1142,50 +2635,343 @@ fn server(
                 );
             }
             "location" => {
-                let (rule, length) = location(conv, child, &context, &mut forwarded)?;
-                if let Some(rule) = rule {
-                    planned.push(Planned { rule, length });
+                let (compiled, path_len) = location(
+                    conv,
+                    child,
+                    &context,
+                    &mut forwarded,
+                    &server_proxy_ssl,
+                    emit_rules,
+                )?;
+                if let Some(compiled_rule) = compiled {
+                    planned.push(Planned {
+                        rule: compiled_rule,
+                        length: path_len,
+                    });
                 }
             }
             "proxy_cache" => {
-                cache = true;
-                conv.review(
-                    1,
+                let on = child.args.first().map(String::as_str) != Some("off");
+                if role.is_primary() {
+                    cache = on;
+                    conv.review(
+                        1,
+                        &text,
+                        &context,
+                        "[listener.*.cache] con valores por defecto (60 s, 64 MiB, tope 1 MiB): revise TTL y presupuesto",
+                    );
+                } else {
+                    let primary = role
+                        .primary_listener()
+                        .map(|listener| listener.cache);
+                    let mine = if on { "on" } else { "off" };
+                    let primary = primary.map(|value| if value { "on" } else { "off" });
+                    report_secondary_listener_knob(
+                        conv,
+                        &text,
+                        &context,
+                        role,
+                        "proxy_cache (listener.cache)",
+                        mine,
+                        primary,
+                    );
+                }
+            }
+            "client_header_timeout" => {
+                if let Some(value) = convert_duration(
+                    conv,
+                    first_arg(child),
+                    "s",
                     &text,
                     &context,
-                    "[listener.*.cache] con valores por defecto (60 s, 64 MiB, tope 1 MiB): revise TTL y presupuesto",
-                );
+                ) {
+                    if role.is_primary() {
+                        server_client_header_timeout = Some(value.clone());
+                        conv.done(
+                            1,
+                            &text,
+                            &context,
+                            format!("listener.client_header_timeout = «{value}»"),
+                        );
+                    } else {
+                        let primary = role
+                            .primary_listener()
+                            .and_then(|listener| listener.client_header_timeout.as_deref());
+                        report_secondary_listener_knob(
+                            conv,
+                            &text,
+                            &context,
+                            role,
+                            "client_header_timeout (listener.client_header_timeout)",
+                            &value,
+                            primary,
+                        );
+                    }
+                }
             }
-            "client_header_timeout" | "keepalive_timeout" | "proxy_connect_timeout"
-            | "proxy_read_timeout" => conv.info(
+            "keepalive_timeout" => {
+                if let Some(value) = convert_duration(
+                    conv,
+                    first_arg(child),
+                    "s",
+                    &text,
+                    &context,
+                ) {
+                    if role.is_primary() {
+                        server_idle_timeout = Some(value.clone());
+                        conv.review(
+                            1,
+                            &text,
+                            &context,
+                            format!(
+                                "listener.idle_timeout = «{value}» (aproximado: en EQProxy la \
+                                 inactividad es bidireccional)"
+                            ),
+                        );
+                    } else {
+                        let primary = role
+                            .primary_listener()
+                            .and_then(|listener| listener.idle_timeout.as_deref());
+                        report_secondary_listener_knob(
+                            conv,
+                            &text,
+                            &context,
+                            role,
+                            "keepalive_timeout (listener.idle_timeout, aproximado)",
+                            &value,
+                            primary,
+                        );
+                    }
+                }
+            }
+            "proxy_connect_timeout" => {
+                if let Some(value) = convert_duration(
+                    conv,
+                    first_arg(child),
+                    "s",
+                    &text,
+                    &context,
+                ) {
+                    if role.is_primary() {
+                        server_connect_timeout = Some(value.clone());
+                        conv.done(
+                            1,
+                            &text,
+                            &context,
+                            format!("listener.connect_timeout = «{value}»"),
+                        );
+                    } else {
+                        let primary = role
+                            .primary_listener()
+                            .and_then(|listener| listener.connect_timeout.as_deref());
+                        report_secondary_listener_knob(
+                            conv,
+                            &text,
+                            &context,
+                            role,
+                            "proxy_connect_timeout (listener.connect_timeout)",
+                            &value,
+                            primary,
+                        );
+                    }
+                }
+            }
+            "proxy_read_timeout" => {
+                if let Some(value) = convert_duration(
+                    conv,
+                    first_arg(child),
+                    "s",
+                    &text,
+                    &context,
+                ) {
+                    if role.is_primary() {
+                        server_server_header_timeout = Some(value.clone());
+                        conv.review(
+                            1,
+                            &text,
+                            &context,
+                            format!(
+                                "listener.server_header_timeout = «{value}» (aproximado: EQProxy \
+                                 solo acota la cabecera de respuesta)"
+                            ),
+                        );
+                    } else {
+                        let primary = role
+                            .primary_listener()
+                            .and_then(|listener| listener.server_header_timeout.as_deref());
+                        report_secondary_listener_knob(
+                            conv,
+                            &text,
+                            &context,
+                            role,
+                            "proxy_read_timeout (listener.server_header_timeout, aproximado)",
+                            &value,
+                            primary,
+                        );
+                    }
+                }
+            }
+            "proxy_send_timeout" | "send_timeout" => conv.review(
                 1,
                 &text,
                 &context,
-                "timeout del listener: se aplica al listener generado",
+                "sin equivalente: en EQProxy idle_timeout es el único plazo de inactividad",
             ),
+            "client_max_body_size" => match parse_size(
+                first_arg(child),
+            ) {
+                Some(size) => {
+                    if role.is_primary() {
+                        server_max_body_bytes = Some(size);
+                        conv.done(
+                            1,
+                            &text,
+                            &context,
+                            format!("listener.limits.max_body_bytes = {size}"),
+                        );
+                    } else {
+                        let primary = role
+                            .primary_listener()
+                            .and_then(|listener| listener.max_body_bytes)
+                            .map(|value| value.to_string());
+                        report_secondary_listener_knob(
+                            conv,
+                            &text,
+                            &context,
+                            role,
+                            "client_max_body_size (listener.limits.max_body_bytes)",
+                            &size.to_string(),
+                            primary.as_deref(),
+                        );
+                    }
+                }
+                None => conv.review(
+                    1,
+                    &text,
+                    &context,
+                    "tamaño de cuerpo no reconocido: se deja el valor del listener",
+                ),
+            },
+            "gzip" => {
+                let on = child.args.first().map(String::as_str) == Some("on");
+                if role.is_primary() {
+                    server_gzip = Some(on);
+                    conv.done(
+                        1,
+                        &text,
+                        &context,
+                        format!("listener.compression.gzip = {on}"),
+                    );
+                } else {
+                    let primary = role
+                        .primary_listener()
+                        .map(|listener| listener.compression_gzip);
+                    let mine = if on { "on" } else { "off" };
+                    let primary = primary.map(|value| if value { "on" } else { "off" });
+                    report_secondary_listener_knob(
+                        conv,
+                        &text,
+                        &context,
+                        role,
+                        "gzip (listener.compression.gzip)",
+                        mine,
+                        primary,
+                    );
+                }
+            }
+            "gzip_comp_level" => {
+                let arg = first_arg(child);
+                match arg.parse::<u32>() {
+                    Ok(level) => {
+                        let level = level.clamp(1, 9);
+                        if role.is_primary() {
+                            server_gzip_level = Some(level);
+                            conv.done(
+                                1,
+                                &text,
+                                &context,
+                                format!("listener.compression.level = {level}"),
+                            );
+                        } else {
+                            let primary = role
+                                .primary_listener()
+                                .and_then(|listener| listener.compression_level)
+                                .map(|value| value.to_string());
+                            report_secondary_listener_knob(
+                                conv,
+                                &text,
+                                &context,
+                                role,
+                                "gzip_comp_level (listener.compression.level)",
+                                &level.to_string(),
+                                primary.as_deref(),
+                            );
+                        }
+                    }
+                    Err(_) => conv.review(
+                        1,
+                        &text,
+                        &context,
+                        "nivel de gzip no numérico: se usa el del listener",
+                    ),
+                }
+            }
+            "gzip_min_length" => match parse_size(
+                first_arg(child),
+            ) {
+                Some(size) => {
+                    if role.is_primary() {
+                        server_gzip_min_size = Some(size);
+                        conv.done(
+                            1,
+                            &text,
+                            &context,
+                            format!("listener.compression.min_size = {size}"),
+                        );
+                    } else {
+                        let primary = role
+                            .primary_listener()
+                            .and_then(|listener| listener.compression_min_size)
+                            .map(|value| value.to_string());
+                        report_secondary_listener_knob(
+                            conv,
+                            &text,
+                            &context,
+                            role,
+                            "gzip_min_length (listener.compression.min_size)",
+                            &size.to_string(),
+                            primary.as_deref(),
+                        );
+                    }
+                }
+                None => conv.review(
+                    1,
+                    &text,
+                    &context,
+                    "tamaño mínimo de gzip no reconocido: se usa el del listener",
+                ),
+            },
             "deny" => {
-                let cidr = child
+                let cidr_text = child
                     .args
-                    .first()
-                    .map(|raw| cidr_of(raw))
-                    .unwrap_or_else(|| "0.0.0.0/0".to_owned());
-                let mut rule = Rule {
+                    .first().map_or_else(|| "0.0.0.0/0".to_owned(), |raw| cidr_of(raw));
+                let mut deny_rule = Rule {
                     name: "deny".to_owned(),
                     direct_response: Some((403, None)),
-                    ip: vec![cidr.clone()],
+                    ip: vec![cidr_text.clone()],
                     ..Rule::default()
                 };
                 // A deny rule has no backend: it answers 403 locally.
-                rule.use_backend = None;
+                deny_rule.use_backend = None;
                 planned.push(Planned {
-                    rule,
+                    rule: deny_rule,
                     length: usize::MAX / 2,
                 });
                 conv.done(
                     1,
                     &text,
                     &context,
-                    format!("regla [[listener.*.rules]] ip = [\"{cidr}\"] → 403 local"),
+                    format!("regla [[listener.*.rules]] ip = [\"{cidr_text}\"] → 403 local"),
                 );
             }
             "allow" => conv.review(
@@ -1195,12 +2981,45 @@ fn server(
                 "orden allow/deny de nginx: EQProxy evalúa reglas en orden, pero el conversor no construye \
                  la secuencia completa; transcríbala con ip + direct_response",
             ),
+            "return"
+                if role.is_primary()
+                    && !node.children.iter().any(|child| {
+                        matches!(child.name.as_str(), "location" | "deny")
+                    }) =>
+            {
+                if server_redirect.is_some() {
+                    conv.review(
+                        1,
+                        &text,
+                        &context,
+                        "hay más de un `return` a nivel de server: solo se convierte el primero",
+                    );
+                } else {
+                    match server_return(child) {
+                        Ok((status, location)) => {
+                            conv.done(
+                                1,
+                                &text,
+                                &context,
+                                format!(
+                                    "[listener.*.redirect] status = {}, location = «{location}» \
+                                     (sin backend)",
+                                    status.unwrap_or(301)
+                                ),
+                            );
+                            server_redirect = Some((status, location));
+                        }
+                        Err(reason) => conv.review(1, &text, &context, reason),
+                    }
+                }
+            }
             "return" => conv.review(
                 1,
                 &text,
                 &context,
-                "redirección a nivel de server: [[listener.*.rules]].redirect, pero un listener necesita un \
-                 backend real; si el bloque solo redirige, créelo a mano",
+                "redirección a nivel de server con locations u otros destinos: nginx la aplica \
+                 antes que las locations y EQProxy solo puede convertirla en el fallback del \
+                 listener cuando el bloque entero redirige; revísela a mano",
             ),
             "auth_basic" | "auth_basic_user_file" => conv.review(
                 1,
@@ -1288,7 +3107,7 @@ fn server(
                     page.codes.retain(|code| !codes.contains(code));
                 }
                 error_pages.retain(|page| !page.codes.is_empty());
-                error_pages.push(super::ErrorPageIr {
+                let page = super::ErrorPageIr {
                     codes: codes.clone(),
                     file: Some(file.to_owned()),
                     body: None,
@@ -1296,33 +3115,63 @@ fn server(
                     raw: false,
                     status,
                     intercept: false,
-                });
+                };
                 let list = codes
                     .iter()
                     .map(u16::to_string)
                     .collect::<Vec<_>>()
                     .join(", ");
-                conv.done(
-                    1,
-                    &text,
-                    &context,
-                    format!(
-                        "[[listener.*.error_pages]] codes = [{list}], file = \"{file}\"{}: la ruta se \
-                         resuelve contra el directorio del TOML, no contra el root de nginx",
-                        status.map(|s| format!(", status = {s}")).unwrap_or_default()
-                    ),
+                let detail = format!(
+                    "[[listener.*.error_pages]] codes = [{list}], file = \"{file}\"{}: la ruta se \
+                     resuelve contra el directorio del TOML, no contra el root de nginx",
+                    status.map_or_default(|s| format!(", status = {s}"))
                 );
+                let same_as_primary = role
+                    .primary_listener()
+                    .is_some_and(|primary| primary.error_pages.contains(&page));
+                if role.is_primary() {
+                    conv.done(1, &text, &context, detail);
+                } else if same_as_primary {
+                    conv.info(
+                        1,
+                        &text,
+                        &context,
+                        "misma página de error que el default_server: el listener ya la aplica \
+                         a todos los nombres y no se duplica",
+                    );
+                } else {
+                    conv.review(
+                        1,
+                        &text,
+                        &context,
+                        format!(
+                            "este vhost declara una página de error; las páginas son del listener \
+                             y el default_server fija las suyas, así que esta no se aplica: {detail}"
+                        ),
+                    );
+                }
+                error_pages.push(page);
             }
             "proxy_intercept_errors" => match child.args.first().map(String::as_str) {
                 Some("on") => {
                     intercept_errors = true;
-                    conv.done(
-                        1,
-                        &text,
-                        &context,
-                        "intercept = true en las páginas error_page de este server (también \
-                         sustituyen respuestas del backend)",
-                    );
+                    if role.is_primary() {
+                        conv.done(
+                            1,
+                            &text,
+                            &context,
+                            "intercept = true en las páginas error_page de este server (también \
+                             sustituyen respuestas del backend)",
+                        );
+                    } else {
+                        conv.review(
+                            1,
+                            &text,
+                            &context,
+                            "el flag es del listener: el default_server decide si sus páginas \
+                             interceptan respuestas del backend; el on de este vhost no se aplica",
+                        );
+                    }
                 }
                 Some("off") => conv.info(
                     1,
@@ -1337,12 +3186,53 @@ fn server(
                     "proxy_intercept_errors sin on/off: se trata como off",
                 ),
             },
-            "gzip" | "gzip_types" | "gzip_min_length" | "gzip_comp_level" => conv.review(
+            "gzip_types" | "gzip_vary" | "gzip_proxied" | "gzip_static" => conv.review(
                 1,
                 &text,
                 &context,
                 "la compresión se configura por listener: mueva la directiva al bloque http o a [listener.*.compression]",
             ),
+            "ssl_ciphers" => {
+                let value = child.args.join(" ");
+                match role {
+                    VhostRole::Primary => conv.review(
+                        1,
+                        &text,
+                        &context,
+                        "selección de cipher suites: fuera por decisión (ADR-0035)",
+                    ),
+                    VhostRole::Secondary {
+                        primary_ciphers,
+                        primary_label,
+                        ..
+                    } if *primary_ciphers == Some(value.as_str()) => conv.info(
+                        1,
+                        &text,
+                        &context,
+                        format!(
+                            "mismos cifrados que el default_server «{primary_label}» (EQProxy usa \
+                             su propia política)"
+                        ),
+                    ),
+                    VhostRole::Secondary { primary_label, .. } => conv.degraded(
+                        1,
+                        &text,
+                        &context,
+                        Degradation::CipherPolicy,
+                        format!(
+                            "este vhost declara otros cifrados que el default_server \
+                             «{primary_label}»; el listener no puede llevar una política por vhost \
+                             y EQProxy usa la suya (ADR-0035)"
+                        ),
+                    ),
+                }
+            }
+            // N-2: server-scope proxy_ssl_* is inherited by every location
+            // below it; the values were collected before the loop and the
+            // location applies them. This row classifies the source directive.
+            name if name.starts_with("proxy_ssl_") => {
+                classify_proxy_ssl(conv, child, &context, has_https_targets);
+            }
             name => match supported_manually(name) {
                 Some(place) => conv.review(
                     1,
@@ -1364,14 +3254,15 @@ fn server(
         conv.touch(&directive(child), &context, before)?;
     }
 
-    if planned.is_empty() {
+    if planned.is_empty() && server_redirect.is_none() {
         conv.reject(
             1,
             "location",
             &context,
-            "el bloque no tiene ninguna location con proxy_pass ni deny: EQProxy no sirve contenido estático",
+            "el bloque no tiene ninguna location con proxy_pass ni deny ni un return de \
+             redirección: EQProxy no sirve contenido estático",
         );
-        return Ok(());
+        return Ok(None);
     }
 
     // Longest prefix first, denies (huge length) before anything else.
@@ -1390,8 +3281,8 @@ fn server(
     if !server_headers.is_empty() {
         let target = rules.iter_mut().find(|rule| rule.use_backend.is_some());
         match target {
-            Some(rule) => {
-                rule.response_headers.extend(server_headers);
+            Some(found) => {
+                found.response_headers.extend(server_headers);
                 conv.review(
                     1,
                     "add_header",
@@ -1408,18 +3299,51 @@ fn server(
         }
     }
 
-    let Some(backend) = fallback else {
+    // Every rule carries one condition per vhost name, so a shared listener
+    // keeps the vhosts distinguishable. The copies of a single vhost would
+    // otherwise repeat the same rule name; qualify it with the pattern so
+    // names stay unique for logs, metrics and `explain`.
+    if !hosts.patterns.is_empty() {
+        let qualify_names = hosts.patterns.len() > 1;
+        rules = hosts
+            .patterns
+            .iter()
+            .flat_map(|pattern| {
+                rules.iter().cloned().map(move |mut rule| {
+                    if qualify_names {
+                        rule.name = format!("{} ({})", rule.name, pattern.description());
+                    }
+                    pattern.apply(&mut rule);
+                    rule
+                })
+            })
+            .collect();
+    } else if !role.is_primary() || !hosts.raw.is_empty() {
+        // A vhost that declared names but none is representable must not
+        // become a catch-all. The default vhost without any server_name is
+        // the one case where a hostless rule is the intended fallback.
+        rules.clear();
+    }
+
+    if fallback.is_none() && server_redirect.is_none() {
         conv.reject(
             1,
             &context,
             &context,
-            "ninguna location apunta a un backend traducible: listener omitido",
+            "ninguna location apunta a un backend traducible y el bloque no redirige: listener omitido",
         );
-        return Ok(());
-    };
+        return Ok(None);
+    }
 
     let name = conv.free_listener_name(&format!("web_{label}"));
-    let mut listener = Listener::new(addr, "http", backend);
+    let mut listener = if let Some(backend) = fallback {
+        Listener::new(addr, "http", backend)
+    } else {
+        let (status, location) = server_redirect
+            .clone()
+            .expect("validated above: no backend means a redirect");
+        Listener::redirect(addr, "http", status, location)
+    };
     listener.maxconn = 1024;
     listener.tls = tls;
     listener.quic = http3 && listener.tls.is_some();
@@ -1427,10 +3351,16 @@ fn server(
     listener.compression_level = defaults.gzip_level;
     listener.compression_min_size = defaults.gzip_min_size;
     listener.max_body_bytes = defaults.max_body_bytes;
-    listener.idle_timeout = defaults.idle_timeout.clone();
-    listener.connect_timeout = defaults.connect_timeout.clone();
-    listener.server_header_timeout = defaults.server_header_timeout.clone();
-    listener.client_header_timeout = defaults.client_header_timeout.clone();
+    listener.idle_timeout.clone_from(&defaults.idle_timeout);
+    listener
+        .connect_timeout
+        .clone_from(&defaults.connect_timeout);
+    listener
+        .server_header_timeout
+        .clone_from(&defaults.server_header_timeout);
+    listener
+        .client_header_timeout
+        .clone_from(&defaults.client_header_timeout);
     listener.cache = cache;
     if intercept_errors {
         // nginx applies the flag to every error_page of the server, whatever
@@ -1443,24 +3373,35 @@ fn server(
     if forwarded {
         listener.forwarded_headers = Some("append");
     }
-    // Per-server timeouts win over the http-level defaults.
-    if let Some(node) = first(node, "client_header_timeout") {
-        listener.client_header_timeout = convert_duration(
-            conv,
-            node.args.first().map(String::as_str).unwrap_or_default(),
-            "s",
-            &directive(node),
-            &context,
-        );
-    }
-    if let Some(node) = first(node, "keepalive_timeout") {
-        listener.idle_timeout = convert_duration(
-            conv,
-            node.args.first().map(String::as_str).unwrap_or_default(),
-            "s",
-            &directive(node),
-            &context,
-        );
+    // Per-server listener-scope values win over the http-level defaults, but
+    // only for the default_server. A secondary vhost's values were compared
+    // with this listener above and are deliberately not copied here: ADR-0051
+    // gives the listener one value, the default_server's.
+    if role.is_primary() {
+        if let Some(value) = server_client_header_timeout {
+            listener.client_header_timeout = Some(value);
+        }
+        if let Some(value) = server_idle_timeout {
+            listener.idle_timeout = Some(value);
+        }
+        if let Some(value) = server_connect_timeout {
+            listener.connect_timeout = Some(value);
+        }
+        if let Some(value) = server_server_header_timeout {
+            listener.server_header_timeout = Some(value);
+        }
+        if let Some(value) = server_max_body_bytes {
+            listener.max_body_bytes = Some(value);
+        }
+        if let Some(value) = server_gzip {
+            listener.compression_gzip = value;
+        }
+        if let Some(value) = server_gzip_level {
+            listener.compression_level = Some(value);
+        }
+        if let Some(value) = server_gzip_min_size {
+            listener.compression_min_size = Some(value);
+        }
     }
     listener.rules = rules;
     if http2 {
@@ -1479,16 +3420,18 @@ fn server(
             "[listener.*].quic = true (HTTP/3 sobre QUIC en el mismo puerto)",
         );
     }
-    conv.add_listener(name, listener);
-    Ok(())
+    Ok(Some((name, listener)))
 }
 
 /// One `location { … }`.
+#[allow(clippy::too_many_lines)]
 fn location(
     conv: &mut Conv,
     node: &Node,
     server_context: &str,
     forwarded: &mut bool,
+    inherited_ssl: &ProxySslDefaults,
+    emit_rules: bool,
 ) -> Result<(Option<Rule>, usize), ImportError> {
     let raw_path = node.args.first().cloned().unwrap_or_else(|| "/".to_owned());
     let context = format!("{server_context} location {raw_path}");
@@ -1536,10 +3479,17 @@ fn location(
     // accepts them before or after `proxy_pass`. The tuple keeps the host (the
     // SNI source) and the directive text (the report row) of that target.
     let mut https_target: Option<(String, String)> = None;
-    let mut ssl_verify: Option<bool> = None;
-    let mut ssl_ca: Option<String> = None;
-    let mut ssl_sni: Option<bool> = None;
-    let mut ssl_name: Option<String> = None;
+    // Nginx inheritance is per directive: start with the http/server values
+    // and let a location declaration replace only its own field.
+    let mut ssl_verify = inherited_ssl.verify;
+    let mut ssl_ca = inherited_ssl.ca_file.clone();
+    let mut ssl_sni = inherited_ssl.sni;
+    let mut ssl_name = inherited_ssl.server_name.clone();
+    // `proxy_ssl_server_name on` only reaches the TOML when a DNS name is
+    // available; an IP literal never becomes `server_name`. Keep the note so
+    // the final backend TLS can turn the provisional `Done` back into `Info`
+    // instead of promising a field that is not there.
+    let mut proxy_ssl_sni_note = None;
 
     for child in &node.children {
         let before = conv.notes.len();
@@ -1615,24 +3565,48 @@ fn location(
                     }
                     rule.use_backend = Some(backend_name.clone());
                     has_target = true;
-                    conv.done(
-                        1,
-                        &text,
-                        &context,
-                        format!("regla con use_backend = «{backend_name}»"),
-                    );
+                    if emit_rules {
+                        conv.done(
+                            1,
+                            &text,
+                            &context,
+                            format!("regla con use_backend = «{backend_name}»"),
+                        );
+                    } else {
+                        conv.review(
+                            1,
+                            &text,
+                            &context,
+                            format!(
+                                "la regla con use_backend = «{backend_name}» no se emite: vhost sin \
+                                 server_name exacto; los hosts desconocidos siguen al default_server"
+                            ),
+                        );
+                    }
                 }
             }
             // EXT-H-04/N-2: the TLS qualifiers of `proxy_pass https://…`.
-            "proxy_ssl_verify" => {
-                let on = child.args.first().is_some_and(|arg| arg.trim() == "on");
-                ssl_verify = Some(on);
-                tls_mapped(conv, &text, &context, tls_target, format!("verify = {on}"));
-            }
-            "proxy_ssl_trusted_certificate" => match child.args.first() {
+            "proxy_ssl_verify" => match proxy_ssl_toggle(child) {
+                Some(on) => {
+                    ssl_verify = Some(on);
+                    tls_mapped(conv, &text, &context, tls_target, format!("verify = {on}"));
+                }
+                None => conv.review(
+                    1,
+                    &text,
+                    &context,
+                    "proxy_ssl_verify debe ser on u off: se ignora",
+                ),
+            },
+            "proxy_ssl_trusted_certificate" => match proxy_ssl_path(child) {
                 Some(path) => {
-                    let path = path.trim_matches(['"', '\'']).to_owned();
-                    tls_mapped(conv, &text, &context, tls_target, format!("ca_file = «{path}»"));
+                    tls_mapped(
+                        conv,
+                        &text,
+                        &context,
+                        tls_target,
+                        format!("ca_file = «{path}»"),
+                    );
                     ssl_ca = Some(path);
                 }
                 None => conv.review(
@@ -1642,20 +3616,36 @@ fn location(
                     "proxy_ssl_trusted_certificate sin ruta: se ignora",
                 ),
             },
-            "proxy_ssl_server_name" => {
-                let on = child.args.first().is_some_and(|arg| arg.trim() == "on");
-                ssl_sni = Some(on);
-                tls_mapped(
-                    conv,
+            "proxy_ssl_server_name" => match proxy_ssl_toggle(child) {
+                Some(true) => {
+                    ssl_sni = Some(true);
+                    tls_mapped(
+                        conv,
+                        &text,
+                        &context,
+                        tls_target,
+                        "SNI hacia el origen: true".to_owned(),
+                    );
+                    proxy_ssl_sni_note = Some(conv.notes.len().saturating_sub(1));
+                }
+                Some(false) => {
+                    ssl_sni = Some(false);
+                    conv.info(
+                        1,
+                        &text,
+                        &context,
+                        "SNI desactivado: EQProxy no emite server_name (sin SNI es el valor por defecto)",
+                    );
+                }
+                None => conv.review(
+                    1,
                     &text,
                     &context,
-                    tls_target,
-                    format!("SNI hacia el origen: {on}"),
-                );
-            }
-            "proxy_ssl_name" => match child.args.first() {
+                    "proxy_ssl_server_name debe ser on u off: se ignora",
+                ),
+            },
+            "proxy_ssl_name" => match proxy_ssl_path(child) {
                 Some(name) => {
-                    let name = name.trim_matches(['"', '\'']).to_owned();
                     tls_mapped(
                         conv,
                         &text,
@@ -1753,20 +3743,19 @@ fn location(
                 1,
                 &text,
                 &context,
-                "los timeouts se configuran por listener: la directiva de location se aplica al listener generado",
+                "el timeout es de ámbito listener: el valor de esta location no se aplica al \
+                 listener generado; configúrelo en el bloque server o en [listener.*] a mano",
             ),
             "deny" => {
-                let cidr = child
+                let cidr_text = child
                     .args
-                    .first()
-                    .map(|raw| cidr_of(raw))
-                    .unwrap_or_else(|| "0.0.0.0/0".to_owned());
+                    .first().map_or_else(|| "0.0.0.0/0".to_owned(), |raw| cidr_of(raw));
                 conv.review(
                     1,
                     &text,
                     &context,
                     format!(
-                        "deny dentro de location: emita una regla ip = [\"{cidr}\"] con direct_response 403 \
+                        "deny dentro de location: emita una regla ip = [\"{cidr_text}\"] con direct_response 403 \
                          antes que esta"
                     ),
                 );
@@ -1799,6 +3788,13 @@ fn location(
                 &context,
                 "[listener.*.cache] con valores por defecto: revise TTL y presupuesto",
             ),
+            // Any unknown `proxy_ssl_*` gets its own row here too: the generic
+            // location fallback would hide that it is a TLS policy the
+            // converter cannot map, and a later reader might mistake it for a
+            // harmless nginx directive.
+            name if name.starts_with("proxy_ssl_") => {
+                unknown_proxy_ssl(conv, &text, &context, name);
+            }
             name => match supported_manually(name) {
                 Some(place) => conv.review(
                     1,
@@ -1834,6 +3830,31 @@ fn location(
                 server_name: ssl_name,
             },
         );
+    }
+
+    // The provisional `proxy_ssl_server_name on` row is `Done` only when the
+    // final backend TLS carries a `server_name`. `proxy_ssl_name` overrides the
+    // authority; an IP authority has no DNS name, so the directive has no
+    // field to fill and must read as `Info` (nginx itself has no effect there).
+    if let Some(index) = proxy_ssl_sni_note
+        && conv
+            .notes
+            .get(index)
+            .is_some_and(|note| note.severity == Severity::Done)
+    {
+        let has_server_name = rule
+            .use_backend
+            .as_deref()
+            .and_then(|backend| conv.backends.get(backend))
+            .and_then(|backend| backend.tls.as_ref())
+            .and_then(|tls| tls.server_name.as_ref())
+            .is_some();
+        if !has_server_name && let Some(note) = conv.notes.get_mut(index) {
+            note.severity = Severity::Info;
+            "SNI solicitado sin nombre DNS (destino IP o sin proxy_pass https): \
+                            no se emite server_name"
+                .clone_into(&mut note.message);
+        }
     }
 
     if !has_target {
@@ -1882,6 +3903,333 @@ fn resolve_backend(
         format!("origen literal convertido en backend «{name}» ({addr})"),
     );
     Some(name)
+}
+
+/// The boolean value of `proxy_ssl_verify` / `proxy_ssl_server_name`.
+///
+/// `None` is an invalid value, not nginx's off default: treating a typo as
+/// `off` would silently weaken the conversion.
+fn proxy_ssl_toggle(node: &Node) -> Option<bool> {
+    match node.args.first().map(|arg| arg.trim()) {
+        Some("on") => Some(true),
+        Some("off") => Some(false),
+        _ => None,
+    }
+}
+
+/// A `proxy_ssl_trusted_certificate` path or a `proxy_ssl_name` value.
+/// Empty is invalid, so the caller reports it instead of emitting an empty
+/// field.
+fn proxy_ssl_path(node: &Node) -> Option<String> {
+    let raw = node.args.first()?.trim_matches(['"', '\'']);
+    (!raw.is_empty()).then(|| raw.to_owned())
+}
+
+/// Collects the `proxy_ssl_*` values declared directly in `node`, starting
+/// from the values inherited from its parent scope. nginx replaces a value
+/// only when the same directive is declared at the narrower level; keeping
+/// each field optional preserves that rule.
+fn collect_proxy_ssl(node: &Node, inherited: &ProxySslDefaults) -> ProxySslDefaults {
+    let mut out = inherited.clone();
+    for child in &node.children {
+        match child.name.as_str() {
+            "proxy_ssl_verify" => {
+                if let Some(on) = proxy_ssl_toggle(child) {
+                    out.verify = Some(on);
+                }
+            }
+            "proxy_ssl_trusted_certificate" => {
+                if let Some(path) = proxy_ssl_path(child) {
+                    out.ca_file = Some(path);
+                }
+            }
+            "proxy_ssl_server_name" => {
+                if let Some(on) = proxy_ssl_toggle(child) {
+                    out.sni = Some(on);
+                }
+            }
+            "proxy_ssl_name" => {
+                if let Some(name) = proxy_ssl_path(child) {
+                    out.server_name = Some(name);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Whether this block (or any nested server/location) has a literal
+/// `proxy_pass https://…`. A variable or plaintext target does not qualify.
+fn has_https_target(node: &Node) -> bool {
+    node.children.iter().any(|child| {
+        let https = child.name == "proxy_pass"
+            && child.args.first().is_some_and(|target| {
+                !target.contains('$')
+                    && target
+                        .split_once("://")
+                        .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("https"))
+            });
+        https || has_https_target(child)
+    })
+}
+
+/// Reads one listener TLS value from a directive's first argument.
+///
+/// Nginx inherits each directive independently, so the caller must keep a
+/// missing value distinct from an empty one; the report uses this to explain
+/// what was actually inherited.
+fn tls_arg(node: &Node, name: &str) -> Option<String> {
+    first(node, name)
+        .and_then(|directive| directive.args.first())
+        .filter(|value| !value.is_empty())
+        .cloned()
+}
+
+/// Collects the listener TLS values declared directly in the `http` block.
+/// Only directives that are expressible on `[listener.*.tls]` are kept; a
+/// server can override each one independently.
+fn collect_http_tls(http: &Node) -> HttpTlsDefaults {
+    HttpTlsDefaults {
+        cert: tls_arg(http, "ssl_certificate"),
+        key: tls_arg(http, "ssl_certificate_key"),
+        protocols: first(http, "ssl_protocols").map(|node| node.args.clone()),
+        client_ca: tls_arg(http, "ssl_client_certificate"),
+        verify_client: tls_arg(http, "ssl_verify_client"),
+    }
+}
+
+/// Whether a server in the `http` block has a TLS listener (or inherits a
+/// certificate from http). Used only to classify the http-scope directives in
+/// the report: a TLS value with no TLS listener changes nothing.
+fn has_tls_server(http: &Node, defaults: &HttpTlsDefaults) -> bool {
+    let inherited_cert = defaults.cert.is_some() || defaults.key.is_some();
+    inherited_cert
+        || children(http, "server").iter().any(|server| {
+            first(server, "ssl_certificate").is_some()
+                || first(server, "ssl_certificate_key").is_some()
+                || children(server, "listen").iter().any(|listen| {
+                    listen.args.iter().skip(1).any(|flag| {
+                        flag == "ssl"
+                            || flag == "quic"
+                            || flag.starts_with("http3")
+                            || flag.starts_with("quic")
+                    })
+                })
+        })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClientVerifyMode {
+    Off,
+    Required,
+    Unsupported(&'static str),
+}
+
+/// Only `on` has an exact `EQProxy` equivalent: `client_ca` always requires a
+/// client certificate. nginx's optional modes cannot be represented without
+/// either dropping verification or making the certificate mandatory.
+fn client_verify_mode(value: Option<&str>) -> ClientVerifyMode {
+    match value {
+        Some("on") => ClientVerifyMode::Required,
+        Some("optional") => ClientVerifyMode::Unsupported("optional"),
+        Some("optional_no_ca") => ClientVerifyMode::Unsupported("optional_no_ca"),
+        _ => ClientVerifyMode::Off,
+    }
+}
+
+fn client_verify_active(value: Option<&str>) -> bool {
+    matches!(client_verify_mode(value), ClientVerifyMode::Required)
+}
+
+fn reject_optional_client_verify(conv: &mut Conv, text: &str, context: &str, mode: &'static str) {
+    conv.reject(
+        1,
+        text,
+        context,
+        format!(
+            "modo {mode} no es expresable: EQProxy exige un certificado si configura \
+             client_ca y nginx lo pedía solo como opcional; se rechaza para no endurecer la \
+             política"
+        ),
+    );
+}
+
+/// Whether http-scope client verification becomes active in any server of the
+/// block, either through http inheritance or a server override.
+fn http_client_verify_active(http: &Node, defaults: &HttpTlsDefaults) -> bool {
+    client_verify_active(defaults.verify_client.as_deref())
+        || children(http, "server")
+            .iter()
+            .any(|server| client_verify_active(tls_arg(server, "ssl_verify_client").as_deref()))
+}
+
+/// Whether a client CA is available at http scope or in any server.
+fn http_has_client_ca(http: &Node, defaults: &HttpTlsDefaults) -> bool {
+    defaults.client_ca.is_some()
+        || children(http, "server")
+            .iter()
+            .any(|server| tls_arg(server, "ssl_client_certificate").is_some())
+}
+
+/// nginx's `ssl_protocols` expressed as the schema's min/max pair. `None`
+/// means the directive names neither TLS 1.2 nor 1.3; the bool reports a
+/// legacy protocol, which `EQProxy` ignores.
+type TlsProtocolRange = Option<(Option<&'static str>, Option<&'static str>)>;
+
+fn tls_protocol_range(args: &[String]) -> (TlsProtocolRange, bool) {
+    let has = |wanted: &str| args.iter().any(|arg| arg.eq_ignore_ascii_case(wanted));
+    let has_12 = has("TLSv1.2");
+    let has_13 = has("TLSv1.3");
+    let legacy = ["TLSv1.1", "TLSv1", "SSLv3", "SSLv2"]
+        .iter()
+        .any(|name| has(name));
+    let range = match (has_12, has_13) {
+        (true, true) => Some((Some("1.2"), None)),
+        (true, false) => Some((Some("1.2"), Some("1.2"))),
+        (false, true) => Some((Some("1.3"), Some("1.3"))),
+        (false, false) => None,
+    };
+    (range, legacy)
+}
+
+/// Classifies one `proxy_ssl_*` directive declared at http or server scope.
+///
+/// The value has already been collected for inheritance; this function only
+/// writes the report row. A supported field is `Done` when some HTTPS target
+/// in the scope can use it; an unexpressible TLS property is `Degraded`, never
+/// a silent conversion. An unknown `proxy_ssl_*` stays a review note because
+/// this converter cannot claim whether it relaxed security.
+fn classify_proxy_ssl(conv: &mut Conv, child: &Node, context: &str, applies: bool) {
+    let text = directive(child);
+    match child.name.as_str() {
+        "proxy_ssl_verify" => match proxy_ssl_toggle(child) {
+            Some(on) => {
+                proxy_ssl_scope_mapped(conv, &text, context, applies, &format!("verify = {on}"));
+            }
+            None => conv.review(
+                1,
+                &text,
+                context,
+                "proxy_ssl_verify debe ser on u off: se ignora",
+            ),
+        },
+        "proxy_ssl_trusted_certificate" => match proxy_ssl_path(child) {
+            Some(path) => {
+                proxy_ssl_scope_mapped(
+                    conv,
+                    &text,
+                    context,
+                    applies,
+                    &format!("ca_file = «{path}»"),
+                );
+            }
+            None => conv.review(
+                1,
+                &text,
+                context,
+                "proxy_ssl_trusted_certificate sin ruta: se ignora",
+            ),
+        },
+        "proxy_ssl_server_name" => match proxy_ssl_toggle(child) {
+            Some(true) => {
+                proxy_ssl_scope_mapped(conv, &text, context, applies, "SNI hacia el origen: true");
+            }
+            Some(false) => conv.info(
+                1,
+                &text,
+                context,
+                "SNI desactivado: EQProxy no emite server_name (sin SNI es el valor por defecto)",
+            ),
+            None => conv.review(
+                1,
+                &text,
+                context,
+                "proxy_ssl_server_name debe ser on u off: se ignora",
+            ),
+        },
+        "proxy_ssl_name" => match proxy_ssl_path(child) {
+            Some(name) => proxy_ssl_scope_mapped(
+                conv,
+                &text,
+                context,
+                applies,
+                &format!("server_name = «{name}»"),
+            ),
+            None => conv.review(1, &text, context, "proxy_ssl_name vacío: se ignora"),
+        },
+        "proxy_ssl_certificate" | "proxy_ssl_certificate_key" => proxy_ssl_scope_lost(
+            conv,
+            &text,
+            context,
+            applies,
+            Degradation::ClientCertificate,
+        ),
+        "proxy_ssl_protocols" => {
+            proxy_ssl_scope_lost(conv, &text, context, applies, Degradation::ProtocolPolicy);
+        }
+        "proxy_ssl_ciphers" => {
+            proxy_ssl_scope_lost(conv, &text, context, applies, Degradation::CipherPolicy);
+        }
+        "proxy_ssl_verify_depth" => {
+            proxy_ssl_scope_lost(conv, &text, context, applies, Degradation::VerifyDepth);
+        }
+        name => unknown_proxy_ssl(conv, &text, context, name),
+    }
+}
+
+/// One explicit row for a `proxy_ssl_*` this importer does not know.
+///
+/// The fallback must name the directive family and say that no backend TLS
+/// field is emitted: a generic location/upstream note would let an operator
+/// assume the TLS qualifier was either translated or harmless.
+fn unknown_proxy_ssl(conv: &mut Conv, text: &str, context: &str, name: &str) {
+    conv.review(
+        1,
+        text,
+        context,
+        format!(
+            "directiva proxy_ssl_* desconocida «{name}»: sin traducción automática y sin campo \
+             [backend.*.tls] que la represente; revísela a mano"
+        ),
+    );
+}
+
+fn proxy_ssl_scope_mapped(conv: &mut Conv, text: &str, context: &str, applies: bool, mapped: &str) {
+    if applies {
+        conv.done(
+            1,
+            text,
+            context,
+            format!("{mapped} (TLS al backend; se hereda a las locations que no lo sobrescriban)"),
+        );
+    } else {
+        conv.info(
+            1,
+            text,
+            context,
+            "sin proxy_pass https://… en este bloque: no aplica al backend",
+        );
+    }
+}
+
+fn proxy_ssl_scope_lost(
+    conv: &mut Conv,
+    text: &str,
+    context: &str,
+    applies: bool,
+    lost: Degradation,
+) {
+    if applies {
+        conv.degraded(1, text, context, lost, "no llega a [backend.*.tls]");
+    } else {
+        conv.info(
+            1,
+            text,
+            context,
+            "sin proxy_pass https://… en este bloque: no aplica al backend",
+        );
+    }
 }
 
 /// N-2: a `proxy_ssl_*` directive only means something when the location
@@ -2067,6 +4415,7 @@ fn nginx_variable_unsupported(value: &str) -> Option<String> {
 }
 
 /// `stream { … }` → `mode = "tcp"` listeners.
+#[allow(clippy::too_many_lines)]
 fn stream(conv: &mut Conv, stream: &Node) -> Result<(), ImportError> {
     conv.info(
         1,
@@ -2100,6 +4449,8 @@ fn stream(conv: &mut Conv, stream: &Node) -> Result<(), ImportError> {
                 } else {
                     conv.review(1, &text, &context, "servidor sin dirección: se omite");
                 }
+            } else if child.name.starts_with("proxy_ssl_") {
+                unknown_proxy_ssl(conv, &text, &context, &child.name);
             } else {
                 conv.gap(
                     1,
@@ -2149,9 +4500,8 @@ fn stream(conv: &mut Conv, stream: &Node) -> Result<(), ImportError> {
         };
         // A stream `proxy_pass` names an address, not a URL: there is no
         // scheme to carry (nginx does not accept one there either).
-        let backend = match resolve_backend(conv, target, 80, &context) {
-            Some(name) => name,
-            None => continue,
+        let Some(backend) = resolve_backend(conv, target, 80, &context) else {
+            continue;
         };
         let name = conv.free_listener_name(&format!("tcp_{backend}"));
         let mut listener = Listener::new(addr, "tcp", backend.clone());
@@ -2163,7 +4513,7 @@ fn stream(conv: &mut Conv, stream: &Node) -> Result<(), ImportError> {
                 "proxy_timeout" => {
                     listener.idle_timeout = convert_duration(
                         conv,
-                        child.args.first().map(String::as_str).unwrap_or_default(),
+                        child.args.first().map_or_default(String::as_str),
                         "s",
                         &text,
                         &context,
@@ -2173,7 +4523,7 @@ fn stream(conv: &mut Conv, stream: &Node) -> Result<(), ImportError> {
                 "proxy_connect_timeout" => {
                     listener.connect_timeout = convert_duration(
                         conv,
-                        child.args.first().map(String::as_str).unwrap_or_default(),
+                        child.args.first().map_or_default(String::as_str),
                         "s",
                         &text,
                         &context,
@@ -2186,6 +4536,9 @@ fn stream(conv: &mut Conv, stream: &Node) -> Result<(), ImportError> {
                     &context,
                     "enrutado por SNI (ssl_preread): EQProxy no inspecciona el ClientHello",
                 ),
+                name if name.starts_with("proxy_ssl_") => {
+                    unknown_proxy_ssl(conv, &text, &context, name);
+                }
                 name => match supported_manually(name) {
                     Some(place) => conv.review(
                         1,
@@ -2216,6 +4569,7 @@ fn stream(conv: &mut Conv, stream: &Node) -> Result<(), ImportError> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::Note;
     use super::*;
 
     #[test]
@@ -2438,6 +4792,447 @@ mod tests {
     }
 
     #[test]
+    fn vhost_tls_divergence_is_degraded_and_never_silent() {
+        // mTLS, versions and ciphers cannot be carried per vhost: the listener
+        // applies the default_server's policy, so a vhost that declares a
+        // different one loses it and must read as degraded.
+        let source = "http {\n  server {\n    listen 443 ssl default_server;\n    server_name a.example;\n    ssl_certificate /etc/a.pem;\n    ssl_certificate_key /etc/a.key;\n    ssl_protocols TLSv1.3;\n    ssl_ciphers HIGH;\n    location / { proxy_pass http://127.0.0.1:9000; }\n  }\n  server {\n    listen 443 ssl;\n    server_name b.example;\n    ssl_certificate /etc/b.pem;\n    ssl_certificate_key /etc/b.key;\n    ssl_protocols TLSv1.2;\n    ssl_ciphers 'LOW';\n    ssl_client_certificate /etc/clients.pem;\n    ssl_verify_client on;\n    location / { proxy_pass http://127.0.0.1:9001; }\n  }\n}\n";
+        let outcome = super::super::convert(super::super::Source::Nginx, source).expect("convert");
+        assert!(
+            outcome.report.contains("## Convertido con degradación"),
+            "split TLS policy must be degraded:\n{}",
+            outcome.report
+        );
+        for loss in [
+            "política de versiones TLS",
+            "política de cifrados",
+            "certificado de cliente (mTLS)",
+        ] {
+            assert!(
+                outcome.report.contains(loss),
+                "the report must name {loss}:\n{}",
+                outcome.report
+            );
+        }
+        // The listener keeps the default_server policy and the second cert.
+        assert!(
+            outcome.toml.contains("min_version = \"1.3\"")
+                && !outcome.toml.contains("min_version = \"1.2\""),
+            "the default_server version policy wins:\n{}",
+            outcome.toml
+        );
+        assert!(
+            outcome.toml.contains(".tls.certs]]")
+                && outcome.toml.contains("names = [\"b.example\"]"),
+            "the second vhost keeps its certificate:\n{}",
+            outcome.toml
+        );
+    }
+
+    #[test]
+    fn a_secondary_vhost_without_exact_names_emits_no_hostless_rules() {
+        let source = "http {\n  server {\n    listen 443 ssl default_server;\n    server_name a.example;\n    ssl_certificate /etc/a.pem;\n    ssl_certificate_key /etc/a.key;\n    location / { proxy_pass http://127.0.0.1:9000; }\n  }\n  server {\n    listen 443 ssl;\n    ssl_certificate /etc/catchall.pem;\n    ssl_certificate_key /etc/catchall.key;\n    location / { proxy_pass http://127.0.0.1:9001; }\n  }\n}\n";
+        let outcome = super::super::convert(super::super::Source::Nginx, source).expect("convert");
+        assert!(
+            outcome.report.contains("vhost sin server_name traducible")
+                && outcome.report.contains("reglas no se emiten"),
+            "the report must explain why the catch-all is dropped:\n{}",
+            outcome.report
+        );
+        assert_eq!(
+            outcome
+                .toml
+                .lines()
+                .filter(|line| line.starts_with("[[listener.") && line.contains(".rules]]"))
+                .count(),
+            1,
+            "only the named default vhost contributes a rule:\n{}",
+            outcome.toml
+        );
+        assert!(
+            !outcome.toml.contains("catchall.pem"),
+            "an unreachable certificate must not be emitted:\n{}",
+            outcome.toml
+        );
+        assert!(
+            !outcome
+                .toml
+                .contains("use_backend = \"backend_127_0_0_1_9001\""),
+            "the unnamed vhost's catch-all rule must not be emitted:\n{}",
+            outcome.toml
+        );
+    }
+
+    #[test]
+    fn a_default_server_is_chosen_per_listen_address() {
+        // The first vhost is the default of 443 and has no exact names; it is
+        // only a secondary on 8443, where the second vhost declares
+        // default_server. Looking at the first vhost's 443 flag would make it
+        // primary on 8443 too and turn its no-name rules into a catch-all.
+        let source = "http {\n  server {\n    listen 443 ssl default_server;\n    listen 8443 ssl;\n    ssl_certificate /etc/a.pem;\n    ssl_certificate_key /etc/a.key;\n    location / { proxy_pass http://127.0.0.1:9000; }\n  }\n  server {\n    listen 8443 ssl default_server;\n    server_name b.example;\n    ssl_certificate /etc/b.pem;\n    ssl_certificate_key /etc/b.key;\n    location / { proxy_pass http://127.0.0.1:9001; }\n  }\n}\n";
+        let outcome = super::super::convert(super::super::Source::Nginx, source).expect("convert");
+        assert_eq!(
+            outcome
+                .toml
+                .lines()
+                .filter(|line| line.starts_with("[[listener.") && line.contains(".rules]]"))
+                .count(),
+            2,
+            "443 keeps its default catch-all and 8443 only the named default rule:\n{}",
+            outcome.toml
+        );
+        assert_eq!(
+            outcome
+                .toml
+                .lines()
+                .filter(|line| line.starts_with("host = "))
+                .count(),
+            1,
+            "the only named vhost on 8443 owns the only host rule:\n{}",
+            outcome.toml
+        );
+        assert!(
+            outcome.toml.contains("host = \"b.example\""),
+            "the real default of 8443 keeps its host rule:\n{}",
+            outcome.toml
+        );
+        assert!(
+            !outcome
+                .toml
+                .contains("use_backend = \"backend_127_0_0_1_9000_2\""),
+            "the secondary no-name vhost must not contribute a catch-all on 8443:\n{}",
+            outcome.toml
+        );
+        assert!(
+            !outcome.report.lines().any(|line| {
+                line.contains("regla con use_backend = «backend_127_0_0_1_9000_2»")
+                    && !line.contains("no se emite")
+            }),
+            "the report must not claim a rule that was dropped:\n{}",
+            outcome.report
+        );
+        assert!(
+            outcome.report.contains("vhost sin server_name traducible")
+                && outcome.report.contains("no se convierten en catch-all")
+                && outcome.report.contains("la regla con use_backend"),
+            "the report must explain the drop and the default_server fallback:\n{}",
+            outcome.report
+        );
+    }
+
+    #[test]
+    fn a_secondary_vhost_with_only_a_wildcard_emits_a_host_regex_and_certificate() {
+        // nginx's `*.example` matches one or more labels below the suffix, so
+        // it becomes a host_regex (not a catch-all) and its certificate is
+        // announced by the one-label SNI wildcard the schema can express.
+        let source = "http {\n  server {\n    listen 443 ssl default_server;\n    server_name a.example;\n    ssl_certificate /etc/a.pem;\n    ssl_certificate_key /etc/a.key;\n    location / { proxy_pass http://127.0.0.1:9000; }\n  }\n  server {\n    listen 443 ssl;\n    server_name *.example;\n    ssl_certificate /etc/catchall.pem;\n    ssl_certificate_key /etc/catchall.key;\n    location / { proxy_pass http://127.0.0.1:9001; }\n  }\n}\n";
+        let outcome = super::super::convert(super::super::Source::Nginx, source).expect("convert");
+        assert!(
+            !outcome.report.contains("vhost sin server_name traducible"),
+            "the wildcard vhost must be translated, not dropped:\n{}",
+            outcome.report
+        );
+        assert!(
+            outcome.report.contains("host_regex"),
+            "the report must name the generated host condition:\n{}",
+            outcome.report
+        );
+        assert_eq!(
+            outcome
+                .toml
+                .lines()
+                .filter(|line| line.starts_with("[[listener.") && line.contains(".rules]]"))
+                .count(),
+            2,
+            "each vhost contributes a rule:\n{}",
+            outcome.toml
+        );
+        assert!(
+            outcome.toml.contains("host = \"a.example\""),
+            "the emitted rule must stay tied to the exact host:\n{}",
+            outcome.toml
+        );
+        assert!(
+            outcome
+                .toml
+                .contains("use_backend = \"backend_127_0_0_1_9001\""),
+            "the wildcard vhost must route to its own backend:\n{}",
+            outcome.toml
+        );
+        let parsed = crate::parse_str(&outcome.toml, std::path::Path::new("wildcard"))
+            .expect("generated TOML parses");
+        let listener = parsed.listener.values().next().expect("listener");
+        let regex = listener
+            .rules
+            .iter()
+            .find_map(|rule| rule.host_regex.as_deref())
+            .expect("wildcard host_regex");
+        assert_eq!(
+            regex, r"^[^.]+(?:\.[^.]+)*\.example$",
+            "the wildcard must use nginx's multi-label semantics"
+        );
+        let tls = listener.tls.as_ref().expect("listener TLS");
+        assert_eq!(tls.certs[0].names, ["*.example"]);
+    }
+
+    #[test]
+    fn leading_dot_server_name_covers_the_apex_and_subdomains() {
+        let source = "http {\n  server {\n    listen 443 ssl default_server;\n    server_name alpha.example.test;\n    ssl_certificate /etc/a.pem;\n    ssl_certificate_key /etc/a.key;\n    location / { proxy_pass http://127.0.0.1:9000; }\n  }\n  server {\n    listen 443 ssl;\n    server_name .example.test;\n    ssl_certificate /etc/dot.pem;\n    ssl_certificate_key /etc/dot.key;\n    location / { proxy_pass http://127.0.0.1:9001; }\n  }\n}\n";
+        let outcome = super::super::convert(super::super::Source::Nginx, source).expect("convert");
+        assert!(
+            outcome.toml.contains("host = \"example.test\""),
+            "the leading dot covers the exact apex:\n{}",
+            outcome.toml
+        );
+        let parsed = crate::parse_str(&outcome.toml, std::path::Path::new("leading-dot"))
+            .expect("generated TOML parses");
+        let listener = parsed.listener.values().next().expect("listener");
+        let regex = listener
+            .rules
+            .iter()
+            .find_map(|rule| rule.host_regex.as_deref())
+            .expect("leading-dot host_regex");
+        assert_eq!(
+            regex, r"^[^.]+(?:\.[^.]+)*\.example\.test$",
+            "the leading dot covers every subdomain depth"
+        );
+        let tls = listener.tls.as_ref().expect("listener TLS");
+        assert_eq!(
+            tls.certs[0].names,
+            ["example.test", "*.example.test"],
+            "SNI must announce the apex and the wildcard the certificate covers"
+        );
+    }
+
+    #[test]
+    fn trailing_wildcard_becomes_host_prefix_and_reports_the_sni_limit() {
+        let source = "http {\n  server {\n    listen 443 ssl default_server;\n    server_name alpha.example.test;\n    ssl_certificate /etc/a.pem;\n    ssl_certificate_key /etc/a.key;\n    location / { proxy_pass http://127.0.0.1:9000; }\n  }\n  server {\n    listen 443 ssl;\n    server_name mail.*;\n    ssl_certificate /etc/mail.pem;\n    ssl_certificate_key /etc/mail.key;\n    location / { proxy_pass http://127.0.0.1:9001; }\n  }\n}\n";
+        let outcome = super::super::convert(super::super::Source::Nginx, source).expect("convert");
+        assert!(
+            outcome.toml.contains("host_prefix = \"mail.\""),
+            "a trailing wildcard is a literal host prefix:\n{}",
+            outcome.toml
+        );
+        assert!(
+            !outcome.toml.contains("names = [\"mail.*\"]"),
+            "certs[].names cannot express a trailing wildcard:\n{}",
+            outcome.toml
+        );
+        assert!(
+            outcome.report.contains("vhost sin nombre expresable")
+                && outcome.report.contains("mail.*"),
+            "the report must name the SNI certificate that was not emitted:\n{}",
+            outcome.report
+        );
+    }
+
+    #[test]
+    fn regex_server_name_becomes_a_case_insensitive_host_regex() {
+        let source = "http {\n  server {\n    listen 443 ssl default_server;\n    server_name alpha.example.test;\n    ssl_certificate /etc/a.pem;\n    ssl_certificate_key /etc/a.key;\n    location / { proxy_pass http://127.0.0.1:9000; }\n  }\n  server {\n    listen 443 ssl;\n    server_name ~^API-[0-9]+\\.example\\.test$;\n    ssl_certificate /etc/api.pem;\n    ssl_certificate_key /etc/api.key;\n    location / { proxy_pass http://127.0.0.1:9001; }\n  }\n}\n";
+        let outcome = super::super::convert(super::super::Source::Nginx, source).expect("convert");
+        let parsed = crate::parse_str(&outcome.toml, std::path::Path::new("regex"))
+            .expect("generated TOML parses");
+        let regex = parsed
+            .listener
+            .values()
+            .next()
+            .expect("listener")
+            .rules
+            .iter()
+            .find_map(|rule| rule.host_regex.as_deref())
+            .expect("regex host_regex");
+        assert_eq!(
+            regex, r"(?i)^API-[0-9]+\.example\.test$",
+            "an uppercase PCRE name is caseless in nginx; the generated regex must say so"
+        );
+        assert!(
+            outcome.report.contains("host_regex") && outcome.report.contains("API-[0-9]+"),
+            "the report must name the translated expression:\n{}",
+            outcome.report
+        );
+    }
+
+    #[test]
+    fn expressly_caseless_regex_gets_the_inline_flag() {
+        let source = "http {\n  server {\n    listen 80;\n    server_name ~*^api-[0-9]+\\.example\\.test$;\n    location / { proxy_pass http://127.0.0.1:9000; }\n  }\n}\n";
+        let outcome = super::super::convert(super::super::Source::Nginx, source).expect("convert");
+        let parsed = crate::parse_str(&outcome.toml, std::path::Path::new("regex-star"))
+            .expect("generated TOML parses");
+        let regex = parsed
+            .listener
+            .values()
+            .next()
+            .expect("listener")
+            .rules
+            .iter()
+            .find_map(|rule| rule.host_regex.as_deref())
+            .expect("regex host_regex");
+        assert_eq!(
+            regex, r"(?i)^api-[0-9]+\.example\.test$",
+            "nginx's ~* is explicitly caseless even with no uppercase letter"
+        );
+    }
+
+    #[test]
+    fn an_unsupported_regex_never_becomes_a_catch_all() {
+        // Rust's regex engine has no look-around; EQProxy refuses the
+        // expression instead of emitting invalid TOML or dropping the host
+        // condition and turning the vhost into a catch-all.
+        let source = "http {\n  server {\n    listen 80;\n    server_name ~^(?=api)\\.example\\.test$;\n    location / { proxy_pass http://127.0.0.1:9000; }\n  }\n}\n";
+        let outcome = super::super::convert(super::super::Source::Nginx, source).expect("convert");
+        assert!(
+            outcome.report.contains("sin forma traducible")
+                && outcome.report.contains("no se puede evaluar"),
+            "the report must explain the unsupported expression:\n{}",
+            outcome.report
+        );
+        assert!(
+            !outcome.toml.contains(".rules]]"),
+            "a declared name that cannot be translated must not become a catch-all rule:\n{}",
+            outcome.toml
+        );
+    }
+
+    #[test]
+    fn server_name_rules_follow_nginx_precedence() {
+        let source = "http {\n  server {\n    listen 443 ssl default_server;\n    server_name api-7.example.test;\n    ssl_certificate /etc/a.pem;\n    ssl_certificate_key /etc/a.key;\n    location / { proxy_pass http://127.0.0.1:9000; }\n  }\n  server {\n    listen 443 ssl;\n    server_name *.example.test;\n    ssl_certificate /etc/wild.pem;\n    ssl_certificate_key /etc/wild.key;\n    location / { proxy_pass http://127.0.0.1:9001; }\n  }\n  server {\n    listen 443 ssl;\n    server_name ~^api-[0-9]+\\.example\\.test$;\n    ssl_certificate /etc/regex.pem;\n    ssl_certificate_key /etc/regex.key;\n    location / { proxy_pass http://127.0.0.1:9002; }\n  }\n}\n";
+        let outcome = super::super::convert(super::super::Source::Nginx, source).expect("convert");
+        let parsed = crate::parse_str(&outcome.toml, std::path::Path::new("precedence"))
+            .expect("generated TOML parses");
+        let rules = &parsed.listener.values().next().expect("listener").rules;
+        assert_eq!(rules.len(), 3, "one rule per vhost: {rules:?}");
+        assert_eq!(rules[0].host.as_deref(), Some("api-7.example.test"));
+        assert_eq!(
+            rules[1].host_regex.as_deref(),
+            Some(r"^[^.]+(?:\.[^.]+)*\.example\.test$")
+        );
+        assert_eq!(
+            rules[2].host_regex.as_deref(),
+            Some(r"^api-[0-9]+\.example\.test$")
+        );
+    }
+
+    #[test]
+    fn longest_wildcards_and_trailing_wildcards_sort_before_regexes() {
+        let source = "http {\n  server {\n    listen 443 ssl default_server;\n    server_name api-7.example.test;\n    ssl_certificate /etc/a.pem;\n    ssl_certificate_key /etc/a.key;\n    location / { proxy_pass http://127.0.0.1:9000; }\n  }\n  server {\n    listen 443 ssl;\n    server_name *.example.test;\n    ssl_certificate /etc/one.pem;\n    ssl_certificate_key /etc/one.key;\n    location / { proxy_pass http://127.0.0.1:9001; }\n  }\n  server {\n    listen 443 ssl;\n    server_name *.sub.example.test;\n    ssl_certificate /etc/two.pem;\n    ssl_certificate_key /etc/two.key;\n    location / { proxy_pass http://127.0.0.1:9002; }\n  }\n  server {\n    listen 443 ssl;\n    server_name mail.*;\n    ssl_certificate /etc/three.pem;\n    ssl_certificate_key /etc/three.key;\n    location / { proxy_pass http://127.0.0.1:9003; }\n  }\n  server {\n    listen 443 ssl;\n    server_name ~^api-[0-9]+\\.example\\.test$;\n    ssl_certificate /etc/four.pem;\n    ssl_certificate_key /etc/four.key;\n    location / { proxy_pass http://127.0.0.1:9004; }\n  }\n}\n";
+        let outcome = super::super::convert(super::super::Source::Nginx, source).expect("convert");
+        let parsed = crate::parse_str(&outcome.toml, std::path::Path::new("precedence-full"))
+            .expect("generated TOML parses");
+        let rules = &parsed.listener.values().next().expect("listener").rules;
+        assert_eq!(rules.len(), 5, "one rule per vhost: {rules:?}");
+        assert_eq!(rules[0].host.as_deref(), Some("api-7.example.test"));
+        assert_eq!(
+            rules[1].host_regex.as_deref(),
+            Some(r"^[^.]+(?:\.[^.]+)*\.sub\.example\.test$"),
+            "the longest leading wildcard comes first"
+        );
+        assert_eq!(
+            rules[2].host_regex.as_deref(),
+            Some(r"^[^.]+(?:\.[^.]+)*\.example\.test$"),
+            "a shorter leading wildcard follows"
+        );
+        assert_eq!(
+            rules[3].host_prefix.as_deref(),
+            Some("mail."),
+            "trailing wildcards follow all leading wildcards"
+        );
+        assert_eq!(
+            rules[4].host_regex.as_deref(),
+            Some(r"^api-[0-9]+\.example\.test$"),
+            "regexes come last, before the catch-all"
+        );
+    }
+
+    #[test]
+    fn every_vhost_of_a_shared_listener_gets_its_certificate_and_host_rule() {
+        let source = "http {\n  server {\n    listen 443 ssl default_server;\n    server_name a.example;\n    ssl_certificate /etc/a.pem;\n    ssl_certificate_key /etc/a.key;\n    location / { proxy_pass http://127.0.0.1:9000; }\n  }\n  server {\n    listen 443 ssl;\n    server_name b.example;\n    ssl_certificate /etc/b.pem;\n    ssl_certificate_key /etc/b.key;\n    location / { proxy_pass http://127.0.0.1:9001; }\n  }\n  server {\n    listen 443 ssl;\n    server_name c.example;\n    ssl_certificate /etc/c.pem;\n    ssl_certificate_key /etc/c.key;\n    location / { proxy_pass http://127.0.0.1:9002; }\n  }\n}\n";
+        let outcome = super::super::convert(super::super::Source::Nginx, source).expect("convert");
+        assert_eq!(
+            outcome.toml.matches(".tls.certs]]").count(),
+            2,
+            "the two non-default vhosts each need a certificate entry:\n{}",
+            outcome.toml
+        );
+        for host in ["a.example", "b.example", "c.example"] {
+            assert!(
+                outcome.toml.contains(&format!("host = \"{host}\"")),
+                "{host} must have a host rule:\n{}",
+                outcome.toml
+            );
+        }
+    }
+
+    #[test]
+    fn a_repeated_default_certificate_is_not_duplicated_in_certs() {
+        let source = "http {\n  server {\n    listen 443 ssl default_server;\n    server_name a.example;\n    ssl_certificate /etc/shared.pem;\n    ssl_certificate_key /etc/shared.key;\n    location / { proxy_pass http://127.0.0.1:9000; }\n  }\n  server {\n    listen 443 ssl;\n    server_name b.example;\n    ssl_certificate /etc/shared.pem;\n    ssl_certificate_key /etc/shared.key;\n    location / { proxy_pass http://127.0.0.1:9001; }\n  }\n}\n";
+        let outcome = super::super::convert(super::super::Source::Nginx, source).expect("convert");
+        assert!(
+            !outcome.toml.contains(".tls.certs]]"),
+            "the default certificate already serves the second name:\n{}",
+            outcome.toml
+        );
+        assert!(
+            outcome
+                .report
+                .contains("no se duplica en [listener.*.tls].certs[]"),
+            "the report must say the certificate was not duplicated:\n{}",
+            outcome.report
+        );
+        assert!(
+            outcome.toml.contains("host = \"b.example\""),
+            "\n{}",
+            outcome.toml
+        );
+    }
+
+    #[test]
+    fn vhost_disabling_inherited_mtls_is_degraded() {
+        // The default_server inherits ssl_verify_client on and the CA from
+        // http. A secondary vhost that turns verification off has no mTLS
+        // client_ca in the shared listener; that policy divergence must be
+        // reported as degraded instead of silently applying mTLS to it.
+        let source = "http {\n  ssl_certificate /etc/http.pem;\n  ssl_certificate_key /etc/http.key;\n  ssl_client_certificate /etc/clients.pem;\n  ssl_verify_client on;\n  server {\n    listen 443 ssl default_server;\n    server_name a.example;\n    location / { proxy_pass http://127.0.0.1:9000; }\n  }\n  server {\n    listen 443 ssl;\n    server_name b.example;\n    ssl_verify_client off;\n    location / { proxy_pass http://127.0.0.1:9001; }\n  }\n}\n";
+        let outcome = super::super::convert(super::super::Source::Nginx, source).expect("convert");
+        assert!(
+            outcome.report.contains("## Convertido con degradación"),
+            "the mTLS divergence must be degraded:\n{}",
+            outcome.report
+        );
+        assert!(
+            outcome.report.contains("certificado de cliente (mTLS)"),
+            "the report must name the client-certificate loss:\n{}",
+            outcome.report
+        );
+        assert!(
+            outcome.toml.contains("client_ca = \"/etc/clients.pem\""),
+            "the default_server keeps mTLS for the listener:\n{}",
+            outcome.toml
+        );
+    }
+
+    #[test]
+    fn repeated_server_name_directives_all_become_hosts() {
+        // `server_name` may be repeated; every exact name must reach both the
+        // rules and the certificate, not just the first directive.
+        let source = "http {\n  server {\n    listen 443 ssl default_server;\n    server_name a.example;\n    ssl_certificate /etc/a.pem;\n    ssl_certificate_key /etc/a.key;\n    location / { proxy_pass http://127.0.0.1:9000; }\n  }\n  server {\n    listen 443 ssl;\n    server_name b.example;\n    server_name c.example;\n    ssl_certificate /etc/b.pem;\n    ssl_certificate_key /etc/b.key;\n    location / { proxy_pass http://127.0.0.1:9001; }\n  }\n}\n";
+        let outcome = super::super::convert(super::super::Source::Nginx, source).expect("convert");
+        assert!(
+            outcome
+                .toml
+                .contains("names = [\"b.example\", \"c.example\"]"),
+            "both names must claim the certificate:\n{}",
+            outcome.toml
+        );
+        for host in ["b.example", "c.example"] {
+            assert!(
+                outcome.toml.contains(&format!("host = \"{host}\"")),
+                "{host} must route to its own copy of the rules:\n{}",
+                outcome.toml
+            );
+        }
+    }
+
+    #[test]
     fn two_locations_to_the_same_https_backend_are_idempotent() {
         // The same backend reached from two locations with the same
         // proxy_ssl_* combination is one TLS configuration, not a conflict:
@@ -2578,6 +5373,241 @@ mod tests {
     }
 
     #[test]
+    fn inherited_sni_without_a_dns_name_is_not_done() {
+        let source = "http {\n  proxy_ssl_server_name on;\n  server {\n    listen 80;\n    location / { proxy_pass https://10.0.0.9:8443; }\n  }\n}\n";
+        let mut conv = Conv::new();
+        super::convert(&mut conv, source, None).expect("convert");
+        let note = conv
+            .notes
+            .iter()
+            .find(|note| note.directive.starts_with("proxy_ssl_server_name"))
+            .expect("the inherited directive is classified");
+        assert_eq!(note.severity, Severity::Info, "{}", note.message);
+        assert!(
+            note.message.contains("sin nombre DNS"),
+            "the row must explain why no field was written: {}",
+            note.message
+        );
+        let toml = super::super::emit_toml(&conv);
+        assert!(!toml.contains("server_name = "), "{toml}");
+    }
+
+    #[test]
+    fn unknown_proxy_ssl_is_explicitly_classified_in_every_scope() {
+        let source = "proxy_ssl_global_unknown on;\nhttp {\n  proxy_ssl_http_unknown on;\n  upstream backend {\n    server 10.0.0.2:8443;\n    proxy_ssl_upstream_unknown on;\n  }\n  server {\n    listen 80;\n    proxy_ssl_server_unknown on;\n    location / {\n      proxy_pass https://backend.internal:8443;\n      proxy_ssl_location_unknown on;\n    }\n  }\n}\n";
+        let mut conv = Conv::new();
+        super::convert(&mut conv, source, None).expect("unknown proxy_ssl_* is classified");
+
+        for name in [
+            "proxy_ssl_global_unknown",
+            "proxy_ssl_http_unknown",
+            "proxy_ssl_upstream_unknown",
+            "proxy_ssl_server_unknown",
+            "proxy_ssl_location_unknown",
+        ] {
+            let notes: Vec<&Note> = conv
+                .notes
+                .iter()
+                .filter(|note| note.directive.contains(name))
+                .collect();
+            assert_eq!(
+                notes.len(),
+                1,
+                "{name} must produce exactly one classification: {:?}",
+                conv.notes
+            );
+            assert_eq!(
+                notes[0].severity,
+                Severity::Review,
+                "an unknown TLS qualifier is never Done: {name}"
+            );
+            assert!(
+                notes[0].message.contains("proxy_ssl_*") && notes[0].message.contains(name),
+                "the row must name the unknown family and directive: {}",
+                notes[0].message
+            );
+        }
+    }
+
+    #[test]
+    fn secondary_listener_knobs_are_reviewed_as_discarded() {
+        // ADR-0051: a secondary vhost contributes certificates and rules, not
+        // listener-scope values. Its timeouts, body limit, compression and
+        // cache must be visible in the report as discarded (`Review`), never
+        // as applied and never as a security `Degraded`.
+        let source = "http {\n  server {\n    listen 80 default_server;\n    server_name primary.example;\n    client_header_timeout 10s;\n    keepalive_timeout 60s;\n    proxy_connect_timeout 1s;\n    proxy_read_timeout 30s;\n    client_max_body_size 1m;\n    gzip on;\n    gzip_comp_level 5;\n    gzip_min_length 512;\n    location / { proxy_pass http://127.0.0.1:9000; }\n  }\n  server {\n    listen 80;\n    server_name secondary.example;\n    client_header_timeout 20s;\n    keepalive_timeout 120s;\n    proxy_connect_timeout 3s;\n    proxy_read_timeout 45s;\n    client_max_body_size 2m;\n    gzip off;\n    gzip_comp_level 7;\n    gzip_min_length 1024;\n    proxy_cache other_zone;\n    limit_conn addr 5;\n    location / { proxy_pass http://127.0.0.1:9001; }\n  }\n}\n";
+        let mut conv = Conv::new();
+        super::convert(&mut conv, source, None).expect("convert");
+        let toml = super::super::emit_toml(&conv);
+
+        for needle in [
+            "client_header_timeout = \"10s\"",
+            "idle_timeout = \"1m\"",
+            "connect_timeout = \"1s\"",
+            "server_header_timeout = \"30s\"",
+            "max_body_bytes = 1048576",
+            "gzip = true",
+            "level = 5",
+            "min_size = 512",
+        ] {
+            assert!(
+                toml.contains(needle),
+                "the default_server value must reach the listener ({needle}):\n{toml}"
+            );
+        }
+        for needle in [
+            "client_header_timeout = \"20s\"",
+            "idle_timeout = \"2m\"",
+            "connect_timeout = \"3s\"",
+            "server_header_timeout = \"45s\"",
+            "max_body_bytes = 2097152",
+            "level = 7",
+            "min_size = 1024",
+            "gzip = false",
+            ".cache]",
+        ] {
+            assert!(
+                !toml.contains(needle),
+                "the secondary value must not reach the listener ({needle}):\n{toml}"
+            );
+        }
+
+        let context = "server secondary.example";
+        for (directive, marker) in [
+            ("client_header_timeout 20s", "no aplica"),
+            ("keepalive_timeout 120s", "no aplica"),
+            ("proxy_connect_timeout 3s", "no aplica"),
+            ("proxy_read_timeout 45s", "no aplica"),
+            ("client_max_body_size 2m", "no aplica"),
+            ("gzip off", "no aplica"),
+            ("gzip_comp_level 7", "no aplica"),
+            ("gzip_min_length 1024", "no aplica"),
+            ("proxy_cache other_zone", "no aplica"),
+        ] {
+            let note = conv
+                .notes
+                .iter()
+                .find(|note| note.context == context && note.directive == directive)
+                .unwrap_or_else(|| panic!("missing classification for {directive}"));
+            assert_eq!(
+                note.severity,
+                Severity::Review,
+                "a discarded listener knob is a review, not {directive}: {}",
+                note.message
+            );
+            assert!(
+                note.message.contains(marker),
+                "{directive} must say it is not applied: {}",
+                note.message
+            );
+        }
+
+        let limit_conn = conv
+            .notes
+            .iter()
+            .find(|note| note.context == context && note.directive == "limit_conn addr 5")
+            .expect("limit_conn classified");
+        assert_eq!(limit_conn.severity, Severity::Review);
+        assert!(
+            limit_conn.message.contains("listener.maxconn"),
+            "maxconn stays a manual listener value: {}",
+            limit_conn.message
+        );
+        assert!(
+            !conv
+                .notes
+                .iter()
+                .any(|note| note.context == context && note.severity == Severity::Degraded),
+            "listener-scope behavior is not a TLS security degradation"
+        );
+    }
+
+    #[test]
+    fn matching_secondary_listener_knobs_are_info_not_review() {
+        let source = "http {\n  server {\n    listen 80 default_server;\n    server_name primary.example;\n    client_header_timeout 10s;\n    keepalive_timeout 60s;\n    proxy_connect_timeout 1s;\n    proxy_read_timeout 30s;\n    client_max_body_size 1m;\n    gzip on;\n    gzip_comp_level 5;\n    gzip_min_length 512;\n    proxy_cache shared_zone;\n    location / { proxy_pass http://127.0.0.1:9000; }\n  }\n  server {\n    listen 80;\n    server_name secondary.example;\n    client_header_timeout 10s;\n    keepalive_timeout 60s;\n    proxy_connect_timeout 1s;\n    proxy_read_timeout 30s;\n    client_max_body_size 1m;\n    gzip on;\n    gzip_comp_level 5;\n    gzip_min_length 512;\n    proxy_cache shared_zone;\n    location / { proxy_pass http://127.0.0.1:9001; }\n  }\n}\n";
+        let mut conv = Conv::new();
+        super::convert(&mut conv, source, None).expect("convert");
+        let context = "server secondary.example";
+        for directive in [
+            "client_header_timeout 10s",
+            "keepalive_timeout 60s",
+            "proxy_connect_timeout 1s",
+            "proxy_read_timeout 30s",
+            "client_max_body_size 1m",
+            "gzip on",
+            "gzip_comp_level 5",
+            "gzip_min_length 512",
+            "proxy_cache shared_zone",
+        ] {
+            let note = conv
+                .notes
+                .iter()
+                .find(|note| note.context == context && note.directive == directive)
+                .unwrap_or_else(|| panic!("missing classification for {directive}"));
+            assert_eq!(
+                note.severity,
+                Severity::Info,
+                "an identical value is already applied by the listener ({directive}): {}",
+                note.message
+            );
+            assert!(
+                note.message.contains("coincide"),
+                "the row must name the shared value ({directive}): {}",
+                note.message
+            );
+        }
+    }
+
+    #[test]
+    fn secondary_error_pages_are_not_reported_as_listener_pages() {
+        let source = "http {\n  server {\n    listen 80 default_server;\n    server_name primary.example;\n    error_page 502 /primary.html;\n    proxy_intercept_errors on;\n    location / { proxy_pass http://127.0.0.1:9000; }\n  }\n  server {\n    listen 80;\n    server_name secondary.example;\n    error_page 503 /secondary.html;\n    proxy_intercept_errors on;\n    location / { proxy_pass http://127.0.0.1:9001; }\n  }\n}\n";
+        let mut conv = Conv::new();
+        super::convert(&mut conv, source, None).expect("convert");
+        let toml = super::super::emit_toml(&conv);
+        assert!(
+            toml.contains("file = \"primary.html\"") && !toml.contains("secondary.html"),
+            "only the default_server's listener page may be emitted:\n{toml}"
+        );
+        let context = "server secondary.example";
+        for directive in [
+            "error_page 503 /secondary.html",
+            "proxy_intercept_errors on",
+        ] {
+            let note = conv
+                .notes
+                .iter()
+                .find(|note| note.context == context && note.directive == directive)
+                .unwrap_or_else(|| panic!("missing classification for {directive}"));
+            assert_eq!(note.severity, Severity::Review, "{}", note.message);
+            assert!(
+                note.message.contains("no se aplica"),
+                "{directive} must say it is not applied: {}",
+                note.message
+            );
+        }
+    }
+
+    #[test]
+    fn location_timeouts_are_not_claimed_as_applied_to_the_listener() {
+        let source = "http {\n  server {\n    listen 80;\n    server_name primary.example;\n    location / {\n      proxy_pass http://127.0.0.1:9000;\n      proxy_connect_timeout 3s;\n      proxy_read_timeout 45s;\n    }\n  }\n}\n";
+        let mut conv = Conv::new();
+        super::convert(&mut conv, source, None).expect("convert");
+        for directive in ["proxy_connect_timeout 3s", "proxy_read_timeout 45s"] {
+            let note = conv
+                .notes
+                .iter()
+                .find(|note| note.directive == directive)
+                .unwrap_or_else(|| panic!("missing classification for {directive}"));
+            assert_eq!(note.severity, Severity::Review, "{}", note.message);
+            assert!(
+                note.message.contains("no se aplica"),
+                "a location timeout must not read as applied: {}",
+                note.message
+            );
+        }
+    }
+
+    #[test]
     fn cidr_and_variable_helpers_are_conservative() {
         assert_eq!(cidr_of("10.1.2.3"), "10.1.2.3/32");
         assert_eq!(cidr_of("::1"), "::1/128");
@@ -2587,5 +5617,287 @@ mod tests {
             nginx_variable_unsupported("$proxy_add_x_forwarded_for"),
             Some("$proxy_add_x_forwarded_for".to_owned())
         );
+    }
+
+    fn include_scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "eqproxy-nginx-include-{}-{name}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create include scratch dir");
+        dir
+    }
+
+    fn write_include(root: &Path, name: &str, text: &str) {
+        let path = root.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create include parent");
+        }
+        std::fs::write(path, text).expect("write include fixture");
+    }
+
+    fn expand_include_tree(
+        root: &Path,
+        text: &str,
+        limits: IncludeLimits,
+    ) -> Result<Vec<Node>, ImportError> {
+        let nodes = parse(&tokenize(text)?)?;
+        IncludeExpander::new(root, text.len(), limits)
+            .and_then(|expander| expander.expand(nodes, "global"))
+            .map(|(nodes, _)| nodes)
+    }
+
+    #[test]
+    fn include_expands_globs_in_order_and_keeps_included_vhosts() {
+        let root = include_scratch("vhosts");
+        write_include(
+            &root,
+            "conf.d/20-beta.conf",
+            "server {\n  listen 80;\n  server_name beta.example.test;\n  location / { proxy_pass http://127.0.0.1:9002; }\n}\n",
+        );
+        write_include(
+            &root,
+            "conf.d/10-alpha.conf",
+            "server {\n  listen 80;\n  server_name alpha.example.test;\n  include snippets/location.conf;\n}\n",
+        );
+        write_include(
+            &root,
+            "snippets/location.conf",
+            "location / { proxy_pass http://127.0.0.1:9001; }\n",
+        );
+        let source = "http {\n  include conf.d/*.conf;\n}\n";
+        let outcome = super::super::convert_with_options(
+            super::super::Source::Nginx,
+            source,
+            super::super::ImportOptions {
+                include_root: Some(&root),
+            },
+        )
+        .expect("included vhosts convert");
+        for needle in [
+            "host = \"alpha.example.test\"",
+            "host = \"beta.example.test\"",
+            "use_backend = \"backend_127_0_0_1_9001\"",
+            "use_backend = \"backend_127_0_0_1_9002\"",
+        ] {
+            assert!(
+                outcome.toml.contains(needle),
+                "included vhost content must survive at its include position ({needle}):\n{}",
+                outcome.toml
+            );
+        }
+        let alpha = outcome
+            .toml
+            .find("host = \"alpha.example.test\"")
+            .expect("alpha rule");
+        let beta = outcome
+            .toml
+            .find("host = \"beta.example.test\"")
+            .expect("beta rule");
+        assert!(
+            alpha < beta,
+            "glob matches must be expanded in lexicographic order (10 before 20):\n{}",
+            outcome.toml
+        );
+        assert!(
+            outcome.report.contains("include expandido: 2 fichero(s)"),
+            "the include itself must stay classified:\n{}",
+            outcome.report
+        );
+        let again = super::super::convert_with_options(
+            super::super::Source::Nginx,
+            source,
+            super::super::ImportOptions {
+                include_root: Some(&root),
+            },
+        )
+        .expect("second include pass");
+        assert_eq!(again.toml, outcome.toml, "include TOML is deterministic");
+        assert_eq!(
+            again.report, outcome.report,
+            "include report is deterministic"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn include_without_root_remains_a_manual_review_item() {
+        let source = "http {\n  include conf.d/*.conf;\n  server { listen 80; location / { proxy_pass http://127.0.0.1:9000; } }\n}\n";
+        let outcome = super::super::convert(super::super::Source::Nginx, source)
+            .expect("convert without include root");
+        assert!(
+            outcome
+                .report
+                .contains("include no se expande: revise «conf.d/*.conf»"),
+            "without the flag the old manual warning must remain:\n{}",
+            outcome.report
+        );
+    }
+
+    #[test]
+    fn include_cycle_is_reported_with_the_chain() {
+        let root = include_scratch("cycle");
+        write_include(&root, "a.conf", "include b.conf;\n");
+        write_include(&root, "b.conf", "include a.conf;\n");
+        let source = "http {\n  include a.conf;\n  server { listen 80; location / { proxy_pass http://127.0.0.1:9000; } }\n}\n";
+        let error = super::super::convert_with_options(
+            super::super::Source::Nginx,
+            source,
+            super::super::ImportOptions {
+                include_root: Some(&root),
+            },
+        )
+        .expect_err("a cycle must fail the import");
+        assert!(
+            error.message.contains("ciclo detectado")
+                && error.message.contains("a.conf")
+                && error.message.contains("b.conf"),
+            "the cycle error must name the chain: {}",
+            error.message
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn include_limits_stop_depth_files_and_bytes() {
+        let root = include_scratch("limits");
+        for index in 0..3 {
+            write_include(&root, &format!("part-{index}.conf"), "# included\n");
+        }
+        let depth = expand_include_tree(
+            &root,
+            "include part-0.conf;\n",
+            IncludeLimits {
+                depth: 0,
+                files: 10,
+                bytes: 1_024,
+            },
+        )
+        .expect_err("depth zero rejects the first include");
+        assert!(
+            depth.message.contains("profundidad máxima"),
+            "{}",
+            depth.message
+        );
+
+        let files = expand_include_tree(
+            &root,
+            "include part-*.conf;\n",
+            IncludeLimits {
+                depth: 4,
+                files: 2,
+                bytes: 1_024,
+            },
+        )
+        .expect_err("a third file exceeds the file limit");
+        assert!(
+            files.message.contains("máximo de 2 ficheros"),
+            "{}",
+            files.message
+        );
+
+        let bytes = expand_include_tree(
+            &root,
+            "include part-0.conf;\n",
+            IncludeLimits {
+                depth: 4,
+                files: 10,
+                bytes: 5,
+            },
+        )
+        .expect_err("root plus included bytes exceed the byte limit");
+        assert!(
+            bytes.message.contains("máximo de 5 bytes"),
+            "{}",
+            bytes.message
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn include_rejects_missing_files_and_parent_escapes() {
+        let root = include_scratch("paths");
+        let missing = expand_include_tree(&root, "include missing.conf;\n", INCLUDE_LIMITS)
+            .expect_err("a literal missing include is an error");
+        assert!(
+            missing.message.contains("no se puede leer"),
+            "{}",
+            missing.message
+        );
+        let escape = expand_include_tree(&root, "include ../outside.conf;\n", INCLUDE_LIMITS)
+            .expect_err("a relative include cannot escape the root");
+        assert!(
+            escape.message.contains("sale de --include-root"),
+            "{}",
+            escape.message
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn include_reads_an_absolute_path_as_written() {
+        let root = include_scratch("absolute-root");
+        let included = root.join("absolute-location.conf");
+        std::fs::write(
+            &included,
+            "location / { proxy_pass http://127.0.0.1:9010; }\n",
+        )
+        .expect("write absolute include");
+        let source = format!(
+            "http {{\n  server {{\n    listen 80;\n    include {};\n  }}\n}}\n",
+            included.display()
+        );
+        let outcome = super::super::convert_with_options(
+            super::super::Source::Nginx,
+            &source,
+            super::super::ImportOptions {
+                include_root: Some(&root),
+            },
+        )
+        .expect("an absolute include converts");
+        assert!(
+            outcome
+                .toml
+                .contains("use_backend = \"backend_127_0_0_1_9010\"")
+                || outcome
+                    .toml
+                    .contains("backend = \"backend_127_0_0_1_9010\""),
+            "the absolute include must contribute its location:\n{}",
+            outcome.toml
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn empty_include_glob_is_reported_not_silently_dropped() {
+        let root = include_scratch("empty");
+        let source = "http {\n  include conf.d/*.conf;\n  server { listen 80; location / { proxy_pass http://127.0.0.1:9000; } }\n}\n";
+        let outcome = super::super::convert_with_options(
+            super::super::Source::Nginx,
+            source,
+            super::super::ImportOptions {
+                include_root: Some(&root),
+            },
+        )
+        .expect("an empty glob is valid in nginx");
+        assert!(
+            outcome.report.contains("include sin coincidencias"),
+            "an empty glob must be visible in the report:\n{}",
+            outcome.report
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn glob_matcher_covers_the_nginx_subset() {
+        assert!(glob_match("*.conf", "10-alpha.conf"));
+        assert!(!glob_match("*.conf", "10-alpha.txt"));
+        assert!(glob_match("site-?.conf", "site-a.conf"));
+        assert!(glob_match("site-[0-9].conf", "site-7.conf"));
+        assert!(glob_match("site-[!0-9].conf", "site-x.conf"));
+        assert!(!glob_match("*", ".hidden"));
+        assert!(glob_match(".*", ".hidden"));
+        assert!(glob_match("literal\\*.conf", "literal*.conf"));
     }
 }

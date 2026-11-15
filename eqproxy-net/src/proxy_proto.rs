@@ -1,7 +1,7 @@
 //! PROXY protocol v1 (A9) and v2 (A10): header generation towards the
 //! backend and reception from trusted origins (B-H9/B-E10).
 //!
-//! THREAT_MODEL: never trust PROXY from unauthorized sources — reception
+//! `THREAT_MODEL`: never trust PROXY from unauthorized sources — reception
 //! is strict: only allowlisted origins, only a valid header. Formats per
 //! the PROXY protocol spec: v1 line (max 107 bytes) or v2 binary (the
 //! signature auto-detects the version; TLVs past the address block are
@@ -36,7 +36,7 @@ pub enum ProxyProtocolMode {
 }
 
 /// Encodes the PROXY v1 header for the pair (client, proxy local address).
-/// Mixed families or non-TCP → `PROXY UNKNOWN\r\n` (HAProxy semantics).
+/// Mixed families or non-TCP → `PROXY UNKNOWN\r\n` (`HAProxy` semantics).
 #[must_use]
 pub fn encode_v1(peer: SocketAddr, local: SocketAddr) -> Vec<u8> {
     match (peer, local) {
@@ -61,7 +61,7 @@ pub fn encode_v1(peer: SocketAddr, local: SocketAddr) -> Vec<u8> {
 }
 
 /// Encodes the PROXY v2 header for the pair (client, proxy local address).
-/// Mixed families or non-TCP → LOCAL command with empty block (HAProxy
+/// Mixed families or non-TCP → LOCAL command with empty block (`HAProxy`
 /// semantics, the v2 form of `PROXY UNKNOWN`).
 #[must_use]
 pub fn encode_v2(peer: SocketAddr, local: SocketAddr) -> Vec<u8> {
@@ -94,6 +94,10 @@ pub fn encode_v2(peer: SocketAddr, local: SocketAddr) -> Vec<u8> {
 
 /// Writes the PROXY v2 header to the stream (single write, flush
 /// included) before pumping the payload.
+///
+///# Errors
+///
+///Returns the I/O error when the header cannot be written.
 pub async fn write_v2<W: AsyncWrite + Unpin>(
     writer: &mut W,
     peer: SocketAddr,
@@ -106,6 +110,10 @@ pub async fn write_v2<W: AsyncWrite + Unpin>(
 
 /// Writes the PROXY v1 header to the stream (single write, flush
 /// included) before pumping the payload.
+///
+///# Errors
+///
+///Returns the I/O error when the header cannot be written.
 pub async fn write_v1<W: AsyncWrite + Unpin>(
     writer: &mut W,
     peer: SocketAddr,
@@ -131,6 +139,11 @@ pub enum ProxyReceiveError {
 /// signature) from a trusted origin (B-H9/B-E10). Same strict front door
 /// as [`read_v1`]: allowlisted origins only, valid headers only, nothing
 /// past the header consumed.
+///
+///# Errors
+///
+///Returns `ProxyReceiveError` when the origin is not allowlisted, the
+///header is malformed or the read times out.
 pub async fn read_proxy_header<R: AsyncRead + Unpin>(
     reader: &mut R,
     peer: SocketAddr,
@@ -282,6 +295,11 @@ fn parse_v2(header: &[u8], peer: SocketAddr) -> Result<SocketAddr, ProxyReceiveE
 /// replaces `peer` downstream (XFF, logs, PROXY send); `PROXY UNKNOWN`
 /// keeps the real peer. The line is read byte by byte, so no payload
 /// byte past `\r\n` is consumed.
+///
+///# Errors
+///
+///Returns `ProxyReceiveError` when the origin is not allowlisted, the
+///header is malformed or the read times out.
 pub async fn read_v1<R: AsyncRead + Unpin>(
     reader: &mut R,
     peer: SocketAddr,

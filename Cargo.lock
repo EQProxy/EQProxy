@@ -626,6 +626,8 @@ dependencies = [
  "mimalloc",
  "pprof",
  "rlimit",
+ "rustls",
+ "rustls-pki-types",
  "serde_json",
  "tokio",
 ]

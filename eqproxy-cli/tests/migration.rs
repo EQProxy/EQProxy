@@ -1,9 +1,9 @@
 //! Migration gate (v0.6): the four real source configs of `docs/migration/`
-//! and their EQProxy translation route the matrix of `docs/migration/README.md`
+//! and their `EQProxy` translation route the matrix of `docs/migration/README.md`
 //! exactly the same.
 //!
-//! Runs HAProxy, operator nginx, the ingress-nginx data plane (controller-shaped
-//! generated config) and Envoy as containers, and the freshly built EQProxy
+//! Runs `HAProxy`, operator nginx, the ingress-nginx data plane (controller-shaped
+//! generated config) and Envoy as containers, and the freshly built `EQProxy`
 //! binary natively, all in front of the same five echo backends and one
 //! HTTPS-only origin (case m14); every case is sent to all five
 //! implementations and the declared outcome is asserted on each. The report is
@@ -12,6 +12,7 @@
 //! Ignored by default (needs Docker + the reference images):
 //! `cargo test -p eqproxy-cli --test migration -- --ignored --nocapture`
 
+use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
@@ -25,7 +26,7 @@ const ENVOY_IMAGE: &str = "envoyproxy/envoy:v1.34.2";
 const BACKEND_IMAGE: &str = "nginx:alpine";
 
 /// The demo pools of the matrix: id and fixed container address. The
-/// source configs address them exactly like this; the native EQProxy
+/// source configs address them exactly like this; the native `EQProxy`
 /// reaches them through the published host ports instead (declared
 /// substitution, see the README).
 const POOLS: [(&str, &str); 5] = [
@@ -334,7 +335,7 @@ fn container_logs(name: &str) -> String {
     docker(&["logs", "--tail", "30", name])
 }
 
-/// Keeps the EQProxy child from leaking when the test panics.
+/// Keeps the `EQProxy` child from leaking when the test panics.
 struct ChildGuard(Child);
 
 impl Drop for ChildGuard {
@@ -362,7 +363,7 @@ impl Drop for ChildGuard {
 fn raw_request(case: &Case) -> String {
     let mut out = format!("{}\r\nHost: {}\r\n", case.request_line, case.host);
     for (name, value) in case.headers {
-        out.push_str(&format!("{name}: {value}\r\n"));
+        write!(out, "{name}: {value}\r\n").expect("writing into a String cannot fail");
     }
     out.push_str("Connection: close\r\n\r\n");
     out
@@ -392,14 +393,10 @@ fn normalize(response: &str) -> Normalized {
         .and_then(|code| code.parse().ok())
         .unwrap_or(0);
     let (head, body) = response.split_once("\r\n\r\n").unwrap_or((response, ""));
-    let location = head
-        .lines()
-        .skip(1)
-        .filter_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            (name.trim().eq_ignore_ascii_case("location")).then(|| reduce_location(value.trim()))
-        })
-        .next();
+    let location = head.lines().skip(1).find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        (name.trim().eq_ignore_ascii_case("location")).then(|| reduce_location(value.trim()))
+    });
     Normalized {
         status,
         location,
@@ -426,9 +423,9 @@ fn reduce_location(value: &str) -> String {
 fn summary(got: &Normalized) -> String {
     let mut out = got.status.to_string();
     if let Some(location) = &got.location {
-        out.push_str(&format!(" -> {location}"));
+        write!(out, " -> {location}").expect("writing into a String cannot fail");
     }
-    out.push_str(&format!(" {:?}", got.body));
+    write!(out, " {:?}", got.body).expect("writing into a String cannot fail");
     out
 }
 
@@ -542,6 +539,7 @@ fn generate_tls_origin_cert(work: &std::path::Path) -> (PathBuf, PathBuf) {
 )]
 #[ignore = "migration matrix: needs Docker + reference images; run: cargo test -p eqproxy-cli --test migration -- --ignored --nocapture"]
 #[test]
+#[allow(clippy::too_many_lines)]
 fn migration_matrix_same_routing_as_the_originals() {
     let docs = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../docs/migration");
     let work = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
@@ -600,8 +598,7 @@ fn migration_matrix_same_routing_as_the_originals() {
         host_ports
             .iter()
             .find(|(id, _)| *id == pool)
-            .map(|(_, port)| *port)
-            .unwrap_or_else(|| panic!("no published port for {pool}"))
+            .map_or_else(|| panic!("no published port for {pool}"), |(_, port)| *port)
     };
 
     // The HTTPS-only origin of case m14. It refuses cleartext (listen 8443
@@ -844,61 +841,69 @@ fn migration_matrix_same_routing_as_the_originals() {
     // --- report ---------------------------------------------------------
     let mut report = String::new();
     report.push_str("# Migration report — real source configs vs the EQProxy translation\n\n");
-    report.push_str(&format!(
-        "- date (UTC epoch): {}\n",
+    writeln!(
+        report,
+        "- date (UTC epoch): {}",
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock")
             .as_secs()
-    ));
-    report.push_str(&format!(
-        "- eqproxy binary: {eq_bin} (sha256 {})\n",
+    )
+    .expect("writing into a String cannot fail");
+    writeln!(
+        report,
+        "- eqproxy binary: {eq_bin} (sha256 {})",
         sha256(eq_bin)
-    ));
+    )
+    .expect("writing into a String cannot fail");
     for path in &sources {
-        report.push_str(&format!(
-            "- {} (sha256 {})\n",
+        writeln!(
+            report,
+            "- {} (sha256 {})",
             path.display(),
             sha256(&path.display().to_string())
-        ));
+        )
+        .expect("writing into a String cannot fail");
     }
-    report.push_str(&format!(
-        "- haproxy: {HAPROXY_IMAGE} ({})\n",
+    writeln!(
+        report,
+        "- haproxy: {HAPROXY_IMAGE} ({})",
         image_id(HAPROXY_IMAGE)
-    ));
-    report.push_str(&format!(
-        "- nginx: {NGINX_IMAGE} ({})\n",
-        image_id(NGINX_IMAGE)
-    ));
-    report.push_str(&format!(
-        "- ingress-nginx data plane: {INGRESS_NGINX_IMAGE} ({})\n",
+    )
+    .expect("writing into a String cannot fail");
+    writeln!(report, "- nginx: {NGINX_IMAGE} ({})", image_id(NGINX_IMAGE))
+        .expect("writing into a String cannot fail");
+    writeln!(
+        report,
+        "- ingress-nginx data plane: {INGRESS_NGINX_IMAGE} ({})",
         image_id(INGRESS_NGINX_IMAGE)
-    ));
-    report.push_str(&format!(
-        "- envoy: {ENVOY_IMAGE} ({})\n",
-        image_id(ENVOY_IMAGE)
-    ));
-    report.push_str(&format!(
-        "- backends: {BACKEND_IMAGE} ({})\n",
+    )
+    .expect("writing into a String cannot fail");
+    writeln!(report, "- envoy: {ENVOY_IMAGE} ({})", image_id(ENVOY_IMAGE))
+        .expect("writing into a String cannot fail");
+    writeln!(
+        report,
+        "- backends: {BACKEND_IMAGE} ({})",
         image_id(BACKEND_IMAGE)
-    ));
-    report.push_str(&format!(
-        "- tls origin (case m14): {BACKEND_IMAGE} ({}) on {TLS_ORIGIN_IP}:{TLS_ORIGIN_PORT}, self-signed\n",
+    )
+    .expect("writing into a String cannot fail");
+    writeln!(report,
+        "- tls origin (case m14): {BACKEND_IMAGE} ({}) on {TLS_ORIGIN_IP}:{TLS_ORIGIN_PORT}, self-signed",
         image_id(BACKEND_IMAGE)
-    ));
+    ).expect("writing into a String cannot fail");
     report.push_str(
         "- substitutions on the EQProxy translation (declared): free local listen\n  address, and the five pools plus the TLS origin reached through their\n  published host ports instead of the fixed container addresses.\n\n",
     );
     report.push_str("| case | semantics | eqproxy | haproxy | nginx | ingress-nginx | envoy |\n");
     report.push_str("|---|---|---|---|---|---|---|\n");
     for row in &rows {
-        report.push_str(&format!("| {} |\n", row.join(" | ")));
+        writeln!(report, "| {} |", row.join(" | ")).expect("writing into a String cannot fail");
     }
-    report.push_str(&format!(
+    write!(report,
         "\nverdict: {agreed}/{} cases route identically across the five implementations ({} checks).\n",
         CASES.len(),
         CASES.len() * implementations.len()
-    ));
+    ).expect("writing into a String cannot fail");
 
     let report_path = work.join("migration-report.md");
     std::fs::write(&report_path, &report).expect("write report");
@@ -920,6 +925,5 @@ fn pool_addr(pool: &str) -> &'static str {
     POOLS
         .iter()
         .find(|(id, _)| *id == pool)
-        .map(|(_, ip)| *ip)
-        .unwrap_or_else(|| panic!("unknown pool {pool}"))
+        .map_or_else(|| panic!("unknown pool {pool}"), |(_, ip)| *ip)
 }

@@ -71,9 +71,10 @@ async fn start_origin(mode: OriginMode) -> CountingOrigin {
                     };
                     let n = served.fetch_add(1, Ordering::SeqCst);
                     let response: &[u8] = match mode {
-                        OriginMode::Clean => b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
                         OriginMode::GarbageOnce if n == 0 => b"GARBAGE-NOT-HTTP\r\n\r\n",
-                        OriginMode::GarbageOnce => b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+                        OriginMode::Clean | OriginMode::GarbageOnce => {
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+                        }
                         OriginMode::CloseAfterFlush => {
                             b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
                         }

@@ -418,15 +418,12 @@ async fn h2_truncated_backend_body_resets_the_stream() {
             let mut failed = status.is_server_error();
             let mut collected = Vec::new();
             while let Some(chunk) = body.data().await {
-                match chunk {
-                    Ok(chunk) => {
-                        let _ = body.flow_control().release_capacity(chunk.len());
-                        collected.extend_from_slice(&chunk);
-                    }
-                    Err(_) => {
-                        failed = true;
-                        break;
-                    }
+                if let Ok(chunk) = chunk {
+                    let _ = body.flow_control().release_capacity(chunk.len());
+                    collected.extend_from_slice(&chunk);
+                } else {
+                    failed = true;
+                    break;
                 }
             }
             assert!(
@@ -639,7 +636,7 @@ async fn tls_alpn_h2_terminates_a_real_http2_connection() {
 /// park their connection before the rest have started (which would make the
 /// observed concurrency depend on scheduling).
 /// A real origin listens with a backlog far above the 128 that std's
-/// `TcpListener::bind` hardcodes (nginx 511, HAProxy 4096, `somaxconn` 4096).
+/// `TcpListener::bind` hardcodes (nginx 511, `HAProxy` 4096, `somaxconn` 4096).
 /// The 400-stream wave below opens 400 backend connections at once, so on a
 /// slow runner the std backlog can overflow and one connection dies before its
 /// response — a 502 with no dial error in the log, which is what this fixture
@@ -658,9 +655,7 @@ fn bind_keepalive_origin() -> std::io::Result<TcpListener> {
     TcpListener::from_std(socket.into())
 }
 
-async fn start_keepalive_origin(
-    hold: Duration,
-) -> (SocketAddr, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+fn start_keepalive_origin(hold: Duration) -> (SocketAddr, Arc<AtomicUsize>, Arc<AtomicUsize>) {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     let listener = bind_keepalive_origin().expect("bind keepalive origin");
@@ -722,7 +717,7 @@ async fn start_keepalive_origin(
 /// Sends 100 concurrent streams on every client (400 in flight in total)
 /// without awaiting the answers: that is the S-H2-01 shape, where the proxy
 /// must hold 400 backend exchanges at once.
-async fn send_wave(
+fn send_wave(
     clients: &mut [h2::client::SendRequest<Bytes>],
     id: usize,
 ) -> Vec<JoinHandle<(StatusCode, Vec<u8>)>> {
@@ -764,7 +759,7 @@ async fn pool_sizing_keeps_a_400_stream_burst_without_churn() {
     use std::sync::atomic::Ordering;
 
     let (origin, origin_connections, origin_requests) =
-        start_keepalive_origin(Duration::from_millis(750)).await;
+        start_keepalive_origin(Duration::from_millis(750));
     let metrics = Arc::new(Metrics::default());
     let bound: BoundProxy = bind(vec![http_listener(origin)], Arc::clone(&metrics))
         .await
@@ -780,7 +775,7 @@ async fn pool_sizing_keeps_a_400_stream_burst_without_churn() {
         clients.push(h2_connect(proxy_addr).await);
     }
 
-    let first = send_wave(&mut clients, 1).await;
+    let first = send_wave(&mut clients, 1);
     for task in first {
         let (status, body) = task.await.expect("join");
         assert_eq!(status, StatusCode::OK);
@@ -804,7 +799,7 @@ async fn pool_sizing_keeps_a_400_stream_burst_without_churn() {
         "the origin accepted exactly the connections the proxy dialled"
     );
 
-    let second = send_wave(&mut clients, 2).await;
+    let second = send_wave(&mut clients, 2);
     for task in second {
         let (status, body) = task.await.expect("join");
         assert_eq!(status, StatusCode::OK);
@@ -855,7 +850,7 @@ async fn access_log_marks_h2_requests_and_their_status() {
     let response = h2_get(&mut client, "/ping?x=1").await;
     let (status, _headers, body, _trailers) = read_response(response).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    assert!(body.is_empty());
+    assert_eq!(body, [] as [u8; 0]);
 
     let entry = tokio::time::timeout(WAIT, entries.recv())
         .await

@@ -100,7 +100,7 @@ async fn start_origin() -> (SocketAddr, Origin) {
         while let Ok((mut socket, _)) = listener.accept().await {
             let seen = Arc::clone(&seen);
             tokio::spawn(async move {
-                let Some((head, body)) = read_message(&mut socket).await else {
+                let Some((head, body)) = Box::pin(read_message(&mut socket)).await else {
                     return;
                 };
                 let path = head
@@ -521,7 +521,9 @@ async fn http3_request_body_without_length_streams_as_chunked_upstream() {
 
     // 256 KiB without `content-length`: the translation must choose chunked
     // and stream it, never buffer the whole body in the proxy.
-    let body: Vec<u8> = (0..256 * 1024).map(|i| (i % 251) as u8).collect();
+    let body: Vec<u8> = (0..256 * 1024)
+        .map(|i| u8::try_from(i % 251).expect("0..250 fits u8"))
+        .collect();
     let answer = client.request("POST", "/echo", &[], Some(&body)).await;
     assert_eq!(answer.status, StatusCode::OK);
     assert_eq!(answer.body, format!("{} bytes", body.len()).into_bytes());
@@ -581,7 +583,7 @@ async fn http3_resets_a_chunked_response_over_the_trailer_budget() {
         // The upstream budget can reset the stream before the buffered head
         // reaches this client; that is still the explicit cut under test.
         Ok(Err(_)) => reset = true,
-        Err(_) => panic!("h3 response in time"),
+        Err(err) => panic!("h3 response in time: {err}"),
     }
 
     if !reset {
@@ -751,7 +753,7 @@ async fn http3_maxconn_refuses_a_second_quic_connection() {
     match refused {
         Ok(Err(_)) => {}
         Ok(Ok(_)) => panic!("a second QUIC connection must be refused at maxconn=1"),
-        Err(_) => panic!("the refusal must be immediate, not a hang"),
+        Err(err) => panic!("the refusal must be immediate, not a hang: {err}"),
     }
     assert!(
         metrics.connections_rejected.load(Ordering::Relaxed) >= 1,
@@ -865,7 +867,7 @@ async fn http3_reload_applies_new_tls_on_the_same_socket() {
 // ------------------------------------------------- connection close paths ---
 
 /// Polls the h3 close counters until both thresholds are met (the accept loop
-/// observes the peer's CONNECTION_CLOSE asynchronously).
+/// observes the peer's `CONNECTION_CLOSE` asynchronously).
 async fn wait_for_closes(metrics: &Metrics, clean: u64, errors: u64) {
     let deadline = tokio::time::Instant::now() + WAIT;
     loop {

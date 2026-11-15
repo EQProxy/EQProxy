@@ -5,7 +5,7 @@
 //!
 //! - `leastconn_routes_new_exchanges_to_the_least_loaded_server`: while one
 //!   server holds an exchange open, every new request lands on the other.
-//! - leastconn_weights_share_in_flight_load_by_conns_over_weight`: with
+//! - `leastconn_weights_share_in_flight_load_by_conns_over_weight`: with
 //!   weights 2:1 and everything held, 6 in-flight exchanges split 4:2.
 //! - `slow_start_ramps_the_recovered_server_up`: a server that returns from
 //!   DOWN gets a tiny share at first (dynamic weighting) and exactly its

@@ -1,7 +1,7 @@
 //! Corpus gate for `eqproxy config import` (Phase 8a, CE6/Q9/CE8).
 //!
 //! The four reference configurations in `docs/evidence/v085-config-import/raw/`
-//! are real files (a HAProxy, an nginx, an ingress-nginx multi-document
+//! are real files (a `HAProxy`, an nginx, an ingress-nginx multi-document
 //! manifest and an Envoy v3 bootstrap). For each one this test asserts the
 //! contract the converter promises:
 //!
@@ -12,7 +12,7 @@
 //!    "leídas" and "clasificadas" counters agree, and the report lists all of
 //!    them;
 //! 3. the conversion is not empty and names what it refused: each corpus file
-//!    exercises features EQProxy does not have (syslog, Lua, ssl-passthrough,
+//!    exercises features `EQProxy` does not have (syslog, Lua, ssl-passthrough,
 //!    xDS), and those must appear as rejected, never disappear;
 //! 4. converting twice yields the same bytes (deterministic: `BTreeMap`s and no
 //!    timestamps).
@@ -29,6 +29,10 @@ fn corpus(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../docs/evidence/v085-config-import/raw")
         .join(name)
+}
+
+fn include_corpus(name: &str) -> PathBuf {
+    corpus("nginx-includes").join(name)
 }
 
 fn convert(name: &str, source: Source) -> (String, Outcome) {
@@ -113,9 +117,9 @@ fn counter(report: &str, label: &str) -> usize {
 }
 
 fn source_of(name: &str) -> Source {
-    if name.ends_with(".cfg") {
+    if name.to_ascii_lowercase().ends_with(".cfg") {
         Source::Haproxy
-    } else if name.ends_with(".yaml") {
+    } else if name.to_ascii_lowercase().ends_with(".yaml") {
         Source::detect(&std::fs::read_to_string(corpus(name)).expect("read"))
     } else {
         Source::Nginx
@@ -161,7 +165,7 @@ fn haproxy_frontend_backend_and_httpchk_convert() {
 }
 
 #[test]
-fn nginx_locations_become_rules_and_vhosts_are_reported() {
+fn nginx_vhosts_share_one_listener_with_host_rules_and_certs() {
     let (text, outcome) = convert("nginx.conf", Source::Nginx);
     assert_contract("nginx.conf", &text, &outcome);
     assert!(
@@ -169,14 +173,74 @@ fn nginx_locations_become_rules_and_vhosts_are_reported() {
         "the /api/ location must become a path rule:\n{}",
         outcome.toml
     );
+    // Both vhosts share one listener: the default_server's certificate is the
+    // listener's own, the other vhost rides in `certs[]`, and every rule is
+    // tagged with its host so the two sites stay apart.
+    // A top-level table is `[listener.<name>]`: one dot (after `listener`),
+    // unlike `[listener.<name>.tls]` and the other subsections.
+    let top_level_listeners = outcome
+        .toml
+        .lines()
+        .filter(|line| {
+            line.starts_with("[listener.")
+                && line.ends_with(']')
+                && line[1..line.len() - 1].matches('.').count() == 1
+        })
+        .count();
+    assert_eq!(
+        top_level_listeners, 2,
+        "one listener per IP:port, including the 80→443 redirect listener:\n{}",
+        outcome.toml
+    );
+    // The redirect-only server becomes a real listener whose fallback is a
+    // local 3xx: no backend is invented for it and no request reaches one.
+    let parsed = eqproxy_config::parse_str(&outcome.toml, Path::new("nginx.conf"))
+        .expect("generated TOML parses");
+    let redirect = parsed
+        .listener
+        .values()
+        .find(|listener| listener.redirect.is_some())
+        .expect("the server with only `return 301` must become a redirect listener");
+    assert_eq!(redirect.listen, "0.0.0.0:80");
+    assert!(redirect.backend.is_none(), "{redirect:?}");
+    let redirect = redirect.redirect.as_ref().expect("redirect");
+    assert_eq!(redirect.status, Some(301));
+    assert_eq!(redirect.location, "https://$host$request_uri");
     assert!(
-        outcome.report.contains("vhost"),
-        "the second server block on :443 must be reported as a vhost conflict"
+        !outcome.report.contains("créelo a mano"),
+        "the redirect is no longer a manual step:\n{}",
+        outcome.report
+    );
+    for needle in [
+        "host = \"ejemplo.com\"",
+        "host = \"panel.ejemplo.com\"",
+        ".tls.certs]]",
+        "names = [\"panel.ejemplo.com\"]",
+        "use_backend = \"backend_10_0_2_5_3000\"",
+    ] {
+        assert!(
+            outcome.toml.contains(needle),
+            "the shared listener must carry {needle}:\n{}",
+            outcome.toml
+        );
+    }
+    assert!(
+        !outcome.report.contains("quedan sin migrar")
+            && !outcome.report.contains("varios vhosts comparten"),
+        "a convertible vhost must not be reported as unmigrated:\n{}",
+        outcome.report
     );
     assert!(
         outcome.toml.contains("gzip = true"),
         "gzip on must enable compression:\n{}",
         outcome.toml
+    );
+    // N-2: `proxy_ssl_verify off` is nginx's own default and the schema can
+    // hold it, so nothing is degraded here.
+    assert!(
+        !outcome.report.contains("Convertido con degradación"),
+        "nginx.conf loses no security property:\n{}",
+        outcome.report
     );
 }
 
@@ -231,4 +295,194 @@ fn detection_picks_the_right_dialect_for_each_corpus_file() {
         let text = std::fs::read_to_string(corpus(name)).expect("read");
         assert_eq!(Source::detect(&text), expected, "{name}");
     }
+}
+
+#[test]
+fn nginx_include_corpus_keeps_every_vhost_in_glob_order() {
+    let root = include_corpus("");
+    let path = root.join("nginx.conf");
+    let text = std::fs::read_to_string(&path).expect("read include corpus");
+    let options = import::ImportOptions {
+        include_root: Some(&root),
+    };
+    let outcome = import::convert_with_options(Source::Nginx, &text, options)
+        .expect("the include corpus must convert");
+    let parsed =
+        eqproxy_config::parse_str(&outcome.toml, &path).expect("generated include TOML must parse");
+    let check = eqproxy_config::validate::check(&parsed, &outcome.toml, &path);
+    assert!(
+        check.is_valid(),
+        "generated include configuration must validate: {:?}",
+        check
+            .errors
+            .iter()
+            .map(|err| (err.field.clone(), err.cause.clone()))
+            .collect::<Vec<_>>()
+    );
+    for needle in [
+        "host = \"alpha.includes.test\"",
+        "host = \"beta.includes.test\"",
+        "use_backend = \"alpha\"",
+        "use_backend = \"beta\"",
+    ] {
+        assert!(
+            outcome.toml.contains(needle),
+            "the include corpus must keep {needle}:\n{}",
+            outcome.toml
+        );
+    }
+    let alpha = outcome
+        .toml
+        .find("host = \"alpha.includes.test\"")
+        .expect("alpha vhost");
+    let beta = outcome
+        .toml
+        .find("host = \"beta.includes.test\"")
+        .expect("beta vhost");
+    assert!(
+        alpha < beta,
+        "conf.d glob must expand 10-alpha before 20-beta:\n{}",
+        outcome.toml
+    );
+    assert!(
+        outcome
+            .report
+            .contains("include expandido: 2 fichero(s) leído(s) en orden lexicográfico"),
+        "the include itself must remain in the report:\n{}",
+        outcome.report
+    );
+    let again = import::convert_with_options(Source::Nginx, &text, options)
+        .expect("deterministic second include pass");
+    assert_eq!(
+        again.toml, outcome.toml,
+        "include TOML must be deterministic"
+    );
+    assert_eq!(
+        again.report, outcome.report,
+        "include report must be deterministic"
+    );
+}
+
+#[test]
+fn nginx_tls_divergence_corpus_names_all_three_lost_policies() {
+    // One listener cannot carry per-vhost TLS versions, ciphers and mTLS
+    // policy. The default_server wins and the other vhost loses those three
+    // properties; the report must name every one and count exactly three.
+    let path = corpus("nginx-tls-divergence/nginx.conf");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("corpus file {} must be readable: {err}", path.display()));
+    let (outcome, degraded) = import::convert_with_degraded(Source::Nginx, &text)
+        .expect("the TLS-divergence corpus must convert");
+
+    let mut names = degraded.clone();
+    names.sort();
+    let mut expected = vec![
+        "ssl_protocols TLSv1.2".to_owned(),
+        "ssl_ciphers ECDHE-RSA-AES128-GCM-SHA256".to_owned(),
+        "ssl_client_certificate /etc/nginx/tls/clients.pem".to_owned(),
+    ];
+    expected.sort();
+    assert_eq!(
+        names, expected,
+        "exactly the version, cipher and mTLS policies must be degraded"
+    );
+
+    assert!(
+        outcome.report.contains("con degradación **3**"),
+        "the summary must count the three losses:\n{}",
+        outcome.report
+    );
+    assert!(
+        outcome
+            .report
+            .contains("### ⚠️ convertido con degradación (revisar) (3)"),
+        "the degraded section must list exactly three directives:\n{}",
+        outcome.report
+    );
+    for loss in [
+        "política de versiones TLS",
+        "política de cifrados",
+        "certificado de cliente (mTLS)",
+    ] {
+        assert!(
+            outcome.report.contains(loss),
+            "the report must name the lost {loss}:\n{}",
+            outcome.report
+        );
+    }
+
+    // The generated configuration is real: it parses and validates with the
+    // product's own gate, and it keeps the default_server policy rather than
+    // inventing per-vhost TLS that the schema cannot represent.
+    let parsed = eqproxy_config::parse_str(&outcome.toml, &path)
+        .expect("generated TLS-divergence TOML must parse");
+    let check = eqproxy_config::validate::check(&parsed, &outcome.toml, &path);
+    assert!(
+        check.is_valid(),
+        "generated TLS-divergence configuration must validate: {:?}",
+        check
+            .errors
+            .iter()
+            .map(|err| (err.field.clone(), err.cause.clone()))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        outcome.toml.contains("min_version = \"1.3\"")
+            && outcome.toml.contains("max_version = \"1.3\"")
+            && !outcome.toml.contains("TLSv1.2")
+            && !outcome.toml.contains("min_version = \"1.2\""),
+        "the default_server's TLS 1.3 policy must win:\n{}",
+        outcome.toml
+    );
+    assert!(
+        outcome.toml.contains("names = [\"b.example\"]")
+            && outcome.toml.contains("/etc/nginx/tls/b.example.pem"),
+        "the second vhost must keep its certificate:\n{}",
+        outcome.toml
+    );
+    assert!(
+        !outcome.toml.contains("client_ca")
+            && !outcome.toml.contains("ECDHE-RSA-AES128-GCM-SHA256")
+            && !outcome.toml.contains("HIGH:!aNULL"),
+        "the listener must not claim the lost mTLS or cipher policy:\n{}",
+        outcome.toml
+    );
+
+    let walked = counter(&outcome.report, "Directivas leídas:");
+    let classified = counter(&outcome.report, "clasificadas:");
+    assert_eq!(
+        walked, classified,
+        "every walked directive must be classified in the TLS-divergence corpus\n{}",
+        outcome.report
+    );
+    let (again, degraded_again) = import::convert_with_degraded(Source::Nginx, &text)
+        .expect("deterministic second TLS-divergence pass");
+    assert_eq!(again.toml, outcome.toml, "TOML must be deterministic");
+    assert_eq!(again.report, outcome.report, "report must be deterministic");
+    assert_eq!(
+        degraded_again, degraded,
+        "degraded names must be deterministic"
+    );
+}
+
+#[test]
+fn nginx_include_corpus_cycle_fails_with_an_actionable_chain() {
+    let root = include_corpus("");
+    let path = root.join("cycle/nginx.conf");
+    let text = std::fs::read_to_string(&path).expect("read cycle corpus");
+    let error = import::convert_with_options(
+        Source::Nginx,
+        &text,
+        import::ImportOptions {
+            include_root: Some(&root),
+        },
+    )
+    .expect_err("the cycle corpus must be rejected");
+    assert!(
+        error.message.contains("ciclo detectado")
+            && error.message.contains("a.conf")
+            && error.message.contains("b.conf"),
+        "the cycle error must name the files: {}",
+        error.message
+    );
 }

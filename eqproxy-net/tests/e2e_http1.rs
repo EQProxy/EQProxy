@@ -823,7 +823,7 @@ async fn http1_smuggling_corpus_is_rejected_before_backend() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(
-        metrics.snapshot().http_requests_rejected as usize,
+        usize::try_from(metrics.snapshot().http_requests_rejected).expect("fits usize"),
         corpus.len(),
         "every rejection counts"
     );

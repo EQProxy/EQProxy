@@ -223,7 +223,7 @@ async fn plugin_denial_never_dials_the_backend() {
         0,
         "a plugin denial must not open a backend connection"
     );
-    assert!(origin.heads().is_empty());
+    assert_eq!(origin.heads(), [] as [std::string::String; 0]);
     assert_eq!(metrics.snapshot().plugin_requests, 1);
     assert_eq!(metrics.snapshot().plugin_denied, 1);
 

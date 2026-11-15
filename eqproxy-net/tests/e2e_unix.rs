@@ -59,13 +59,14 @@ fn socket_path(tag: &str) -> (PathBuf, SocketDir) {
     let path = dir.join("app.sock");
     assert!(
         path.as_os_str().len() <= MAX_PATH,
-        "test socket path must fit the schema limit: {path:?}"
+        "test socket path must fit the schema limit: {}",
+        path.display()
     );
     (path, SocketDir(dir))
 }
 
 /// Unix origin that writes `banner` on accept and echoes whatever arrives.
-async fn start_unix_banner(path: &Path, banner: &'static [u8]) -> (JoinHandle<()>, Arc<AtomicU64>) {
+fn start_unix_banner(path: &Path, banner: &'static [u8]) -> (JoinHandle<()>, Arc<AtomicU64>) {
     let _ = std::fs::remove_file(path);
     let listener = UnixListener::bind(path).expect("bind unix origin");
     let accepted = Arc::new(AtomicU64::new(0));
@@ -91,7 +92,7 @@ async fn start_unix_banner(path: &Path, banner: &'static [u8]) -> (JoinHandle<()
 
 /// Unix origin that answers every HTTP/1.1 request on a connection and keeps
 /// it open: the proxy's pool has something reusable to park.
-async fn start_unix_http(path: &Path, body: &'static [u8]) -> JoinHandle<()> {
+fn start_unix_http(path: &Path, body: &'static [u8]) -> JoinHandle<()> {
     let _ = std::fs::remove_file(path);
     let listener = UnixListener::bind(path).expect("bind unix http origin");
     tokio::spawn(async move {
@@ -250,7 +251,7 @@ async fn http_get(proxy: SocketAddr, path: &str) -> (u16, String) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn tcp_listener_relays_to_a_unix_backend() {
     let (path, _dir) = socket_path("tcp");
-    let (origin, accepted) = start_unix_banner(&path, b"pong\n").await;
+    let (origin, accepted) = start_unix_banner(&path, b"pong\n");
     let metrics = Arc::new(Metrics::default());
     let (proxy, handle, serve) =
         start_proxy(unix_backend(&path), ProxyMode::Tcp, Arc::clone(&metrics)).await;
@@ -304,7 +305,7 @@ async fn tcp_listener_relays_to_a_unix_backend() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn http_listener_proxies_to_a_unix_backend_and_pools_the_connection() {
     let (path, _dir) = socket_path("http");
-    let origin = start_unix_http(&path, b"unix\n").await;
+    let origin = start_unix_http(&path, b"unix\n");
     let metrics = Arc::new(Metrics::default());
     let (proxy, handle, serve) =
         start_proxy(unix_backend(&path), ProxyMode::Http, Arc::clone(&metrics)).await;
@@ -512,7 +513,7 @@ async fn an_unusable_source_is_an_explicit_connect_failure() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_health_checker_speaks_http_to_a_unix_endpoint() {
     let (path, _dir) = socket_path("health");
-    let origin = start_unix_http(&path, b"ok\n").await;
+    let origin = start_unix_http(&path, b"ok\n");
     let endpoint = Endpoint::Unix(Arc::new(path.clone()));
     let check = HttpCheck {
         method: HttpCheckMethod::Get,

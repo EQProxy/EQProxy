@@ -1,7 +1,7 @@
 //! Differential harness: one **declared corpus**
 //! of shared-semantics cases ([docs/differential-corpus.md](../../../docs/differential-corpus.md))
-//! runs unchanged against EQProxy (the built binary) and the reference
-//! implementations — HAProxy 3.4.6, the ingress-nginx data plane (the
+//! runs unchanged against `EQProxy` (the built binary) and the reference
+//! implementations — `HAProxy` 3.4.6, the ingress-nginx data plane (the
 //! `nginx` binary shipped inside the official controller image, driven
 //! by a static config, like «Envoy estático») and Envoy v1.34.2 with a
 //! static bootstrap. Every normalized observable result (status,
@@ -20,7 +20,7 @@
 //!
 //! Header cases (the B-N4/B-I4 executable spec) live on two endpoints,
 //! `main` (forwarded headers append) and `replace` (anti-spoofing),
-//! each with its own config per implementation. Cases whose EQProxy
+//! each with its own config per implementation. Cases whose `EQProxy`
 //! implementation is still pending its slice carry a `PENDING` skip;
 //! the three references assert the declared outcome today.
 //!
@@ -30,6 +30,7 @@
 //! The report is written to `$CARGO_TARGET_TMPDIR/differential-report.md`.
 
 use flate2::read::GzDecoder;
+use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
@@ -42,7 +43,7 @@ const ENVOY_IMAGE: &str = "envoyproxy/envoy:v1.34.2";
 const BACKEND_IMAGE: &str = "nginx:alpine";
 
 /// Fixed, comma-free body every backend serves under `/z/`. It is long
-/// enough to exceed the reference compression thresholds (HAProxy does not
+/// enough to exceed the reference compression thresholds (`HAProxy` does not
 /// compress tiny payloads; nginx and Envoy are configured at 0) and is the
 /// same on all three backends, so the case observes compression, not routing.
 const PROBE_BODY: &str = "compression differential probe payload: the quick brown fox jumps over the lazy dog while the proxy negotiates a coding and the origin declares a plain text body long enough for every implementation to compress it";
@@ -69,7 +70,7 @@ struct Case {
     /// like the status and the body. Empty = not compared.
     response_headers: &'static [(&'static str, &'static str)],
     /// (implementation, reason) for documented exclusions: a genuine
-    /// semantic divergence in that implementation, or an EQProxy
+    /// semantic divergence in that implementation, or an `EQProxy`
     /// implementation pending its slice (reason starts with `PENDING`).
     /// Recorded in the report, never asserted there.
     skip: &'static [(&'static str, &'static str)],
@@ -780,8 +781,7 @@ fn probe_client_ip(addr: &str) -> String {
     let body = String::from_utf8_lossy(&response.body).into_owned();
     let ip = body
         .find("xff=[")
-        .map(|i| body[i + 5..].split(']').next().unwrap_or_default())
-        .unwrap_or_default()
+        .map_or_default(|i| body[i + 5..].split(']').next().unwrap_or_default())
         .to_owned();
     assert!(!ip.is_empty(), "calibration probe saw no XFF entry: {body}");
     ip
@@ -806,9 +806,9 @@ fn reduce_location(value: &str) -> String {
 fn summary(got: &Normalized, declared_headers: &[(&str, &str)]) -> String {
     let mut out = got.status.to_string();
     if let Some(location) = &got.location {
-        out.push_str(&format!(" -> {location}"));
+        write!(out, " -> {location}").expect("writing into a String cannot fail");
     }
-    out.push_str(&format!(" {:?}", got.body));
+    write!(out, " {:?}", got.body).expect("writing into a String cannot fail");
     // Show what the case asserts, including absence, so the report carries
     // the observable and not only the verdict.
     for (name, _) in declared_headers {
@@ -817,7 +817,7 @@ fn summary(got: &Normalized, declared_headers: &[(&str, &str)]) -> String {
             .iter()
             .find(|(header, _)| header == name)
             .map_or("<absent>", |(_, value)| value.as_str());
-        out.push_str(&format!(" {name}={value}"));
+        write!(out, " {name}={value}").expect("writing into a String cannot fail");
     }
     out
 }
@@ -880,7 +880,7 @@ fn backend_conf(id: &str) -> String {
     )
 }
 
-/// HAProxy 3.4.6. `http-request` rules always run before `use_backend`
+/// `HAProxy` 3.4.6. `http-request` rules always run before `use_backend`
 /// rules, so the c8 rewrite lands before the c8 routing decision.
 fn haproxy_cfg() -> String {
     r#"global
@@ -954,6 +954,7 @@ backend dead
 
 /// Envoy v1.34 static bootstrap. `strip_any_host_port` declares the
 /// port-free host comparison shared with the other implementations.
+#[allow(clippy::too_many_lines)]
 fn envoy_yaml() -> String {
     r#"admin:
   access_log_path: /dev/null
@@ -1192,6 +1193,7 @@ static_resources:
 /// controller image (nginx/1.27.x), driven by a static config in the
 /// shapes the controller generates for these features. The controller
 /// (k8s object → config translation) is NOT exercised; see the corpus doc.
+#[allow(clippy::too_many_lines)]
 fn ingress_nginx_conf() -> String {
     r#"worker_processes 1;
 error_log /dev/stderr warn;
@@ -1304,8 +1306,9 @@ http {
     .to_owned()
 }
 
-/// EQProxy: the same corpus as typed routing rules (the format under
+/// `EQProxy`: the same corpus as typed routing rules (the format under
 /// test), backends on the published host ports of the backend containers.
+#[allow(clippy::too_many_lines)]
 fn eqproxy_toml(
     api: u16,
     mgmt: u16,
@@ -1512,7 +1515,7 @@ fn image_id(tag: &str) -> String {
         .to_owned()
 }
 
-/// Keeps the EQProxy child from leaking when the test panics.
+/// Keeps the `EQProxy` child from leaking when the test panics.
 struct ChildGuard(Child);
 
 impl Drop for ChildGuard {
@@ -1543,6 +1546,7 @@ impl Drop for ChildGuard {
 )]
 #[ignore = "differential harness: needs Docker + reference images; run: cargo test -p eqproxy-cli --test differential -- --ignored --nocapture"]
 #[test]
+#[allow(clippy::too_many_lines)]
 fn differential_shared_semantics_corpus() {
     let work = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
         .join(format!("differential-{}", std::process::id()));
@@ -1692,13 +1696,13 @@ fn differential_shared_semantics_corpus() {
     let hap_port = published_port(&hap_name, 8080);
     let env_port = published_port(&env_name, 8080);
     let ing_port = published_port(&ing_name, 8080);
-    let hap2_port = published_port(&hap_name, 8081);
-    let env2_port = published_port(&env_name, 8081);
+    let hap_alt_port = published_port(&hap_name, 8081);
+    let env_alt_port = published_port(&env_name, 8081);
     let env_cache_port = published_port(&env_name, 8082);
     let hap_tls_port = published_port(&hap_name, 8443);
     let env_tls_port = published_port(&env_name, 8443);
     let ing_tls_port = published_port(&ing_name, 8443);
-    let ing2_port = published_port(&ing_name, 8081);
+    let ing_alt_port = published_port(&ing_name, 8081);
     wait_tcp(
         &format!("127.0.0.1:{hap_port}"),
         "haproxy",
@@ -1804,9 +1808,9 @@ fn differential_shared_semantics_corpus() {
     let hap_addr = format!("127.0.0.1:{hap_port}");
     let ing_addr = format!("127.0.0.1:{ing_port}");
     let env_addr = format!("127.0.0.1:{env_port}");
-    let hap2_addr = format!("127.0.0.1:{hap2_port}");
-    let ing2_addr = format!("127.0.0.1:{ing2_port}");
-    let env2_addr = format!("127.0.0.1:{env2_port}");
+    let hap_alt_addr = format!("127.0.0.1:{hap_alt_port}");
+    let ing_alt_addr = format!("127.0.0.1:{ing_alt_port}");
+    let env_alt_addr = format!("127.0.0.1:{env_alt_port}");
     let env_cache_addr = format!("127.0.0.1:{env_cache_port}");
     let hap_tls_addr = format!("127.0.0.1:{hap_tls_port}");
     let env_tls_addr = format!("127.0.0.1:{env_tls_port}");
@@ -1819,9 +1823,9 @@ fn differential_shared_semantics_corpus() {
     ];
     let replace_addrs: [(&str, &str); 4] = [
         ("eqproxy", replace_addr.as_str()),
-        ("haproxy", hap2_addr.as_str()),
-        ("ingress-nginx", ing2_addr.as_str()),
-        ("envoy", env2_addr.as_str()),
+        ("haproxy", hap_alt_addr.as_str()),
+        ("ingress-nginx", ing_alt_addr.as_str()),
+        ("envoy", env_alt_addr.as_str()),
     ];
     // Cache endpoints: EQProxy and Envoy use a dedicated listener so the
     // cache cannot serve a different case's response; HAProxy and nginx
@@ -1935,40 +1939,48 @@ fn differential_shared_semantics_corpus() {
     // --- report ---------------------------------------------------------
     let mut report = String::new();
     report.push_str("# Differential report — shared-semantics corpus\n\n");
-    report.push_str(&format!(
-        "- date (UTC epoch): {}\n",
+    writeln!(
+        report,
+        "- date (UTC epoch): {}",
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock")
             .as_secs()
-    ));
-    report.push_str(&format!(
-        "- eqproxy binary: {eq_bin} (sha256 {})\n",
+    )
+    .expect("writing into a String cannot fail");
+    writeln!(
+        report,
+        "- eqproxy binary: {eq_bin} (sha256 {})",
         sha256(eq_bin)
-    ));
-    report.push_str(&format!(
-        "- haproxy: {HAPROXY_IMAGE} ({})\n",
+    )
+    .expect("writing into a String cannot fail");
+    writeln!(
+        report,
+        "- haproxy: {HAPROXY_IMAGE} ({})",
         image_id(HAPROXY_IMAGE)
-    ));
-    report.push_str(&format!(
-        "- ingress-nginx data plane: {INGRESS_NGINX_IMAGE} ({})\n",
+    )
+    .expect("writing into a String cannot fail");
+    writeln!(
+        report,
+        "- ingress-nginx data plane: {INGRESS_NGINX_IMAGE} ({})",
         image_id(INGRESS_NGINX_IMAGE)
-    ));
-    report.push_str(&format!(
-        "- envoy: {ENVOY_IMAGE} ({})\n",
-        image_id(ENVOY_IMAGE)
-    ));
-    report.push_str(&format!(
-        "- backends: {BACKEND_IMAGE} ({})\n",
+    )
+    .expect("writing into a String cannot fail");
+    writeln!(report, "- envoy: {ENVOY_IMAGE} ({})", image_id(ENVOY_IMAGE))
+        .expect("writing into a String cannot fail");
+    writeln!(
+        report,
+        "- backends: {BACKEND_IMAGE} ({})",
         image_id(BACKEND_IMAGE)
-    ));
+    )
+    .expect("writing into a String cannot fail");
     report.push_str(
         "- normalization: status code only (reason phrase ignored); `Location` reduced to\n  path + query when absolute; body compared only when the case declares one;\n  `chunked` bodies decoded and `content-encoding: gzip` bodies gunzipped before\n  the comparison; an empty declared header value means the header must be\n  absent; comma-joined header values normalized to the `\", \"` separator; the\n  client address of each implementation is calibrated at run time and\n  substituted as `CLIENT`.\n\n",
     );
     report.push_str("| case | shared semantics | eqproxy | haproxy | ingress-nginx | envoy |\n");
     report.push_str("|---|---|---|---|---|---|\n");
     for row in &rows {
-        report.push_str(&format!("| {} |\n", row.join(" | ")));
+        writeln!(report, "| {} |", row.join(" | ")).expect("writing into a String cannot fail");
     }
     report.push_str(
         "\nCache cases send the same request twice. The backend answers with a fresh\nUUID for every origin fetch, so an identical body on the second request proves\na HIT.\n\n",
@@ -1978,23 +1990,23 @@ fn differential_shared_semantics_corpus() {
     );
     report.push_str("|---|---|---|---|---|---|\n");
     for row in &cache_rows {
-        report.push_str(&format!("| {} |\n", row.join(" | ")));
+        writeln!(report, "| {} |", row.join(" | ")).expect("writing into a String cannot fail");
     }
-    report.push_str(&format!(
+    write!(report,
         "\nverdict: {agreed}/{} cases agree across their applicable implementations ({} documented exclusion(s)).\n",
         CASES.len() + CACHE_CASES.len(),
         exclusions.len()
-    ));
+    ).expect("writing into a String cannot fail");
     if !failures.is_empty() {
         report.push_str("\n## Divergences\n\n");
         for failure in &failures {
-            report.push_str(&format!("- {failure}\n"));
+            writeln!(report, "- {failure}").expect("writing into a String cannot fail");
         }
     }
     if !exclusions.is_empty() {
         report.push_str("\n## Documented exclusions (not asserted there)\n\n");
         for exclusion in &exclusions {
-            report.push_str(&format!("- {exclusion}\n"));
+            writeln!(report, "- {exclusion}").expect("writing into a String cannot fail");
         }
     }
 

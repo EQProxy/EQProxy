@@ -1112,6 +1112,7 @@ async fn hot_reload_swaps_tls_material_on_the_kept_socket() {
     ignore = "needs TCP sockets: miri does not support networking (rust-lang/miri#3449)"
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)]
 async fn backend_tls_trust_rotation_applies_on_reload_without_restart() {
     // SDS-equivalent for the upstream direction (B-E9/B-H10): the backend
     // trust bundle is file material re-read on every reload, so rotating

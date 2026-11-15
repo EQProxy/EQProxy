@@ -33,10 +33,11 @@ impl Rng {
         x.wrapping_mul(0x2545_F491_4F6C_DD1D)
     }
     fn below(&mut self, n: usize) -> usize {
-        (self.next() % n as u64) as usize
+        usize::try_from(self.next() % u64::try_from(n).expect("usize fits u64"))
+            .expect("modulo of usize")
     }
     fn byte(&mut self) -> u8 {
-        (self.next() >> 24) as u8
+        u8::try_from((self.next() >> 24) & 0xff).expect("masked to 8 bits")
     }
 }
 
@@ -191,7 +192,7 @@ fn p3_effective_ttl_never_exceeds_default() {
         Duration::from_secs(0),
         Duration::from_secs(1),
         Duration::from_secs(60),
-        Duration::from_secs(86_400),
+        Duration::from_hours(24),
     ];
     let directives = [
         "",
@@ -469,9 +470,8 @@ async fn p9_revoking_304_invalidates_clean_304_refreshes() {
     stored.etag = Some("\"v1\"".to_owned());
     cache.store_direct(key.clone(), stored).await;
 
-    let old = match cache.lookup(&key, &[], false) {
-        Lookup::Hit(entry) => entry,
-        _ => panic!("stored entry must hit"),
+    let Lookup::Hit(old) = cache.lookup(&key, &[], false) else {
+        panic!("stored entry must hit");
     };
 
     // Clean 304: only metadata changes, body stays.
@@ -527,9 +527,8 @@ async fn p10_rendered_head_round_trips() {
         ("etag".to_owned(), "\"x\"".to_owned()),
     ];
     cache.store_direct(key.clone(), stored).await;
-    let entry = match cache.lookup(&key, &[], false) {
-        Lookup::Hit(entry) => entry,
-        _ => panic!("stored entry must hit"),
+    let Lookup::Hit(entry) = cache.lookup(&key, &[], false) else {
+        panic!("stored entry must hit");
     };
     let head = cache::render_head(&entry);
     let parsed = cache::parse_origin_head(&head).expect("rendered head must parse");

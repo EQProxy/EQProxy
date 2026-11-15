@@ -127,7 +127,7 @@ async fn echo_roundtrip_through_proxy_updates_metrics() {
 }
 
 /// A6: an IPv6 listener reaches an IPv6 backend over real sockets. The
-/// reference's `bind ... v4v6` keyword has no direct equivalent (EQProxy
+/// reference's `bind ... v4v6` keyword has no direct equivalent (`EQProxy`
 /// binds the literal family and the OS decides dual-stack), but the v6 path
 /// itself must work: a v6 bind, a v6 dial and a byte-exact echo.
 #[cfg_attr(

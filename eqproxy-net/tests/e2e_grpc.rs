@@ -63,8 +63,7 @@ fn header(request: &Request<h2::RecvStream>, name: &str) -> String {
     request
         .headers()
         .get(name)
-        .map(|value| String::from_utf8_lossy(value.as_bytes()).into_owned())
-        .unwrap_or_default()
+        .map_or_default(|value| String::from_utf8_lossy(value.as_bytes()).into_owned())
 }
 
 /// A TLS HTTP/2 origin that speaks gRPC: every message is echoed as it
@@ -200,7 +199,7 @@ async fn send_all(send: &mut h2::SendStream<Bytes>, data: &[u8]) -> Result<(), (
         let capacity = loop {
             match poll_fn(|cx| send.poll_capacity(cx)).await {
                 Some(Ok(available)) if available > 0 => break available,
-                Some(Ok(_)) => continue,
+                Some(Ok(_)) => {}
                 Some(Err(_)) | None => return Err(()),
             }
         };
@@ -282,6 +281,7 @@ async fn h2_connect(addr: SocketAddr) -> h2::client::SendRequest<Bytes> {
     send
 }
 
+#[allow(clippy::unused_async)] // kept async for symmetry with the other h2 helpers used inside async tests
 async fn grpc_open(
     client: &mut h2::client::SendRequest<Bytes>,
     path: &str,
@@ -475,6 +475,29 @@ async fn grpc_concurrent_streams_share_one_backend_session() {
     stop_proxy(handle, serve).await;
 }
 
+async fn call(client: &mut h2::client::SendRequest<Bytes>, message: &'static [u8]) -> Vec<u8> {
+    let (response, mut send) = grpc_open(client, "/pkg.Service/Echo").await;
+    send_all(&mut send, &frame(message))
+        .await
+        .expect("request message");
+    let response = tokio::time::timeout(WAIT, response)
+        .await
+        .expect("headers in time")
+        .expect("headers");
+    let mut recv = response.into_body();
+    let mut buffer = Vec::new();
+    let echo = read_message(&mut recv, &mut buffer).await;
+    send.send_data(Bytes::new(), true).expect("half close");
+    drain(&mut recv).await;
+    let trailers = tokio::time::timeout(WAIT, recv.trailers())
+        .await
+        .expect("trailers in time")
+        .expect("trailers")
+        .expect("trailing headers");
+    assert_eq!(trailers["grpc-status"], "0");
+    echo
+}
+
 /// B8 over gRPC: the pass-through uses the same selection. A primary owns the
 /// tier, the backup origin receives the streams only when every primary is
 /// down, and the recovered primary takes them back. The two origins are told
@@ -518,28 +541,6 @@ async fn a_backup_serves_grpc_streams_when_every_primary_is_down() {
     let mut client = h2_connect(addr).await;
 
     // One stream: one frame in, its echo out, half close, status trailers.
-    async fn call(client: &mut h2::client::SendRequest<Bytes>, message: &'static [u8]) -> Vec<u8> {
-        let (response, mut send) = grpc_open(client, "/pkg.Service/Echo").await;
-        send_all(&mut send, &frame(message))
-            .await
-            .expect("request message");
-        let response = tokio::time::timeout(WAIT, response)
-            .await
-            .expect("headers in time")
-            .expect("headers");
-        let mut recv = response.into_body();
-        let mut buffer = Vec::new();
-        let echo = read_message(&mut recv, &mut buffer).await;
-        send.send_data(Bytes::new(), true).expect("half close");
-        drain(&mut recv).await;
-        let trailers = tokio::time::timeout(WAIT, recv.trailers())
-            .await
-            .expect("trailers in time")
-            .expect("trailers")
-            .expect("trailing headers");
-        assert_eq!(trailers["grpc-status"], "0");
-        echo
-    }
 
     // A primary owns the tier.
     assert_eq!(call(&mut client, b"one").await, b"one");
@@ -661,7 +662,7 @@ async fn grpc_forwarded_headers_cross_the_pass_through() {
         response
             .headers()
             .get("server")
-            .map(|value| value.as_bytes()),
+            .map(http::HeaderValue::as_bytes),
         Some(&b"EQProxy"[..]),
         "the gRPC pass-through carries the product banner, not grpc-origin/1.0: {:?}",
         response.headers()

@@ -1,7 +1,7 @@
 //! Phase 2b E2E tests with **real sockets**: TLS termination (A11),
 //! TLS to backends (A12), ALPN (A14), weighted RR balancing (B1/B7), TCP
 //! health checks (B11) and PROXY protocol v1 (A9). One test per
-//! PARITY_MATRIX row + error and limit cases.
+//! `PARITY_MATRIX` row + error and limit cases.
 
 use std::net::SocketAddr;
 use std::sync::Arc;

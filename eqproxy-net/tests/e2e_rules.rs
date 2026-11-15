@@ -130,6 +130,7 @@ async fn start_header_echo_backend() -> SocketAddr {
     addr
 }
 
+#[allow(clippy::needless_pass_by_value)] // the call sites build a fresh spec literal per route
 fn rule(spec: RuleSpec, name: &str, server: SocketAddr) -> ResolvedRoute {
     ResolvedRoute {
         rule: Rule::compile(&spec).expect("rule compiles"),
@@ -142,7 +143,8 @@ fn rule(spec: RuleSpec, name: &str, server: SocketAddr) -> ResolvedRoute {
 }
 
 /// Rule with an arbitrary action (v0.6 slice 2: rewrite / redirect /
-/// direct_response).
+/// `direct_response`).
+#[allow(clippy::needless_pass_by_value)] // the call sites build a fresh spec literal per route
 fn rule_action(spec: RuleSpec, action: RouteAction) -> ResolvedRoute {
     ResolvedRoute {
         rule: Rule::compile(&spec).expect("rule compiles"),
@@ -155,12 +157,12 @@ fn rewrite_with(
     matched_prefix: &str,
     path_prefix_rewrite: &str,
     host_rewrite: Option<&str>,
-) -> Option<ResolvedRewrite> {
-    Some(ResolvedRewrite {
+) -> ResolvedRewrite {
+    ResolvedRewrite {
         matched_prefix: matched_prefix.to_owned(),
         path_prefix_rewrite: Some(path_prefix_rewrite.to_owned()),
         host_rewrite: host_rewrite.map(str::to_owned),
-    })
+    }
 }
 
 /// Listener with `default` as fallback backend and the given rules.
@@ -226,8 +228,7 @@ async fn request_body(proxy: SocketAddr, head: &str) -> String {
     request_response(proxy, head)
         .await
         .split_once("\r\n\r\n")
-        .map(|(_, body)| body.to_owned())
-        .unwrap_or_default()
+        .map_or_default(|(_, body)| body.to_owned())
 }
 
 /// Header actions end to end (B-N4/B-I4/B-E17): the backend sees the
@@ -287,7 +288,7 @@ async fn header_actions_apply_to_request_and_response() {
     let cfg = routing_listener("127.0.0.1:0".parse().expect("addr"), echo, routes)
         .with_forwarded_headers(eqproxy_net::proxy::ForwardedMode::Append);
     let metrics = Arc::new(Metrics::default());
-    let (proxy, _handle, serve) = start_proxy(cfg, metrics).await;
+    let (proxy, handle, serve) = start_proxy(cfg, metrics).await;
 
     let response = request_response(
         proxy,
@@ -296,8 +297,7 @@ async fn header_actions_apply_to_request_and_response() {
     .await;
     let body = response
         .split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .unwrap_or_default();
+        .map_or_default(|(_, body)| body);
     assert_eq!(
         body,
         "xff=[127.0.0.1] real=[] proto=[http] beta=[on-http] gone=[] added=[base, extra@127.0.0.1]"
@@ -313,7 +313,7 @@ async fn header_actions_apply_to_request_and_response() {
     assert!(response.contains("location: /new"), "{response}");
     assert!(response.contains("x-marker: local"), "{response}");
 
-    _handle.trigger();
+    handle.trigger();
     serve.await.expect("serve ends");
 }
 
@@ -354,7 +354,7 @@ async fn cors_preflight_is_local_and_responses_carry_headers() {
     }];
     let cfg = routing_listener("127.0.0.1:0".parse().expect("addr"), echo, routes);
     let metrics = Arc::new(Metrics::default());
-    let (proxy, _handle, serve) = start_proxy(cfg, metrics).await;
+    let (proxy, handle, serve) = start_proxy(cfg, metrics).await;
 
     // Preflight: local 204 with the CORS trio — the identity body never
     // appears, so the backend was not contacted.
@@ -388,8 +388,7 @@ async fn cors_preflight_is_local_and_responses_carry_headers() {
     assert!(response.contains("x-marker: cors"), "{response}");
     let body = response
         .split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .unwrap_or_default();
+        .map_or_default(|(_, body)| body);
     assert!(body.is_empty(), "preflight answered locally: {body}");
 
     // A normal request gets the CORS response headers + the backend body.
@@ -400,8 +399,7 @@ async fn cors_preflight_is_local_and_responses_carry_headers() {
     .await;
     let body = response
         .split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .unwrap_or_default();
+        .map_or_default(|(_, body)| body);
     assert_eq!(body, "api");
     assert!(
         response.contains("access-control-allow-origin: https://app.example"),
@@ -413,7 +411,7 @@ async fn cors_preflight_is_local_and_responses_carry_headers() {
     );
     assert!(response.contains("vary: origin"), "{response}");
 
-    _handle.trigger();
+    handle.trigger();
     serve.await.expect("serve ends");
 }
 
@@ -453,7 +451,7 @@ async fn rate_limit_rejects_over_the_limit_explicitly() {
     }];
     let cfg = routing_listener("127.0.0.1:0".parse().expect("addr"), echo, routes);
     let metrics = Arc::new(Metrics::default());
-    let (proxy, _handle, serve) = start_proxy(cfg, Arc::clone(&metrics)).await;
+    let (proxy, handle, serve) = start_proxy(cfg, Arc::clone(&metrics)).await;
 
     for _ in 0..2 {
         let response = request_response(proxy, &get("svc.example", "/rl/x")).await;
@@ -472,7 +470,7 @@ async fn rate_limit_rejects_over_the_limit_explicitly() {
     let response = request_response(proxy, &get("svc.example", "/rl/x")).await;
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
 
-    _handle.trigger();
+    handle.trigger();
     serve.await.expect("serve ends");
 }
 
@@ -482,6 +480,7 @@ async fn rate_limit_rejects_over_the_limit_explicitly() {
 /// equal-weight servers alternate under plain RR, so "the same server
 /// again" is the pin.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn affinity_cookie_and_source_pin_clients_to_a_server() {
     let a = start_identity_backend("a").await;
     let b = start_identity_backend("b").await;
@@ -544,7 +543,7 @@ async fn affinity_cookie_and_source_pin_clients_to_a_server() {
     ];
     let cfg = routing_listener("127.0.0.1:0".parse().expect("addr"), a, routes);
     let metrics = Arc::new(Metrics::default());
-    let (proxy, _handle, serve) = start_proxy(cfg, metrics).await;
+    let (proxy, handle, serve) = start_proxy(cfg, metrics).await;
 
     // Cookie mode: the first response sets the sticky cookie.
     let cookie_token = |response: &str| -> Option<String> {
@@ -559,8 +558,7 @@ async fn affinity_cookie_and_source_pin_clients_to_a_server() {
     let first = request_response(proxy, &get("svc.example", "/c/x")).await;
     let body = first
         .split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .unwrap_or_default()
+        .map_or_default(|(_, body)| body)
         .to_owned();
     let token = cookie_token(&first).expect("the first response sets the sticky cookie");
     assert!(
@@ -580,8 +578,7 @@ async fn affinity_cookie_and_source_pin_clients_to_a_server() {
         .await;
         let pinned = response
             .split_once("\r\n\r\n")
-            .map(|(_, body)| body)
-            .unwrap_or_default();
+            .map_or_default(|(_, body)| body);
         assert_eq!(pinned, body, "the cookie pins: {response}");
         assert!(
             !response.to_lowercase().contains("set-cookie: eq_aff="),
@@ -605,7 +602,7 @@ async fn affinity_cookie_and_source_pin_clients_to_a_server() {
     let s2 = request_body(proxy, &get("svc.example", "/s/x")).await;
     assert_eq!(s1, s2, "same client IP → same server");
 
-    _handle.trigger();
+    handle.trigger();
     serve.await.expect("serve ends");
 }
 
@@ -661,7 +658,7 @@ async fn rules_route_by_path_host_method_header_and_ip() {
     ];
     let cfg = routing_listener("127.0.0.1:0".parse().expect("addr"), fallback, routes);
     let metrics = Arc::new(Metrics::default());
-    let (proxy, _handle, serve) = start_proxy(cfg, metrics).await;
+    let (proxy, handle, serve) = start_proxy(cfg, metrics).await;
 
     // path_prefix -> api
     assert_eq!(
@@ -682,7 +679,7 @@ async fn rules_route_by_path_host_method_header_and_ip() {
     // No rule matches -> default backend.
     assert_eq!(request_body(proxy, &get("x", "/plain")).await, "fallback");
 
-    _handle.trigger();
+    handle.trigger();
     serve.await.expect("serve ends");
 }
 
@@ -716,12 +713,12 @@ async fn first_matching_rule_wins_over_later_ones() {
     ];
     let cfg = routing_listener("127.0.0.1:0".parse().expect("addr"), fallback, routes);
     let metrics = Arc::new(Metrics::default());
-    let (proxy, _handle, serve) = start_proxy(cfg, metrics).await;
+    let (proxy, handle, serve) = start_proxy(cfg, metrics).await;
 
     assert_eq!(request_body(proxy, &get("x", "/specific")).await, "first");
     assert_eq!(request_body(proxy, &get("x", "/other")).await, "first");
 
-    _handle.trigger();
+    handle.trigger();
     serve.await.expect("serve ends");
 }
 
@@ -743,7 +740,7 @@ async fn keep_alive_routes_each_exchange_independently() {
     )];
     let cfg = routing_listener("127.0.0.1:0".parse().expect("addr"), fallback, routes);
     let metrics = Arc::new(Metrics::default());
-    let (proxy, _handle, serve) = start_proxy(cfg, metrics).await;
+    let (proxy, handle, serve) = start_proxy(cfg, metrics).await;
 
     let mut stream = TcpStream::connect(proxy).await.expect("connect proxy");
     let first = "GET /v1/a HTTP/1.1\r\nHost: x\r\n\r\n";
@@ -771,7 +768,7 @@ async fn keep_alive_routes_each_exchange_independently() {
         "fallback exchange missing: {text}"
     );
 
-    _handle.trigger();
+    handle.trigger();
     serve.await.expect("serve ends");
 }
 
@@ -796,7 +793,7 @@ async fn near_misses_never_route() {
     )];
     let cfg = routing_listener("127.0.0.1:0".parse().expect("addr"), fallback, routes);
     let metrics = Arc::new(Metrics::default());
-    let (proxy, _handle, serve) = start_proxy(cfg, metrics).await;
+    let (proxy, handle, serve) = start_proxy(cfg, metrics).await;
 
     // Exact hit routes.
     assert_eq!(
@@ -816,7 +813,7 @@ async fn near_misses_never_route() {
     let post = "POST /Exact HTTP/1.1\r\nHost: api-7.example.com\r\nConnection: close\r\n\r\n";
     assert_eq!(request_body(proxy, post).await, "fallback");
 
-    _handle.trigger();
+    handle.trigger();
     serve.await.expect("serve ends");
 }
 
@@ -907,7 +904,7 @@ async fn rewrite_action_rewrites_target_and_host_for_the_backend() {
             },
             RouteAction::Backend {
                 backend: Arc::new(ResolvedBackend::single("echo", echo)),
-                rewrite: rewrite_with("/api", "/v2", Some("internal.svc")),
+                rewrite: Some(rewrite_with("/api", "/v2", Some("internal.svc"))),
             },
         ),
         rule_action(
@@ -918,13 +915,13 @@ async fn rewrite_action_rewrites_target_and_host_for_the_backend() {
             },
             RouteAction::Backend {
                 backend: Arc::new(ResolvedBackend::single("echo", echo)),
-                rewrite: rewrite_with("/strip", "", None),
+                rewrite: Some(rewrite_with("/strip", "", None)),
             },
         ),
     ];
     let cfg = routing_listener("127.0.0.1:0".parse().expect("addr"), echo, routes);
     let metrics = Arc::new(Metrics::default());
-    let (proxy, _handle, serve) = start_proxy(cfg, metrics).await;
+    let (proxy, handle, serve) = start_proxy(cfg, metrics).await;
 
     // Prefix replaced, query preserved, upstream Host rewritten.
     assert_eq!(
@@ -937,12 +934,12 @@ async fn rewrite_action_rewrites_target_and_host_for_the_backend() {
         "/a|www.example.com"
     );
 
-    _handle.trigger();
+    handle.trigger();
     serve.await.expect("serve ends");
 }
 
 /// Redirect (v0.6 slice 2): answered locally with the Location rendered
-/// per request ($host/$request_uri); no backend is ever contacted.
+/// per request ($`host/$request_uri`); no backend is ever contacted.
 #[tokio::test]
 async fn redirect_action_answers_locally_with_rendered_location() {
     let fallback = start_identity_backend("fallback").await;
@@ -959,7 +956,7 @@ async fn redirect_action_answers_locally_with_rendered_location() {
     )];
     let cfg = routing_listener("127.0.0.1:0".parse().expect("addr"), fallback, routes);
     let metrics = Arc::new(Metrics::default());
-    let (proxy, _handle, serve) = start_proxy(cfg, Arc::clone(&metrics)).await;
+    let (proxy, handle, serve) = start_proxy(cfg, Arc::clone(&metrics)).await;
 
     let response = request_full(proxy, &get("www.example.com", "/old/x?a=1")).await;
     assert!(response.starts_with("HTTP/1.1 308 "), "{response}");
@@ -979,11 +976,11 @@ async fn redirect_action_answers_locally_with_rendered_location() {
     assert_eq!(snapshot.redirects_served, 1);
     assert_eq!(snapshot.http_requests_proxied, 0);
 
-    _handle.trigger();
+    handle.trigger();
     serve.await.expect("serve ends");
 }
 
-/// direct_response (v0.6 slice 2): the configured status/body is served
+/// `direct_response` (v0.6 slice 2): the configured status/body is served
 /// locally; request bodies are drained so keep-alive stays aligned.
 #[tokio::test]
 async fn direct_response_answers_locally_and_keeps_keep_alive() {
@@ -1002,7 +999,7 @@ async fn direct_response_answers_locally_and_keeps_keep_alive() {
     )];
     let cfg = routing_listener("127.0.0.1:0".parse().expect("addr"), fallback, routes);
     let metrics = Arc::new(Metrics::default());
-    let (proxy, _handle, serve) = start_proxy(cfg, Arc::clone(&metrics)).await;
+    let (proxy, handle, serve) = start_proxy(cfg, Arc::clone(&metrics)).await;
 
     // One keep-alive connection: a POST with a body followed by a second
     // request. The body is drained (never desyncs the next exchange) and
@@ -1050,7 +1047,7 @@ async fn direct_response_answers_locally_and_keeps_keep_alive() {
     assert_eq!(snapshot.direct_responses_served, 2);
     assert_eq!(snapshot.http_requests_proxied, 0);
 
-    _handle.trigger();
+    handle.trigger();
     serve.await.expect("serve ends");
 }
 
@@ -1086,7 +1083,7 @@ async fn action_order_and_fallback_are_unchanged() {
     ];
     let cfg = routing_listener("127.0.0.1:0".parse().expect("addr"), fallback, routes);
     let metrics = Arc::new(Metrics::default());
-    let (proxy, _handle, serve) = start_proxy(cfg, metrics).await;
+    let (proxy, handle, serve) = start_proxy(cfg, metrics).await;
 
     // First rule wins: the redirect, never the direct_response below it.
     let response = request_full(proxy, &get("h", "/mix/x")).await;
@@ -1095,7 +1092,7 @@ async fn action_order_and_fallback_are_unchanged() {
     // No rule matches -> default backend.
     assert_eq!(request_body(proxy, &get("h", "/other")).await, "fallback");
 
-    _handle.trigger();
+    handle.trigger();
     serve.await.expect("serve ends");
 }
 
@@ -1196,7 +1193,7 @@ async fn auth_basic_rejects_missing_or_wrong_credentials_explicitly() {
     )];
     let cfg = routing_listener("127.0.0.1:0".parse().expect("addr"), echo, routes);
     let metrics = Arc::new(Metrics::default());
-    let (proxy, _handle, serve) = start_proxy(cfg, Arc::clone(&metrics)).await;
+    let (proxy, handle, serve) = start_proxy(cfg, Arc::clone(&metrics)).await;
 
     let response = request_response(proxy, &get("svc.example", "/private/x")).await;
     assert!(response.starts_with("HTTP/1.1 401 "), "{response}");
@@ -1226,7 +1223,7 @@ async fn auth_basic_rejects_missing_or_wrong_credentials_explicitly() {
     assert!(response.ends_with("api"), "{response}");
     assert_eq!(metrics.snapshot().auth_denied, 2, "two explicit denials");
 
-    _handle.trigger();
+    handle.trigger();
     serve.await.expect("serve ends");
 }
 
@@ -1287,7 +1284,7 @@ async fn auth_subrequest_allows_on_2xx_and_fails_closed() {
     ];
     let cfg = routing_listener("127.0.0.1:0".parse().expect("addr"), echo, routes);
     let metrics = Arc::new(Metrics::default());
-    let (proxy, _handle, serve) = start_proxy(cfg, Arc::clone(&metrics)).await;
+    let (proxy, handle, serve) = start_proxy(cfg, Arc::clone(&metrics)).await;
 
     // 2xx from the auth service: proxied, and the subrequest named the
     // original request.
@@ -1341,7 +1338,7 @@ async fn auth_subrequest_allows_on_2xx_and_fails_closed() {
         "the 500 + the unreachable auth"
     );
 
-    _handle.trigger();
+    handle.trigger();
     serve.await.expect("serve ends");
 }
 
@@ -1383,7 +1380,7 @@ async fn split_traffic_shares_requests_by_weight_across_backends() {
         ])],
     );
     let metrics = Arc::new(Metrics::default());
-    let (proxy, _handle, serve) = start_proxy(cfg, metrics).await;
+    let (proxy, handle, serve) = start_proxy(cfg, metrics).await;
 
     let mut counts = std::collections::BTreeMap::new();
     for _ in 0..8 {
@@ -1396,7 +1393,7 @@ async fn split_traffic_shares_requests_by_weight_across_backends() {
         "3:1 over 8 requests: {counts:?}"
     );
     assert_eq!(counts.get("canary"), Some(&2), "3:1 over 8: {counts:?}");
-    _handle.trigger();
+    handle.trigger();
     serve.await.expect("serve ends");
 
     // Canary rollback: weight 0 drops the target out without touching
@@ -1410,7 +1407,7 @@ async fn split_traffic_shares_requests_by_weight_across_backends() {
         ])],
     );
     let metrics = Arc::new(Metrics::default());
-    let (proxy, _handle, serve) = start_proxy(cfg, metrics).await;
+    let (proxy, handle, serve) = start_proxy(cfg, metrics).await;
     for _ in 0..10 {
         assert_eq!(
             request_body(proxy, &get("svc.example", "/")).await,
@@ -1418,7 +1415,7 @@ async fn split_traffic_shares_requests_by_weight_across_backends() {
             "a weight-0 target must never receive a request"
         );
     }
-    _handle.trigger();
+    handle.trigger();
     serve.await.expect("serve ends");
 }
 
@@ -1452,7 +1449,7 @@ async fn canary_by_cookie_and_header_overrides_route_to_the_canary() {
     ];
     let cfg = routing_listener("127.0.0.1:0".parse().expect("addr"), stable, routes);
     let metrics = Arc::new(Metrics::default());
-    let (proxy, _handle, serve) = start_proxy(cfg, metrics).await;
+    let (proxy, handle, serve) = start_proxy(cfg, metrics).await;
 
     let request = |head: &'static str| request_body(proxy, head);
     // Header override: present with the right value -> canary.
@@ -1490,7 +1487,7 @@ async fn canary_by_cookie_and_header_overrides_route_to_the_canary() {
         "canary"
     );
 
-    _handle.trigger();
+    handle.trigger();
     serve.await.expect("serve ends");
 }
 
@@ -1533,7 +1530,7 @@ async fn map_condition_consults_hot_data_and_swaps_in_hot() {
     let cfg = routing_listener("127.0.0.1:0".parse().expect("addr"), stable, routes)
         .with_maps(Arc::new(registry));
     let metrics = Arc::new(Metrics::default());
-    let (proxy, _handle, serve) = start_proxy(cfg, metrics).await;
+    let (proxy, handle, serve) = start_proxy(cfg, metrics).await;
 
     let request = |head: &'static str| request_body(proxy, head);
     assert_eq!(
@@ -1561,7 +1558,7 @@ async fn map_condition_consults_hot_data_and_swaps_in_hot() {
         "the old data is gone after the swap"
     );
 
-    _handle.trigger();
+    handle.trigger();
     serve.await.expect("serve ends");
 }
 
@@ -1667,7 +1664,7 @@ async fn hash_policy_keeps_a_key_on_its_target_and_only_remaps_owned_keys() {
         )],
     );
     let metrics = Arc::new(Metrics::default());
-    let (proxy, _handle, serve) = start_proxy(cfg, Arc::clone(&metrics)).await;
+    let (proxy, handle, serve) = start_proxy(cfg, Arc::clone(&metrics)).await;
 
     // One key, many exchanges: always the same target (no rotation).
     let first = request_body(proxy, &cookie_get("alice")).await;
@@ -1703,7 +1700,7 @@ async fn hash_policy_keeps_a_key_on_its_target_and_only_remaps_owned_keys() {
         "a request without the key rotates instead of sticking: {seen:?}"
     );
 
-    _handle.trigger();
+    handle.trigger();
     serve.await.expect("serve ends");
 
     // Consistent removal: with gamma gone, every key that was on alpha or
@@ -1717,17 +1714,17 @@ async fn hash_policy_keeps_a_key_on_its_target_and_only_remaps_owned_keys() {
         )],
     );
     let metrics = Arc::new(Metrics::default());
-    let (proxy, _handle, serve) = start_proxy(cfg, Arc::clone(&metrics)).await;
+    let (proxy, handle, serve) = start_proxy(cfg, Arc::clone(&metrics)).await;
     let mut moved = 0;
     for (key, was) in &mapping {
         let name = request_body(proxy, &cookie_get(key)).await;
-        if was != "gamma" {
+        if was == "gamma" {
+            moved += 1;
+        } else {
             assert_eq!(
                 &name, was,
                 "key {key} was on {was} and must not move when gamma leaves"
             );
-        } else {
-            moved += 1;
         }
     }
     assert_eq!(
@@ -1735,7 +1732,7 @@ async fn hash_policy_keeps_a_key_on_its_target_and_only_remaps_owned_keys() {
         mapping.values().filter(|name| *name == "gamma").count(),
         "only the keys owned by the removed target move"
     );
-    _handle.trigger();
+    handle.trigger();
     serve.await.expect("serve ends");
 }
 
@@ -1774,7 +1771,7 @@ async fn request_mirror_copies_the_request_and_never_changes_the_client_answer()
         primary,
         vec![mirror_rule(shadow, 100)],
     );
-    let (proxy, _handle, serve) = start_proxy(cfg, Arc::clone(&metrics)).await;
+    let (proxy, handle, serve) = start_proxy(cfg, Arc::clone(&metrics)).await;
 
     let body = request_body(
         proxy,
@@ -1821,7 +1818,7 @@ async fn request_mirror_copies_the_request_and_never_changes_the_client_answer()
         "only the matching requests are mirrored"
     );
 
-    _handle.trigger();
+    handle.trigger();
     serve.await.expect("serve ends");
 
     // Dead shadow backend: the client still gets the primary answer, the
@@ -1833,7 +1830,7 @@ async fn request_mirror_copies_the_request_and_never_changes_the_client_answer()
         vec![mirror_rule(dead, 100)],
     );
     let metrics = Arc::new(Metrics::default());
-    let (proxy, _handle, serve) = start_proxy(cfg, Arc::clone(&metrics)).await;
+    let (proxy, handle, serve) = start_proxy(cfg, Arc::clone(&metrics)).await;
     assert_eq!(
         request_body(proxy, &get("svc.example", "/api/x")).await,
         "primary",
@@ -1851,6 +1848,6 @@ async fn request_mirror_copies_the_request_and_never_changes_the_client_answer()
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(metrics.snapshot().requests_mirrored, 0);
-    _handle.trigger();
+    handle.trigger();
     serve.await.expect("serve ends");
 }

@@ -1,11 +1,11 @@
 //! Phase 2c — Deterministic fuzz-style corpus for the HTTP/1.1 framing parser.
 //!
-//! Security property under test (THREAT_MODEL T01-T03): the head parsers
+//! Security property under test (`THREAT_MODEL` T01-T03): the head parsers
 //! [`eqproxy_net::http1::parse_request_head`] and
 //! [`eqproxy_net::http1::parse_response_head`] must **never panic** on
 //! arbitrary bytes, and every rejection must carry an explicit status:
 //! requests fail with 400/431/501/505, responses with 502. Anything else is a
-//! defect (fail-open or crash). Size caps (MAX_HEAD_BYTES / MAX_LINE_BYTES)
+//! defect (fail-open or crash). Size caps (`MAX_HEAD_BYTES` / `MAX_LINE_BYTES`)
 //! live in the async read layer; the parsers enforce header-count limits.
 //!
 //! This is the committed, always-run part of parser fuzzing: a fixed seed
@@ -90,11 +90,12 @@ impl Rng {
         x ^= x << 25;
         x ^= x >> 27;
         self.0 = x;
-        x.wrapping_mul(0x2545F4914F6CDD1D)
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
     }
 
     fn below(&mut self, n: usize) -> usize {
-        (self.next() % (n as u64).max(1)) as usize
+        usize::try_from(self.next() % u64::try_from(n).expect("usize fits u64").max(1))
+            .expect("modulo of usize")
     }
 }
 
@@ -172,7 +173,7 @@ const MUTANTS_PER_SEED: usize = 200;
 
 #[test]
 fn request_parser_never_panics_and_rejects_explicitly() {
-    let mut rng = Rng(0x9E3779B97F4A7C15);
+    let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
     let mut exercised_ok = 0usize;
     let mut exercised_err = 0usize;
     for seed in request_seeds() {
@@ -202,7 +203,7 @@ fn request_parser_never_panics_and_rejects_explicitly() {
 
 #[test]
 fn response_parser_never_panics_and_maps_to_502() {
-    let mut rng = Rng(0xC2B2AE3D27D4EB4F);
+    let mut rng = Rng(0xC2B2_AE3D_27D4_EB4F);
     let mut exercised_ok = 0usize;
     let mut exercised_err = 0usize;
     for seed in response_seeds() {

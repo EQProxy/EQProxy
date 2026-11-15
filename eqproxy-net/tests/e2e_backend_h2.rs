@@ -181,8 +181,7 @@ async fn answer(
     let authority = request
         .uri()
         .authority()
-        .map(|value| value.to_string())
-        .unwrap_or_default();
+        .map_or_default(std::string::ToString::to_string);
     let version = request.version();
     let headers: Vec<(String, String)> = request
         .headers()
@@ -266,9 +265,8 @@ async fn answer(
             http::HeaderValue::from_str(&declared.to_string()).expect("length header"),
         );
     }
-    let mut send = match respond.send_response(out, false) {
-        Ok(send) => send,
-        Err(_) => return,
+    let Ok(mut send) = respond.send_response(out, false) else {
+        return;
     };
     if path == "/trailers" {
         // A chunked h2 answer: DATA followed by trailing HEADERS.
@@ -946,7 +944,7 @@ async fn a_dead_session_is_replaced_by_a_fresh_one() {
     .await;
     let served = match outcome {
         Ok(response) => response,
-        Err(_) => panic!("no request was served within the bound; statuses {statuses:?}"),
+        Err(err) => panic!("no request was served within the bound; statuses {statuses:?}: {err}"),
     };
     assert!(
         served.body.is_empty(),

@@ -131,8 +131,7 @@ async fn request(addr: SocketAddr, method: &str) -> String {
 fn body_of(response: &str) -> &str {
     response
         .split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .unwrap_or_default()
+        .map_or_default(|(_, body)| body)
 }
 
 fn header_value<'a>(head: &'a str, name: &str) -> Option<&'a str> {
@@ -329,7 +328,7 @@ async fn errorloc_intercepts_an_origin_error_and_keeps_its_connection_out_of_the
             "the page's 303 replaces the origin 503: {response}"
         );
         assert_eq!(header_value(&response, "location"), Some("/status"));
-        assert!(body_of(&response).is_empty());
+        assert_eq!(body_of(&response), "");
     }
     assert_eq!(
         connections.load(Ordering::Relaxed),
@@ -355,7 +354,7 @@ async fn no_page_keeps_the_builtin_minimal_error() {
         Some("0"),
         "the built-in error carries no body: {response}"
     );
-    assert!(body_of(&response).is_empty());
+    assert_eq!(body_of(&response), "");
     assert_one_http_date(&response);
     assert_eq!(metrics.snapshot().error_pages_served, 0);
 }

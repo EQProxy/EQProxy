@@ -32,11 +32,12 @@ impl Rng {
         x ^= x << 25;
         x ^= x >> 27;
         self.0 = x;
-        x.wrapping_mul(0x2545F4914F6CDD1D)
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
     }
 
     fn below(&mut self, n: usize) -> usize {
-        (self.next() % (n as u64).max(1)) as usize
+        usize::try_from(self.next() % (n as u64).max(1))
+            .expect("the value fits in the destination type")
     }
 
     /// True with probability 1/`n`.
@@ -253,7 +254,7 @@ fn pick_key(rng: &mut Rng, pairs: &[(&str, &str)]) -> String {
 }
 
 /// Random spec that always compiles: exactly one host variant, optionally
-/// one path variant and further ANDed conditions.
+/// one path variant and further `ANDed` conditions.
 fn random_valid_spec(rng: &mut Rng) -> RuleSpec {
     let mut spec = RuleSpec {
         name: format!("r{}", rng.below(1_000_000)),
@@ -326,8 +327,7 @@ fn conforming_facts(rng: &mut Rng, spec: &RuleSpec) -> OwnedFacts {
             pairs
                 .iter()
                 .find(|(v, _)| v == value)
-                .map(|(_, s)| (*s).to_owned())
-                .unwrap_or_else(|| value.clone())
+                .map_or_else(|| value.clone(), |(_, s)| (*s).to_owned())
         })
     };
     let mut facts = OwnedFacts {
@@ -358,8 +358,7 @@ fn conforming_facts(rng: &mut Rng, spec: &RuleSpec) -> OwnedFacts {
             VALID_HEADER_REGEXES
                 .iter()
                 .find(|(v, _)| v == regex)
-                .map(|(_, s)| (*s).to_owned())
-                .unwrap_or_default()
+                .map_or_default(|(_, s)| (*s).to_owned())
         } else {
             "1".to_owned()
         };
@@ -369,8 +368,7 @@ fn conforming_facts(rng: &mut Rng, spec: &RuleSpec) -> OwnedFacts {
         let member = VALID_IP
             .iter()
             .find(|(v, _)| v == block)
-            .map(|(_, s)| (*s).to_owned())
-            .unwrap_or_else(|| "10.1.2.3".to_owned());
+            .map_or_else(|| "10.1.2.3".to_owned(), |(_, s)| (*s).to_owned());
         facts.peer = member.parse().expect("static members are valid");
     }
     facts
@@ -396,9 +394,9 @@ fn perturb_constrained(rng: &mut Rng, spec: &RuleSpec, facts: &mut OwnedFacts) {
         choices.push(4);
     }
     match choices[rng.below(choices.len())] {
-        0 => facts.host = ANTI_HOST.to_owned(),
-        1 => facts.path = ANTI_PATH.to_owned(),
-        2 => facts.method = ANTI_METHOD.to_owned(),
+        0 => ANTI_HOST.clone_into(&mut facts.host),
+        1 => ANTI_PATH.clone_into(&mut facts.path),
+        2 => ANTI_METHOD.clone_into(&mut facts.method),
         3 => facts.headers.clear(),
         _ => {
             // Other address family: every block in the pool is
@@ -496,7 +494,7 @@ const MUTANTS_PER_SEED: usize = 200;
 /// Property 1: compile never panics; every rejection is actionable.
 #[test]
 fn compile_never_panics_and_rejections_are_actionable() {
-    let mut rng = Rng(0x9E3779B97F4A7C15);
+    let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
     let mut exercised_ok = 0usize;
     let mut exercised_err = 0usize;
     for (seed, _) in known_specs() {
@@ -545,7 +543,7 @@ fn compile_never_panics_and_rejections_are_actionable() {
 /// match and a single non-conforming field never does.
 #[test]
 fn matches_and_explain_never_disagree_over_generated_traffic() {
-    let mut rng = Rng(0xC2B2AE3D27D4EB4F);
+    let mut rng = Rng(0xC2B2_AE3D_27D4_EB4F);
     let mut matched = 0usize;
     let mut missed = 0usize;
     for _ in 0..5_000 {
@@ -598,7 +596,7 @@ fn matches_and_explain_never_disagree_over_generated_traffic() {
 /// other conditions see identical facts in both probes).
 #[test]
 fn host_verdict_is_invariant_under_case_and_port_suffix() {
-    let mut rng = Rng(0x243F6A8885A308D3);
+    let mut rng = Rng(0x243F_6A88_85A3_08D3);
     for _ in 0..5_000 {
         let spec = random_valid_spec(&mut rng);
         let rule = Rule::compile(&spec).expect("valid generator must compile");

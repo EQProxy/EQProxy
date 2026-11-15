@@ -70,14 +70,15 @@ fn run_expect_failure(config: &Path) {
             assert_eq!(
                 status.code(),
                 Some(1),
-                "run must reject a configuration rejected by the gate: {config:?}"
+                "run must reject a configuration rejected by the gate: {}",
+                config.display()
             );
             return;
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            panic!("run did not reject {config:?} within 10s");
+            panic!("run did not reject {} within 10s", config.display());
         }
         std::thread::sleep(Duration::from_millis(25));
     }

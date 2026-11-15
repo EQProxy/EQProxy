@@ -233,7 +233,7 @@ async fn re_resolution_swaps_the_backend_address_in_hot() {
     let deadline = tokio::time::Instant::now() + WAIT;
     loop {
         let response = http_exchange(proxy_addr, get_request()).await;
-        if response.starts_with("HTTP/1.1 200") && response.ends_with("a") {
+        if response.starts_with("HTTP/1.1 200") && response.ends_with('a') {
             break;
         }
         assert!(
@@ -253,7 +253,7 @@ async fn re_resolution_swaps_the_backend_address_in_hot() {
             response.starts_with("HTTP/1.1 200"),
             "the backend keeps serving during the swap: {response:?}"
         );
-        saw_b = response.ends_with("b");
+        saw_b = response.ends_with('b');
         assert!(
             tokio::time::Instant::now() < deadline,
             "the re-resolved address never took traffic"

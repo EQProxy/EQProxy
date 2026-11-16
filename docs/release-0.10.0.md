@@ -13,8 +13,8 @@ not move or create a tag and does not claim a publication.
   commit `0f03bf4`, whose `Cargo.toml` says `0.9.6`; it is not the tag for this
   tree and the release workflow would reject it
   (`v0.9.6` ≠ `v0.10.0` in the version-pin step).
-- Current tree: `da407ec` on `release/v0.9.5` plus this release preparation,
-  which is not committed yet.
+- Current tree: the tip of `release/v0.9.5` after the three `EXT-H` fixes
+  (`git log -1 --oneline`); nothing is pushed and no tag exists.
 - Published release: **`v0.9.5`** (annotated tag `fd65bee` → commit `3451c19`,
   remote, published 2026-11-12), record in
   [release-0.9.5](release-0.9.5.md). Nothing was published from this tree.
@@ -52,7 +52,8 @@ cannot carry a major-class change.
 
 ## Release claims
 
-Only **M-01** and **P0-8** are claimed as closed fixes:
+**M-01**, **P0-8**, the six `EXT-H` defects (`P0-10`…`P0-15`) and **N-2** are
+claimed as closed fixes:
 
 - **M-01:** HTTP/1.0 chunked framing remains fixed; the unit test and both
   E2E tests were executed red without the two HTTP/1.0 halves (exit 101) and
@@ -62,24 +63,60 @@ Only **M-01** and **P0-8** are claimed as closed fixes:
   header and port-free Host semantics, with parser, conversion and real-binary
   E2E coverage. Evidence:
   [v095-p0-8-p0-9](evidence/v095-p0-8-p0-9.md).
+- **P0-10 / EXT-H-01:** `cache::store_representation` decides
+  `Content-Encoding`, `Content-Length`, `Vary` and the cache key in one place,
+  so a stored entry cannot pair one representation's header with another's
+  body. Regression in `eqproxy-net/src/cache.rs`; E2E in
+  `eqproxy-net/tests/e2e_cache.rs`.
+- **P0-12 / EXT-H-03:** the PROXY line is written on the raw TCP stream before
+  the TLS handshake. `cargo test -p eqproxy-net --lib
+  proxy_header_precedes_the_tls_handshake` and `cargo test -p eqproxy-cli
+  --test cli_e2e backend_proxy_header_precedes_the_tls_handshake` were both
+  executed red against the old order and green after the change.
+- **P0-11 / EXT-H-02:** gRPC runs the WASM filter and `max_body_bytes`.
+  `cargo test -p eqproxy-cli --test cli_e2e
+  grpc_requests_obey_max_body_bytes_and_the_wasm_plugin` was red (`HTTP/2 502`,
+  the bypass dialing the backend) and is green (`413` with `grpc-status: 8`,
+  `403` with `grpc-status: 7`, neither dialing).
+- **P0-13 / EXT-H-04:** `proxy_pass https://` is converted to TLS to the
+  backend and a non-derivable case is reported as **revisar**. Corpus and
+  real-binary coverage in `eqproxy-config/tests/import_corpus.rs` and
+  `eqproxy-cli/tests/cli_e2e.rs`.
+- **P0-14 / EXT-H-05:** the backend certificate is verified against the
+  declared host (`BackendConfig::declared_host`), with the resolved address
+  only as an explicit fallback. `cargo test -p eqproxy-cli --test cli_e2e
+  run_verifies_the_declared_backend_hostname_not_its_ip`.
+- **P0-15 / EXT-H-06:** `maxconn` is scoped to the accepting listener; the
+  public gauge stays the sum. `cargo test -p eqproxy-core --lib
+  maxconn_is_scoped_to_each_listener` and `cargo test -p eqproxy-cli --test
+  cli_e2e maxconn_is_per_listener_not_process_wide`, the latter red against
+  the process-wide counter.
+- **N-2:** `Severity::Degraded` carries a mandatory typed reason and is
+  reported in its own «revisar» section. Regression in
+  `eqproxy-config/src/import/mod.rs`.
 
-P0-7 has no GitHub Actions run; P0-10…P0-15 and P1-1…P1-10 remain open. No
-P0/P1 completion is claimed, and the version step is an API-compatibility
-decision, not a feature claim.
+P0-7 has no GitHub Actions run yet; `P1-1`…`P1-10` remain open. No P1 gate is
+claimed, and the version step is an API-compatibility decision, not a feature
+claim.
 
 ## Local gates on this tree (2026-11-16)
+
+Run on the tip of `release/v0.9.5` after `P0-12`, `P0-11` and `P0-15`.
 
 | Command | Result |
 |---|---|
 | `cargo fmt --all -- --check` | exit 0 |
 | `cargo clippy --workspace --all-targets -- -D warnings` | exit 0 |
-| `cargo test --workspace` | exit 0 — **873 passed, 0 failed, 2 ignored** across 41 result blocks |
+| `cargo test --workspace` | exit 0 — **878 passed, 0 failed, 2 ignored** across 41 result blocks |
 | `cargo dylint --all` (`nightly-2026-05-28`) | exit 0 |
-| `cargo semver-checks check-release --baseline-rev v0.9.1 --release-type major` | exit 0 — `eqproxy-config`, `eqproxy-core` and `eqproxy-net` each report `no semver update required` |
+| `cargo semver-checks --baseline-rev v0.9.1 --release-type major` | exit 0 — `no semver update required` for `eqproxy-net` (0 checks run, 254 skipped: a major step accepts the delta by construction) |
 | Release workflow version pin (`test "v$VER" = "$GITHUB_REF_NAME"`) | `VER=0.10.0`, exit 0 for a `v0.10.0` tag |
 | Release workflow changelog extraction | finds `## [v0.10.0] — 2026-11-16` in `CHANGELOG.md` |
-| Rust Audit gate (`.github/scripts/rust-audit-gate.sh`) | exit 0 — 6 reviewed high findings, 0 new, 0 extra, 0 stale |
-| `veyra audit . --profile standard` | exit 0 — **ACCEPTED**, 13 tools OK (`rustfmt`, `cargo check`, `clippy`, `cargo test`, `cargo-audit`, `veyra-anti-theater`, `nextest`, `llvm-cov`, `cargo-deny`, `cargo-machete`, `dylint`, **`cargo-semver-checks`**, `veyra-e2e`); `cargo-geiger` INCONCLUSIVE as before; 566.83 s in tools; evidence `.veyra/evidence/20261116T201501Z/` |
+| Rust Audit gate (`bash .github/scripts/rust-audit-gate.sh`, `python3.13`) | exit 0 — 6 reviewed high findings, 0 new, 0 extra, 0 stale; `report/rust-audit-20261116-230917.md` |
+| `check-secrets`, `check-evidence-test-citations`, `check-short-health-probes`, `check-docker-build-target`, `check-uid-skips` (each with `--self-test`) | exit 0 — 149 documents, 257 cited identifiers, 865 `#[test]` functions; 18 probes, 2 declared |
+| `git diff --check` | exit 0 |
+| `veyra audit . --profile standard` | exit 0 — **ACCEPTED**, 13 tools OK (`rustfmt`, `cargo check`, `clippy`, `cargo test`, `cargo-audit`, `veyra-anti-theater`, `nextest`, `llvm-cov`, `cargo-deny`, `cargo-machete`, `dylint`, **`cargo-semver-checks`**, `veyra-e2e`); `cargo-geiger` INCONCLUSIVE (4 dependency files unscanned — a lower bound, not a pass); 789.83 s in tools; evidence `.veyra/evidence/20261116T220825Z/` |
+| CodeGraph `index . --stats-json` | see the index cited below; an index of an older tree is not evidence for this one |
 
 The earlier run on the same tree before the version step
 (`.veyra/evidence/20261116T183815Z/`) was **REJECTED** with

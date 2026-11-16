@@ -87,8 +87,9 @@ renewal without a restart
 token and a write audit line, no JavaScript
 ([ADR-0029](adr/0029-panel-sessions-and-csrf.md)), with **799 tests
 passed, 0 failed (2 declared `#[ignore]` Docker harnesses) across 36 targets**
-(`cargo test --workspace --locked`, v0.9.5 tagged tree, 2026-11-11; the current
-tree runs 807) plus two Docker-gated
+(`cargo test --workspace --locked`, v0.9.5 tagged tree, 2026-11-11 — the
+ published figure; the 0.10.0 tree runs **878 passed, 0 failed, 2 ignored
+ across 41 result blocks**, 2026-11-16) plus two Docker-gated
 harnesses: [differential corpus](differential-corpus.md) **31/31** cases
 against HAProxy 3.4.6, nginx, the ingress-nginx data plane and static
 Envoy v1.34.2 (full-corpus run 2026-11-04; the 2026-11-02

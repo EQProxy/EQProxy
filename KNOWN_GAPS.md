@@ -34,6 +34,14 @@ Last reviewed 2026-11-12 against the published v0.9.5 tree.
 - **HTTP/3** is experimental: browsers and `curl` over h3 are unverified, and
   the QUIC adversarial tests of [THREAT_MODEL](THREAT_MODEL.md) T19 are not
   executed ([ADR-0013](docs/adr/0013-http3-quic.md)).
+- **HTTP/3 is deprecated as a release-contract feature and retires in
+  `0.10.8`.** It stays available behind the operator's explicit `quic = true`
+  and is never announced (`Alt-Svc`) unless that flag turns it on; no test and
+  no migration path depends on it being on.
+- **The standalone `eqproxy_migrate.py` converter is deprecated and retires in
+  `0.10.8`.** `eqproxy config import` replaces it; the script is
+  maintainer-local (`ROADMAP EQPROXY/`, in `.git/info/exclude`) and is not part
+  of any release artifact.
 - **No users outside the author yet.** v0.9.5 is not declared production ready;
   the Phase 9 gate is pending.
 - **The v0.9.5 release is Linux-only:** no Darwin binary is published, so macOS

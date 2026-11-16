@@ -49,17 +49,63 @@ Fixed); versions are `vMAJOR.MINOR.PATCH` git tags.
   restoring them; the exact output is in
   [v095-p0-8-p0-9](docs/evidence/v095-p0-8-p0-9.md). The fix is inherited
   from v0.9.5, which is an ancestor of this tree.
+- **P0-10 / EXT-H-01: a compressed HIT cannot mix two representations.**
+  `cache::store_representation` is the single place that decides
+  `Content-Encoding`, `Content-Length`, `Vary` and the cache key, so a stored
+  entry keeps the origin's bytes and re-derives the negotiated coding on every
+  serve instead of pairing one representation's header with another's body.
+- **P0-12 / EXT-H-03: the PROXY header precedes the TLS handshake.** A backend
+  configured with `proxy_protocol` and backend TLS used to receive the PROXY
+  line **inside** the negotiated stream, so a backend that requires PROXY over
+  TLS rejected the connection. The header is now the first thing on the raw
+  TCP stream; the real-binary E2E records `PROXY TCP4 …` followed by the TLS
+  record and serves `200` through a second `eqproxy` process with
+  `proxy_receive = true`.
+- **P0-11 / EXT-H-02: gRPC runs the WASM filter and the body bound.** The gRPC
+  path in `eqproxy-net/src/http2.rs` skipped `limits.max_body_bytes` and the
+  request filter, so a gRPC client could bypass both. The plugin now runs
+  where every other request runs it (denial → `403` with `grpc-status: 7`, a
+  runtime failure with `on_error = "closed"` → `503` with `grpc-status: 14`),
+  and a body over the bound is refused with `413`/`grpc-status: 8` before the
+  backend is dialed.
+- **P0-13 / EXT-H-04: `proxy_pass https://` keeps TLS to the backend.** The
+  nginx importer converts the scheme instead of degrading it to cleartext, and
+  a directive whose TLS material cannot be derived is reported as **revisar**,
+  never as **convertida**.
+- **P0-14 / EXT-H-05: the backend certificate is verified by name.**
+  `BackendConfig::declared_host` supplies the declared host as the default
+  `[backend.*.tls].server_name`, with the resolved address only as an explicit,
+  documented fallback.
+- **P0-15 / EXT-H-06: `maxconn` is scoped to the listener.** The cap used one
+  process-wide counter, so the busiest listener could refuse traffic on a
+  listener whose own configuration still had slots. Each listener now has its
+  own slot counter (TCP and QUIC) and `eqproxy_connections_active` stays the
+  sum, so the exported series keeps its meaning.
+- **N-2: a degraded conversion can no longer be reported as `convertido`.**
+  `Severity::Degraded` carries a mandatory, typed `Degradation` reason and is
+  counted in the report's «revisar» column with its own section.
 
-Only M-01 and P0-8 are claimed as closed fixes in this release.
+All six `EXT-H` defects reproduced by the external audit are fixed in this
+release, each with a regression that fails without the change. The gRPC, PROXY
+and `maxconn` fixes were verified with the real binary through its public
+interface, not with in-process doubles alone.
+
+### Deprecated
+
+- **HTTP/3 stays experimental and leaves the release contract.** Browsers and
+  `curl` over h3 are unverified and `THREAT_MODEL` T19 is not executed
+  ([ADR-0013](docs/adr/0013-http3-quic.md)). Retirement: **0.10.8**.
+- **The standalone `eqproxy_migrate.py` converter is deprecated.** It is
+  superseded by `eqproxy config import`; retirement: **0.10.8**. It is
+  maintainer-local and never shipped in a release.
 
 ### Pending
 
 - **P0-7 is not closed.** `.github/workflows/fuzz.yml` is committed, but it
   has not run in GitHub Actions; there is no remote run, log or artifact. This
   release does not claim P0-7 as verified.
-- **P1 and the remaining P0 work are not closed.** P0-10…P0-15 and
-  P1-1…P1-10 remain open in the roadmap and the production verdict; no fix or
-  gate from that list is claimed here.
+- **P1 is not closed.** P1-1…P1-10 remain open in the roadmap and the
+  production verdict; no gate or evidence item from that list is claimed here.
 - **The post-0.9.5 local changes are not release-cleared.** The `a0ac3fc`
   tree contains the `Metrics` compatibility, importer-report and cache-auth
   changes, with local tests recorded in

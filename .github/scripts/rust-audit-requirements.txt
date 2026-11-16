@@ -1,0 +1,6 @@
+# Rust Audit is installed from PyPI in CI. Pin both the version and the wheel
+# hash so a replaced artifact cannot silently change the gate; --require-hashes
+# makes pip reject any other bytes. This is the 0.2.9 universal wheel whose
+# rust_audit.py sha256 is 6b0862996455253bf59590d6fbe88aca95feb35aad1ea205a0239c3282c7f38d,
+# the same engine identity recorded in rust-audit-baseline.json.
+rust-audit==0.2.9 --hash=sha256:b3b8c86b5392fb823490da4e931a2d6152afb69347c16d632f02f5f28057e303

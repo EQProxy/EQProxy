@@ -1,0 +1,84 @@
+{
+  "tool": "Rust Audit",
+  "version": "0.2.9",
+  "engine": {
+    "version": "0.2.9",
+    "path": "PyPI rust-audit 0.2.9",
+    "sha256": "6b0862996455253bf59590d6fbe88aca95feb35aad1ea205a0239c3282c7f38d"
+  },
+  "note": "Versioned CI gate baseline. Only the six reviewed high false positives are listed; each has an expected_count of 1 and a source review. The gate compares raw Rust Audit JSON by fingerprint and count, so a new high, a second occurrence of a reviewed pattern, or a stale entry fails. Keep the engine sha256 in step with .github/scripts/rust-audit-requirements.txt.",
+  "findings": [
+    {
+      "rule_id": "R20",
+      "severity": "high",
+      "file": "Cargo.toml",
+      "line": 1,
+      "function": "",
+      "evidence": "pprof ~ approx",
+      "fingerprint": "2fde4adc4e42e556",
+      "message": "Dependency `pprof` is not popular but is 2 edit(s) away from `approx` (potential typosquat).",
+      "review": "False positive R20: pprof 0.15 is a real crates.io package (cargo tree -i pprof proves it), optional behind the profile feature; approx is only a similarly spelled popular crate. pprof is intentional, documented in eqproxy-cli/Cargo.toml, and not a typosquat.",
+      "expected_count": 1
+    },
+    {
+      "rule_id": "R21",
+      "severity": "high",
+      "file": "eqproxy-cli/build.rs",
+      "line": 14,
+      "function": "main",
+      "evidence": "Command::new(",
+      "fingerprint": "cc31ebbeb40fa231",
+      "message": "build.rs executes an external command at compile time (supply-chain risk: code runs on every build).",
+      "review": "False positive R21: eqproxy-cli/build.rs runs the checked-in eqproxy-net/build-support/gen-test-certs.sh to create ephemeral test certificates in OUT_DIR. It uses no network and returns before Command::new for release builds; tests depend on the fixtures. The script is fixed source, not an invented dependency.",
+      "expected_count": 1
+    },
+    {
+      "rule_id": "R21",
+      "severity": "high",
+      "file": "eqproxy-net/build.rs",
+      "line": 14,
+      "function": "main",
+      "evidence": "Command::new(",
+      "fingerprint": "1f25a2e88a4f7cef",
+      "message": "build.rs executes an external command at compile time (supply-chain risk: code runs on every build).",
+      "review": "False positive R21: eqproxy-net/build.rs runs the checked-in build-support/gen-test-certs.sh to create ephemeral test certificates in OUT_DIR. It uses no network and returns before Command::new for release builds; tests depend on the fixtures. The script is fixed source, not an invented dependency.",
+      "expected_count": 1
+    },
+    {
+      "rule_id": "R18c",
+      "severity": "high",
+      "file": "lints/eqproxy-lints/src/lib.rs",
+      "line": 7,
+      "function": "",
+      "evidence": "rustc_ast ~ rustc_hash",
+      "fingerprint": "25b32411b8f4be17",
+      "message": "Crate `rustc_ast` does not exist but is within 2 edit(s) of `rustc_hash` (near-miss / hallucinated name).",
+      "review": "False positive R18c: lints/eqproxy-lints is a rustc-private Dylint crate (#![feature(rustc_private)]); rustc_ast is supplied by the compiler sysroot, not crates.io. rustc_hash is a wrong near-miss suggestion for this context.",
+      "expected_count": 1
+    },
+    {
+      "rule_id": "R18a",
+      "severity": "high",
+      "file": "lints/eqproxy-lints/src/lib.rs",
+      "line": 8,
+      "function": "",
+      "evidence": "use rustc_errors::",
+      "fingerprint": "8ec05820e0acb28f",
+      "message": "`use rustc_errors::...` references a crate that is not declared in Cargo.toml (unresolved external identifier; compilation will fail).",
+      "review": "False positive R18a: rustc_errors is a compiler-private crate supplied by the rustc sysroot; lints/eqproxy-lints declares rustc_private and is built with the pinned nightly Dylint toolchain, not a crates.io dependency.",
+      "expected_count": 1
+    },
+    {
+      "rule_id": "R18a",
+      "severity": "high",
+      "file": "lints/eqproxy-lints/src/lib.rs",
+      "line": 9,
+      "function": "",
+      "evidence": "use rustc_lint::",
+      "fingerprint": "febb6c6ded901e05",
+      "message": "`use rustc_lint::...` references a crate that is not declared in Cargo.toml (unresolved external identifier; compilation will fail).",
+      "review": "False positive R18a: rustc_lint is a compiler-private crate supplied by the rustc sysroot; lints/eqproxy-lints declares rustc_private and is built with the pinned nightly Dylint toolchain, not a crates.io dependency.",
+      "expected_count": 1
+    }
+  ]
+}

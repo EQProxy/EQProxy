@@ -40,6 +40,19 @@ cargo run -p eqproxy-cli -- run --config eqproxy.toml.example
 `config validate` is offline and binds nothing; `run` serves with the example
 listeners until `SIGINT`.
 
+The optional CodeMap checks read a local index under `.codemap/`:
+
+```bash
+codemap index --root .          # refreshes .codemap/index.db and .codemap/pages/
+codemap lint --severity warning
+```
+
+`.codemap/pages/*.md` (`crates`, `gaps`, `ipc-map`, `ui`) are generated
+projections of that index, not hand-written documents, and are not committed.
+`codemap index` renders them; `codemap pages export` only copies pages that
+already exist. Regenerate them with `codemap index` after reindexing, or
+`codemap lint` reports `stale_page` for every page.
+
 ## Before opening a PR
 
 Run the build gates CI runs on every push, with the same flags:
@@ -111,6 +124,18 @@ advisory, so it never counts as proof that something works. EvoForge is no
 longer part of this process (removed 2026-10-24); the slice eval it ran could
 not say anything about the real programme that the suite had not already
 said.
+
+Run the Rust Audit gate through
+[`.github/scripts/rust-audit-gate.sh`](.github/scripts/rust-audit-gate.sh). It
+takes no scan arguments and always applies the versioned reviewed
+`rust-audit-baseline.json` with `--fail-on high`; do not run `rust_audit.py
+scan` directly for the gate and do not pass `--baseline` by hand. The gate
+works in a clean clone and in CI. It also checks occurrence counts, so a
+second high with the same reviewed fingerprint cannot hide behind the tool's
+set-based diff; a new, extra or stale entry exits `1`. A missing or malformed
+baseline, a tool/engine mismatch or a scan execution failure exits `2` and is
+**NOT EXECUTED / BLOCKED**, not a pass. Never create an empty baseline. See the
+[Rust Audit runbook](docs/rust-audit-runbook.md).
 
 ## Scope discipline
 

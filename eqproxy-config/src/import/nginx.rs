@@ -5637,6 +5637,31 @@ mod tests {
         std::fs::write(path, text).expect("write include fixture");
     }
 
+    /// EXT-M-15 (P1-9): `--include-root` is the boundary. A relative include
+    /// that resolves outside it is refused, never read.
+    #[test]
+    fn include_escaping_the_include_root_is_rejected() {
+        let parent = include_scratch("escape");
+        let root = parent.join("root");
+        std::fs::create_dir_all(&root).expect("create include root");
+        write_include(&parent, "outside.conf", "server { listen 81; }\n");
+        write_include(&root, "conf.d/site.conf", "include ../outside.conf;\n");
+        let source = "http {\n  include conf.d/site.conf;\n}\n";
+        let err = super::super::convert_with_options(
+            super::super::Source::Nginx,
+            source,
+            super::super::ImportOptions {
+                include_root: Some(&root),
+            },
+        )
+        .expect_err("an include outside the root must be refused");
+        assert!(
+            err.to_string().contains("--include-root"),
+            "the refusal names the boundary: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
     fn expand_include_tree(
         root: &Path,
         text: &str,

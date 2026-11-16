@@ -593,9 +593,106 @@ pub(super) fn degraded_directives(conv: &Conv) -> Vec<String> {
 /// newline (quoted or malformed source text); without this, its second line
 /// would be indistinguishable from another classification bullet.
 fn single_line(text: &str) -> String {
-    text.chars()
+    let flat: String = text
+        .chars()
         .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
-        .collect()
+        .collect();
+    redact_secrets(&flat)
+}
+
+/// Directive keys whose value is a credential, compared against the bare token
+/// (before `=`, `:` or whitespace).
+///
+/// `pass` and `auth` match only exactly: a suffix rule on `pass` turned
+/// `proxy_pass http://…` into `<redacted>`, which hid the backend instead of a
+/// secret.
+const SECRET_KEYS: [&str; 8] = [
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "api_key",
+    "apikey",
+    "authorization",
+    "auth",
+];
+
+/// Compound keys that end with a credential name (`client_secret`,
+/// `db_password`, `access_token`).
+const SECRET_SUFFIXES: [&str; 5] = ["password", "secret", "token", "api_key", "apikey"];
+
+fn is_secret_key(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    SECRET_KEYS.contains(&name.as_str()) || SECRET_SUFFIXES.iter().any(|key| name.ends_with(key))
+}
+
+/// Masks the value that follows a credential key, so a conversion report can
+/// be attached to a ticket without leaking the source's password in it.
+///
+/// `key=value` keeps the key (`password=<redacted>`) and a bare key masks the
+/// value tokens after it: up to the closing quote of a quoted value, or up to
+/// the `,` / `;` / `}` that ends the directive. Everything else in the line
+/// stays, so the report still names the directive that was converted.
+fn redact_secrets(text: &str) -> String {
+    let tokens: Vec<&str> = text.split(' ').collect();
+    let mut out = String::with_capacity(text.len());
+    let mut index = 0;
+    while index < tokens.len() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        let token = tokens[index];
+        let bare = token.trim_matches(|c: char| {
+            c == '"' || c == '\'' || c == ';' || c == ',' || c == ')' || c == '}'
+        });
+        let assignment = bare.split_once('=');
+        let pair = assignment.or_else(|| bare.split_once(':'));
+        let name = pair.map_or(bare, |(name, _)| name);
+        if !is_secret_key(name) {
+            out.push_str(token);
+            index += 1;
+            continue;
+        }
+        if let Some((key, separator)) = bare.split_once('=') {
+            let _ = separator;
+            out.push_str(key);
+            out.push_str("=<redacted>");
+            index += 1;
+            continue;
+        }
+        if let Some((key, _)) = bare.split_once(':') {
+            out.push_str(key);
+            out.push_str(":<redacted>");
+            index += 1;
+            continue;
+        }
+        out.push_str(token);
+        index += 1;
+        let Some(value) = tokens.get(index) else {
+            continue;
+        };
+        let quote = value.chars().next().filter(|c| *c == '"' || *c == '\'');
+        let mut closed = match quote {
+            Some(quote) => value.len() > 1 && value.ends_with(quote),
+            None => ends_directive(value),
+        };
+        out.push(' ');
+        out.push_str("<redacted>");
+        index += 1;
+        while !closed {
+            let Some(next) = tokens.get(index) else { break };
+            closed = match quote {
+                Some(quote) => next.ends_with(quote),
+                None => ends_directive(next),
+            };
+            index += 1;
+        }
+    }
+    out
+}
+
+fn ends_directive(token: &str) -> bool {
+    token.ends_with(',') || token.ends_with(';') || token.ends_with('}')
 }
 
 fn source_label(source: Source) -> &'static str {
@@ -786,6 +883,50 @@ mod tests {
                 .count(),
             1,
             "one classified directive must render one bullet:\n{report}"
+        );
+    }
+
+    /// EXT-M-08 (P1-9): a credential in the source never reaches the report.
+    #[test]
+    fn a_secret_is_redacted_and_the_directive_stays_named() {
+        assert_eq!(
+            redact_secrets("server app 10.0.0.1:8080 password=hunter2 check"),
+            "server app 10.0.0.1:8080 password=<redacted> check"
+        );
+        assert_eq!(
+            redact_secrets("stats auth admin:hunter2"),
+            "stats auth <redacted>"
+        );
+        assert_eq!(
+            redact_secrets("proxy_set_header Authorization \"Basic dXNlcjpwdw==\";"),
+            "proxy_set_header Authorization <redacted>"
+        );
+        assert_eq!(
+            redact_secrets("client_secret=abc123"),
+            "client_secret=<redacted>",
+            "a suffix key is still a credential"
+        );
+        assert_eq!(
+            redact_secrets("add_header X-Tenant acme"),
+            "add_header X-Tenant acme",
+            "an ordinary header is untouched"
+        );
+
+        let source = "http {\n  server {\n    listen 8443 ssl;\n    \
+                      ssl_certificate /etc/eqproxy-absent/cert.pem;\n    \
+                      ssl_certificate_key /etc/eqproxy-absent/key.pem;\n    \
+                      location / {\n      proxy_pass http://127.0.0.1:9000;\n      \
+                      proxy_set_header Authorization \"Basic dXNlcjpocHVudGVyMg==\";\n    }\n  }\n}\n";
+        let report = crate::import::convert(Source::Nginx, source)
+            .expect("converts")
+            .report;
+        assert!(
+            !report.contains("dXNlcjpocHVudGVyMg=="),
+            "the report must not carry the source credential:\n{report}"
+        );
+        assert!(
+            report.contains("Authorization <redacted>"),
+            "the directive stays named, only its value is masked:\n{report}"
         );
     }
 }

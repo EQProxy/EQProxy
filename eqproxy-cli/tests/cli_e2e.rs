@@ -12083,3 +12083,177 @@ impl rustls::client::danger::ServerCertVerifier for SniRecorder {
             .supported_schemes()
     }
 }
+
+/// EXT-M-07/08/09/15 (P1-9): the import writes no credential into its report,
+/// copies no certificate file, and never leaves a half-written destination
+/// behind when the write fails.
+#[cfg_attr(
+    miri,
+    ignore = "needs processes: miri cannot spawn the real binary (rust-lang/miri#3449)"
+)]
+#[test]
+fn config_import_redacts_secrets_and_never_writes_half_a_file() {
+    let dir = std::env::temp_dir().join(format!("eqproxy-p19-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let source = dir.join("nginx.conf");
+    std::fs::write(
+        &source,
+        "http {\n  server {\n    listen 8443 ssl;\n    \
+         ssl_certificate /etc/eqproxy-absent/cert.pem;\n    \
+         ssl_certificate_key /etc/eqproxy-absent/key.pem;\n    location / {\n      \
+         proxy_pass http://127.0.0.1:9000;\n      \
+         proxy_set_header Authorization \"Basic dXNlcjpocHVudGVyMg==\";\n      \
+         proxy_set_header X-Tenant acme;\n    }\n  }\n}\n",
+    )
+    .expect("write source");
+    let output = dir.join("eqproxy.toml");
+    let report_path = dir.join("report.md");
+    let run = bin()
+        .args(["config", "import", "--input"])
+        .arg(&source)
+        .arg("--output")
+        .arg(&output)
+        .arg("--report")
+        .arg(&report_path)
+        .output()
+        .expect("run eqproxy config import");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        matches!(run.status.code(), Some(0 | 2)),
+        "the import must write its files: {stderr}"
+    );
+    let report = std::fs::read_to_string(&report_path).expect("report written");
+    assert!(
+        !report.contains("dXNlcjpocHVudGVyMg=="),
+        "the report must not leak the source credential:\n{report}"
+    );
+    assert!(
+        report.contains("<redacted>"),
+        "the masked value stays visible as masked:\n{report}"
+    );
+    assert!(
+        !dir.join("cert.pem").exists() && !dir.join("key.pem").exists(),
+        "the certificate the source names is never copied"
+    );
+    let mut entries: Vec<String> = std::fs::read_dir(&dir)
+        .expect("read scratch dir")
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    entries.sort();
+    assert_eq!(
+        entries,
+        vec!["eqproxy.toml", "nginx.conf", "report.md"],
+        "the import writes exactly its two destinations"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// EXT-M-09 (P1-9): the TOML and the report are written by rename, so a failed
+/// write leaves the destination exactly as it was and no temporary file behind.
+#[cfg_attr(
+    miri,
+    ignore = "needs processes: miri cannot spawn the real binary (rust-lang/miri#3449)"
+)]
+#[test]
+fn config_import_never_leaves_a_half_written_file() {
+    let dir = std::env::temp_dir().join(format!("eqproxy-p19-write-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let source = dir.join("nginx.conf");
+    std::fs::write(
+        &source,
+        "http {\n  upstream app { server 10.0.0.1:8080; }\n  \
+         server {\n    listen 8080;\n    location / { proxy_pass http://app; }\n  }\n}\n",
+    )
+    .expect("write source");
+    // A second import replaces the destination by rename: the process never
+    // truncates the file it is replacing, so a reader sees the old bytes or
+    // the new ones, never a half-written file.
+    let output = dir.join("eqproxy.toml");
+    for _ in 0..2 {
+        let run = bin()
+            .args(["config", "import", "--input"])
+            .arg(&source)
+            .arg("--output")
+            .arg(&output)
+            .output()
+            .expect("run eqproxy config import");
+        assert_eq!(run.status.code(), Some(0), "the import writes its file");
+    }
+    let replaced_by_rename = {
+        use std::os::unix::fs::MetadataExt;
+        let before = std::fs::metadata(&output).expect("first output").ino();
+        let run = bin()
+            .args(["config", "import", "--input"])
+            .arg(&source)
+            .arg("--output")
+            .arg(&output)
+            .output()
+            .expect("run eqproxy config import");
+        assert_eq!(run.status.code(), Some(0));
+        let after = std::fs::metadata(&output).expect("second output").ino();
+        before != after
+    };
+    assert!(
+        replaced_by_rename,
+        "the TOML must be replaced by rename, not truncated in place"
+    );
+
+    // A destination that cannot be replaced: the write fails, the destination
+    // is untouched and no temporary file survives.
+    let blocked = dir.join("blocked.toml");
+    std::fs::create_dir_all(&blocked).expect("blocked destination");
+    let failed = bin()
+        .args(["config", "import", "--input"])
+        .arg(&source)
+        .arg("--output")
+        .arg(&blocked)
+        .output()
+        .expect("run eqproxy config import");
+    assert_eq!(
+        failed.status.code(),
+        Some(1),
+        "an unwritable destination must fail the import"
+    );
+    assert!(
+        String::from_utf8_lossy(&failed.stderr).contains("cannot write"),
+        "the error names the write that failed"
+    );
+    assert!(blocked.is_dir(), "the destination directory is untouched");
+    let leftovers: Vec<String> = std::fs::read_dir(&dir)
+        .expect("read scratch dir")
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(".tmp."))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "no temporary file survives the failure: {leftovers:?}"
+    );
+
+    // A conversion that fails keeps the previous TOML byte for byte.
+    let keep = dir.join("keep.toml");
+    std::fs::write(&keep, "sentinel\n").expect("sentinel");
+    let bad = dir.join("bad.conf");
+    std::fs::write(&bad, "http {\n").expect("write unparseable source");
+    let refused = bin()
+        .args(["config", "import", "--input"])
+        .arg(&bad)
+        .arg("--output")
+        .arg(&keep)
+        .output()
+        .expect("run eqproxy config import");
+    assert_eq!(
+        refused.status.code(),
+        Some(1),
+        "an unparseable source must be refused"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&keep).expect("read previous file"),
+        "sentinel\n",
+        "a refused import never rewrites the destination"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -1286,13 +1286,16 @@ fn import(
     // A degradation is a security loss, not a note: name it and let the exit
     // code say so, so a CI log cannot read the conversion as clean.
     let counts = outcome.counts;
-    if let Err(e) = std::fs::write(output, &outcome.toml) {
+    // Both files are written through the same rename-based helper `config
+    // apply` uses: a failed import can leave no half-written `eqproxy.toml`
+    // behind, because the destination only ever sees a complete file.
+    if let Err(e) = atomic_write(output, outcome.toml.as_bytes()) {
         eprintln!("error: cannot write {}: {e}", output.display());
         return 1;
     }
     match report_path {
         Some(path) => {
-            if let Err(e) = std::fs::write(path, &report) {
+            if let Err(e) = atomic_write(path, report.as_bytes()) {
                 eprintln!("error: cannot write {}: {e}", path.display());
                 return 1;
             }

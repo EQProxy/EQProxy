@@ -1,0 +1,135 @@
+{
+  "when": "2026-11-14T11:12:51.439383+00:00",
+  "items": [
+    {
+      "id": "healthcheck",
+      "query": "What breaks if healthcheck changes? List every production caller and the affected code paths.",
+      "exit": 0,
+      "elapsed_s": 22.3,
+      "tier": "Medium",
+      "tool_use_count": 5,
+      "answer_chars": 5296,
+      "json_ok": true
+    },
+    {
+      "id": "check_listener_addresses",
+      "query": "What breaks if check_listener_addresses changes? List every production caller and the affected code paths.",
+      "exit": 0,
+      "elapsed_s": 14.1,
+      "tier": "Medium",
+      "tool_use_count": 8,
+      "answer_chars": 3753,
+      "json_ok": true
+    },
+    {
+      "id": "multi_vhost",
+      "query": "What breaks if multi_vhost changes? List every production caller and the affected code paths.",
+      "exit": 0,
+      "elapsed_s": 17.6,
+      "tier": "Medium",
+      "tool_use_count": 4,
+      "answer_chars": 6629,
+      "json_ok": true
+    },
+    {
+      "id": "report_secondary_listener_knob",
+      "query": "What breaks if report_secondary_listener_knob changes? List every production caller and the affected code paths.",
+      "exit": 0,
+      "elapsed_s": 15.9,
+      "tier": "Medium",
+      "tool_use_count": 6,
+      "answer_chars": 4489,
+      "json_ok": true
+    },
+    {
+      "id": "classify_proxy_ssl",
+      "query": "What breaks if classify_proxy_ssl changes? List every production caller and the affected code paths.",
+      "exit": 0,
+      "elapsed_s": 17.4,
+      "tier": "Medium",
+      "tool_use_count": 7,
+      "answer_chars": 4928,
+      "json_ok": true
+    },
+    {
+      "id": "collect_proxy_ssl",
+      "query": "What breaks if collect_proxy_ssl changes? List every production caller and the affected code paths.",
+      "exit": 0,
+      "elapsed_s": 12.0,
+      "tier": "Medium",
+      "tool_use_count": 5,
+      "answer_chars": 3922,
+      "json_ok": true
+    },
+    {
+      "id": "store_representation",
+      "query": "What breaks if store_representation changes? List every production caller and the affected code paths.",
+      "exit": 0,
+      "elapsed_s": 22.9,
+      "tier": "Medium",
+      "tool_use_count": 10,
+      "answer_chars": 5140,
+      "json_ok": true
+    },
+    {
+      "id": "StoredRepresentation",
+      "query": "What breaks if the StoredRepresentation type changes? List every production user and the affected code paths.",
+      "exit": 0,
+      "elapsed_s": 16.3,
+      "tier": "Medium",
+      "tool_use_count": 8,
+      "answer_chars": 5091,
+      "json_ok": true
+    },
+    {
+      "id": "serve_http",
+      "query": "What breaks if serve_http changes? List every production caller and the affected code paths.",
+      "exit": 0,
+      "elapsed_s": 9.2,
+      "tier": "Medium",
+      "tool_use_count": 4,
+      "answer_chars": 2622,
+      "json_ok": true
+    },
+    {
+      "id": "spawn_quic",
+      "query": "What breaks if spawn_quic changes? List every production caller and the affected code paths.",
+      "exit": 0,
+      "elapsed_s": 18.9,
+      "tier": "Medium",
+      "tool_use_count": 7,
+      "answer_chars": 5097,
+      "json_ok": true
+    },
+    {
+      "id": "report_with_paths",
+      "query": "What breaks if report_with_paths changes? List every production caller and the affected code paths.",
+      "exit": 0,
+      "elapsed_s": 19.7,
+      "tier": "Medium",
+      "tool_use_count": 9,
+      "answer_chars": 4388,
+      "json_ok": true
+    },
+    {
+      "id": "declared_host",
+      "query": "What breaks if declared_host changes? List every production caller and the affected code paths.",
+      "exit": 0,
+      "elapsed_s": 23.0,
+      "tier": "Medium",
+      "tool_use_count": 7,
+      "answer_chars": 4930,
+      "json_ok": true
+    },
+    {
+      "id": "convert_with_degraded",
+      "query": "What breaks if convert_with_degraded changes? List every production caller and the affected code paths.",
+      "exit": 0,
+      "elapsed_s": 22.0,
+      "tier": "Medium",
+      "tool_use_count": 7,
+      "answer_chars": 4664,
+      "json_ok": true
+    }
+  ]
+}

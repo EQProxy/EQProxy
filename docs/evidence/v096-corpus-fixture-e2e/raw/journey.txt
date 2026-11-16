@@ -1,0 +1,21 @@
+PASS import-exit: 2
+PASS validate-exit: 0
+PASS main-status: 200
+PASS api-status: 200
+PASS panel-status: 200
+PASS origin-down-status: 502
+PASS main-body-route: origin-64007|path=/|host=ejemplo.com:64006
+PASS api-body-route: origin-64010|path=/api/|host=ejemplo.com:64006
+PASS panel-body-route: origin-64012|path=/|host=panel.ejemplo.com:64006
+PASS sni-ejemplo-cert: subject= /CN=alpha.example.test
+PASS sni-panel-cert: subject= /CN=beta.example.test
+PASS api-response-header: X-Frame-Options SAMEORIGIN
+PASS main-protocol: HTTP/2
+main_body=origin-64007|path=/|host=ejemplo.com:64006
+api_body=origin-64010|path=/api/|host=ejemplo.com:64006
+panel_body=origin-64012|path=/|host=panel.ejemplo.com:64006
+sni_ejemplo=subject= /CN=alpha.example.test
+sni_panel=subject= /CN=beta.example.test
+origin_down_code=502
+work=/var/folders/7z/2dgl35v966d7hs3w_jbg8klr0000gn/T//eqproxy-corpus-e2e.GUlhA0
+fixtures=/Volumes/Lexar/Cursor/EQProxy/target/debug/build/eqproxy-cli-bba6ebdaac97d24a/out/fixtures

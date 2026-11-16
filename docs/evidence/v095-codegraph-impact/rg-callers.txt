@@ -1,0 +1,83 @@
+
+## healthcheck
+  CALL ./eqproxy-cli/src/main.rs:225 fn=main | Command::Healthcheck { config, timeout_ms } => healthcheck(&config, timeout_ms).await,
+  DEF  ./eqproxy-cli/src/main.rs:1404 fn=healthcheck | async fn healthcheck(path: &Path, timeout_ms: u64) -> u8 {
+
+## check_listener_addresses
+  CALL ./eqproxy-config/src/validate.rs:601 fn=check_listeners | check_listener_addresses(config, source, file, result);
+  DEF  ./eqproxy-config/src/validate.rs:612 fn=check_listener_addresses | fn check_listener_addresses(config: &Config, source: &str, file: &Path, result: &mut Check
+
+## multi_vhost
+  CALL ./eqproxy-config/src/import/nginx.rs:464 fn=http | multi_vhost(conv, &raw_listen, &servers, &defaults)?;
+  DEF  ./eqproxy-config/src/import/nginx.rs:477 fn=multi_vhost | fn multi_vhost(
+
+## report_secondary_listener_knob
+  DEF  ./eqproxy-config/src/import/nginx.rs:612 fn=report_secondary_listener_knob | fn report_secondary_listener_knob(
+  CALL ./eqproxy-config/src/import/nginx.rs:1817 fn=server | report_secondary_listener_knob(
+  CALL ./eqproxy-config/src/import/nginx.rs:1848 fn=server | report_secondary_listener_knob(
+  CALL ./eqproxy-config/src/import/nginx.rs:1883 fn=server | report_secondary_listener_knob(
+  CALL ./eqproxy-config/src/import/nginx.rs:1915 fn=server | report_secondary_listener_knob(
+  CALL ./eqproxy-config/src/import/nginx.rs:1950 fn=server | report_secondary_listener_knob(
+  CALL ./eqproxy-config/src/import/nginx.rs:1985 fn=server | report_secondary_listener_knob(
+  CALL ./eqproxy-config/src/import/nginx.rs:2019 fn=server | report_secondary_listener_knob(
+  CALL ./eqproxy-config/src/import/nginx.rs:2048 fn=server | report_secondary_listener_knob(
+  CALL ./eqproxy-config/src/import/nginx.rs:2084 fn=server | report_secondary_listener_knob(
+
+## classify_proxy_ssl
+  CALL ./eqproxy-config/src/import/nginx.rs:1001 fn=http_directive | classify_proxy_ssl(conv, node, "http", has_https_targets);
+  CALL ./eqproxy-config/src/import/nginx.rs:2351 fn=server | classify_proxy_ssl(conv, child, &context, has_https_targets);
+  DEF  ./eqproxy-config/src/import/nginx.rs:3183 fn=classify_proxy_ssl | fn classify_proxy_ssl(conv: &mut Conv, child: &Node, context: &str, applies: bool) {
+
+## collect_proxy_ssl
+  CALL ./eqproxy-config/src/import/nginx.rs:413 fn=http | proxy_ssl: collect_proxy_ssl(http, &ProxySslDefaults::default()),
+  CALL ./eqproxy-config/src/import/nginx.rs:1265 fn=server | let server_proxy_ssl = collect_proxy_ssl(node, &defaults.proxy_ssl);
+  DEF  ./eqproxy-config/src/import/nginx.rs:3012 fn=collect_proxy_ssl | fn collect_proxy_ssl(node: &Node, inherited: &ProxySslDefaults) -> ProxySslDefaults {
+
+## store_representation
+  DEF  ./eqproxy-net/src/cache.rs:1467 fn=store_representation | pub fn store_representation(
+  CALL ./eqproxy-net/src/cache.rs:2357 fn=store_representation_decides_coding_length_vary_and_key_together | let stored = store_representation(
+  CALL ./eqproxy-net/src/cache.rs:2387 fn=store_representation_decides_coding_length_vary_and_key_together | let stored = store_representation(
+  CALL ./eqproxy-net/src/cache.rs:2410 fn=store_representation_decides_coding_length_vary_and_key_together | assert!(store_representation(&settings(), &key(), &[], "GET", None, origin_head).is_none()
+  CALL ./eqproxy-net/src/cache.rs:2412 fn=store_representation_decides_coding_length_vary_and_key_together | store_representation(&settings(), &key(), &[], "HEAD", Some(2048), origin_head)
+  CALL ./eqproxy-net/src/cache.rs:2420 fn=store_representation_decides_coding_length_vary_and_key_together | store_representation(&small, &key(), &[], "GET", Some(2048), origin_head).is_none()
+  CALL ./eqproxy-net/src/http1.rs:4183 fn=run | (Some(head), Some(cache)) => cache::store_representation(
+
+## serve_http
+  DEF  ./eqproxy-net/src/http1.rs:4345 fn=serve_http | pub async fn serve_http<CR, CW>(
+  CALL ./eqproxy-net/src/http2.rs:316 fn=exchange | crate::http1::serve_http(
+  CALL ./eqproxy-net/src/http3.rs:337 fn=exchange | crate::http1::serve_http(
+  CALL ./eqproxy-net/src/proxy.rs:3158 fn=handle_connection | http1::serve_http(
+  CALL ./eqproxy-net/src/ws.rs:119 fn=serve | crate::http1::serve_http(
+
+## spawn_quic
+  CALL ./eqproxy-net/src/proxy.rs:1557 fn=make_entry | let quic = endpoint.map(|endpoint| spawn_quic(Arc::clone(&shared), endpoint, name, metrics
+  DEF  ./eqproxy-net/src/proxy.rs:1595 fn=spawn_quic | fn spawn_quic(
+  CALL ./eqproxy-net/src/proxy.rs:1785 fn=apply | entry.quic = Some(spawn_quic(
+
+## report_with_paths
+  CALL ./eqproxy-cli/src/main.rs:1238 fn=import | let report = eqproxy_config::import::report_with_paths(
+  DEF  ./eqproxy-config/src/import/report.rs:606 fn=report_with_paths | pub fn report_with_paths(report: &str, input: &str, output: &str) -> String {
+  CALL ./eqproxy-config/src/import/report.rs:620 fn=paths_are_substituted_once_and_untouched_when_absent | let rendered = report_with_paths(report, "a/nginx.conf", "out/eqproxy.toml");
+  CALL ./eqproxy-config/src/import/report.rs:626 fn=paths_are_substituted_once_and_untouched_when_absent | report_with_paths("sin marcadores", "x", "y"),
+
+## declared_host
+  CALL ./eqproxy-cli/src/main.rs:2985 fn=resolve_with | let declared = backend.declared_host();
+  DEF  ./eqproxy-config/src/schema.rs:1573 fn=declared_host | pub fn declared_host(&self) -> Option<String> {
+  CALL ./eqproxy-config/src/schema.rs:1599 fn=declared_host_names_the_backend_a_certificate_is_verified_against | assert_eq!(named.declared_host().as_deref(), Some("localhost"));
+  CALL ./eqproxy-config/src/schema.rs:1605 fn=declared_host_names_the_backend_a_certificate_is_verified_against | assert_eq!(pool.declared_host().as_deref(), Some("app.internal"));
+  CALL ./eqproxy-config/src/schema.rs:1610 fn=declared_host_names_the_backend_a_certificate_is_verified_against | assert_eq!(literal.declared_host(), None);
+  CALL ./eqproxy-config/src/schema.rs:1617 fn=declared_host_names_the_backend_a_certificate_is_verified_against | assert_eq!(mixed.declared_host(), None);
+  CALL ./eqproxy-config/src/schema.rs:1622 fn=declared_host_names_the_backend_a_certificate_is_verified_against | assert_eq!(unix.declared_host(), None);
+
+## convert_with_degraded
+  CALL ./eqproxy-cli/src/main.rs:1227 fn=import | let (outcome, degraded) = match eqproxy_config::import::convert_with_degraded(source, &tex
+  CALL ./eqproxy-config/src/import/mod.rs:900 fn=convert | convert_with_degraded(source, text).map(|(outcome, _)| outcome)
+  DEF  ./eqproxy-config/src/import/mod.rs:910 fn=convert_with_degraded | pub fn convert_with_degraded(
+  CALL ./eqproxy-config/src/import/nginx.rs:3826 fn=tls_policy_the_schema_cannot_express_is_degraded_not_converted | super::super::convert_with_degraded(super::super::Source::Nginx, source)
+
+## StoredRepresentation
+  DEF  ./eqproxy-net/src/cache.rs:1443 fn=None | pub struct StoredRepresentation {
+  USE  ./eqproxy-net/src/cache.rs:1474 | -> Option<StoredRepresentation>
+  USE  ./eqproxy-net/src/cache.rs:1490 | Some(StoredRepresentation {
+  # No explicit type reference outside cache.rs; ResponseAssembly::run (http1.rs:4140)
+  # consumes the fields through inference at http1.rs:4183..4240.

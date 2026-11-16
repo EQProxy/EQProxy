@@ -1,0 +1,64 @@
+## Direct answer
+
+`multi_vhost` (`eqproxy-config/src/import/nginx.rs:477`) has exactly **one production caller**: the nginx `http` handler (`nginx.rs:408`). Everything else that reaches it is test code. The production blast radius is the nginx→eqproxy.toml import path only; the real cost of changing it is the large test suite in the same file that asserts on certificates, host rules and degradation rows.
+
+## Production call path, in order
+
+1. **`convert`** — `eqproxy-config/src/import/nginx.rs:348-381` (`pub(super) fn convert(conv: &mut Conv, text: &str) -> Result<(), ImportError>`). Dispatches top-level blocks: `"http" => http(conv, node)?`.
+2. **`http`** — `eqproxy-config/src/import/nginx.rs:408-467`. Collects `HttpDefaults`, converts `upstream` blocks and http-scope directives, then groups `server` blocks by listen address into `BTreeMap<String, Vec<&Node>> by_addr`, falling back to `"0.0.0.0:80"` for blocks with no `listen`.
+3. **`multi_vhost`** — called from `http` inside the final `for (raw_listen, servers) in by_addr` loop (`nginx.rs:467`; the exact call line fell in the truncated tail of the snippet). Because `http` calls it for *every* address group, even a single-`server` config passes through here — this is not only a multi-vhost path.
+4. **Branches inside `multi_vhost`** (`nginx.rs:477-575`, body truncated after line 575):
+   - Primary selection: `servers.iter().position(...)` finds the `listen … default_server` block, else index 0 → `primary_label`, `primary_ciphers`.
+   - **Outbound call `server(conv, servers[chosen_idx], raw_listen, defaults, &VhostRole::Primary)`** → `Option<(name, listener)>`.
+   - **Early-return branch**: `None` primary with `servers.len() > 1` emits `conv.gap(1, "server (varios en la misma dirección)", …, "varios vhosts comparten …")` and returns `Ok(())`.
+   - Builds `VhostRole::Secondary { primary_tls, primary_ciphers, primary_label, primary_listener }` (`enum VhostRole<'a>` at `nginx.rs:580-588`).
+   - Secondary loop: per non-primary `server` block, `context = format!("server {}", server_label(node))` and **outbound call `exact_hosts(node)`**; empty `server_name` = catch-all, which skips emission rather than shadowing the named rules.
+   - Also visible as outbound edges from the graph: `eqproxy-core/src/maps.rs::iter` (×3, the map lookups) and `cli_e2e.rs::deref` (test-side noise).
+
+Indirect production caller above it: `convert` at `nginx.rs:348` is `pub(super)`, so its only callers live inside `eqproxy-config/src/import/` — i.e. the import entry point that the CLI/migration commands drive (`import/mod.rs`). I could not retrieve that dispatcher node because the tool budget ran out (see gaps).
+
+## Callers that are test code (same chain, reached via `convert` → `http`)
+
+All in `eqproxy-config/src/import/nginx.rs::tests`, via `super::convert(&mut conv, …)` or `super::super::convert(Source::Nginx, …)`:
+
+- `every_vhost_of_a_shared_listener_gets_its_certificate_and_host_rule` — 3944
+- `a_secondary_vhost_without_exact_names_emits_no_hostless_rules` — 3917
+- `a_repeated_default_certificate_is_not_duplicated_in_certs` — 3963
+- `vhost_tls_divergence_is_degraded_and_never_silent` — 3879
+- `vhost_disabling_inherited_mtls_is_degraded` — 3986
+- `repeated_server_name_directives_all_become_hosts` — 4011
+- `secondary_listener_knobs_are_reviewed_as_discarded` — 4230
+- `matching_secondary_listener_knobs_are_info_not_review` — 4323
+- `secondary_error_pages_are_not_reported_as_listener_pages` — 4359
+- `location_timeouts_are_not_claimed_as_applied_to_the_listener` — 4388
+- `error_page_and_intercept_errors_become_a_listener_page` — 4078
+- `later_error_page_codes_do_not_erase_the_other_codes_of_an_earlier_page` — 4125
+- `two_locations_to_the_same_https_backend_are_idempotent` — 4033
+- `proxy_pass_https_keeps_tls_and_defaults_to_443` — 3727
+- `proxy_ssl_directives_fill_the_backend_tls_block` — 3777
+- `tls_policy_the_schema_cannot_express_is_degraded_not_converted` — 3820
+- `ssl_protocols_becomes_a_min_max_version_range` — 3678
+- `upstream_max_conns_becomes_the_per_server_cap` — 3700
+- `unknown_proxy_ssl_is_explicitly_classified_in_every_scope` — 4193
+- `inherited_sni_without_a_dns_name_is_not_done` — 4173
+
+The first five are the direct regression guards on `multi_vhost` semantics (certs array, host rules, catch-all drop, TLS/mTLS divergence). The rest reach it only because `http` always routes through it, so a signature/behaviour change touches them all.
+
+## Non-callers the graph misattributes
+
+`eqproxy-net/src/health.rs:100::with_http`, and through it `e2e_balancer.rs:426::slow_start_ramps_the_recovered_server_up`, `e2e_resilience.rs:1501::http_check_interops_with_keep_alive_origins` and `e2e_resilience.rs:1365::http_expect_check_marks_5xx_server_down`, appear in the reverse-Calls result. These are name/similarity artifacts around `HttpCheck`/`with_http` in `eqproxy-net`, which has no import or call relationship to `eqproxy-config::import::nginx`. Exclude them from your impact list.
+
+## What actually breaks
+
+- **`http` (`nginx.rs:408-467`)** — the only production call site; any signature change to `(conv, raw_listen, servers, defaults)` breaks it directly.
+- **`VhostRole::Secondary` (`nginx.rs:580-588`) and the `server` helper** — they are the counterpart of `multi_vhost`'s primary/secondary split; if you change how `primary_tls`/`primary_ciphers`/`primary_listener` are derived or what the primary branch returns, these must change with it. The `None` primary early return also changes when `conv.gap(...)` is emitted, which shifts the import report.
+- **The 20 tests listed above** — the observable breakage surface.
+- Nothing in `eqproxy-net`, `eqproxy-core` or `eqproxy-cli` calls `multi_vhost`; per the graph its only non-test callers are inside `eqproxy-config/src/import/nginx.rs`.
+
+## Gaps
+
+- Coupling metrics (`Ca`/`Ce`/instability) and the outbound dependency tree for `multi_vhost` were not returned — the tool budget was exhausted on that round, so I could not confirm the full callee set beyond the edges visible in the search result.
+- The exact line of the `multi_vhost(...)` call inside `http` (~line 468, after the `by_addr` loop at 467) and the remainder of `multi_vhost`'s body (past line 575) were cut by snippet truncation.
+- The `import/mod.rs` entry-point node that calls `nginx::convert` was not resolved.
+
+**Recommendation:** treat this as a low-fan-in, high-test-coverage change. Gate any edit on the five vhost-specific tests at `nginx.rs:3879-4008` and `:3944`, and keep `VhostRole` in sync — that enum plus `server` is the coupling that will silently break rather than fail to compile.

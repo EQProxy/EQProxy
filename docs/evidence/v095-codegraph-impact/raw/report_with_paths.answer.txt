@@ -1,0 +1,31 @@
+**`report_with_paths` has exactly one production caller: `import()` in the CLI. Changing it breaks the `eqproxy config import` command end-to-end (one call site), the public re-export of the `eqproxy-config` crate, and the unit test that pins its marker-substitution contract.**
+
+## The function
+
+`eqproxy-config/src/import/report.rs:606-610` — `pub fn report_with_paths(report: &str, input: &str, output: &str) -> String` replaces the *first* `@input@` and the *first* `@output@` in the report template via `replacen(..., 1)`. Coupling metrics: afferent 3, efferent 1, instability 0.25 — a stable node with few dependents, so the blast radius is narrow but public.
+
+## Production call chain (entry → leaf)
+
+1. **`main`** — `eqproxy-cli/src/main.rs:211-230`. Matches `Command::Config { command }` and dispatches to `config_command(command).await`.
+2. **`config_command`** — `eqproxy-cli/src/main.rs:232-264`. Branch point: matches `ConfigCommand::Import { from, input, output, report }` and calls `import(from.as_deref(), &input, &output, report.as_deref())`; the other seven `ConfigCommand` variants (Validate, Explain, Diff, Plan, Apply, Schema, Rollback) branch away and never reach the function.
+3. **`import`** — `eqproxy-cli/src/main.rs:1207-1300`, the sole production caller.
+   - Calls `Source::detect` (`eqproxy-config/src/import/mod.rs:80-107`) or `Source::parse` first.
+   - Calls `eqproxy_config::import::convert_with_degraded(source, &text)` (`eqproxy-config/src/import/mod.rs:910-973`), which produces the `Outcome` whose `report` field is the template carrying the `@input@` / `@output@` markers.
+   - Then calls `eqproxy_config::import::report_with_paths(&outcome.report, &input.display().to_string(), &output.display().to_string())` inside its 1207-1300 body.
+4. **Downstream branches inside `import` after the call** — the returned `String` is consumed two ways:
+   - `report_path` is `Some(path)` → the rendered report is written to that file.
+   - `report_path` is `None` → `print!("{report}")` to stdout, at `eqproxy-cli/src/main.rs:1257`.
+
+## Everything that depends on it
+
+- **Production caller (1):** `import`, `eqproxy-cli/src/main.rs:1207` (node `70724ca3`). A signature change must be mirrored here, and the string it returns is user-visible CLI output or `--report` file content.
+- **Public API re-export:** `pub use report::{emit_toml, report_with_paths};` at `eqproxy-config/src/import/mod.rs:38`, reachable as `eqproxy_config::import::report_with_paths`. This is a cross-crate public signature; any external consumer outside this repo breaks silently at compile time. Within the repo, `fuzz/fuzz_targets/config_import.rs` and `eqproxy-config/tests/import_corpus.rs` import the `eqproxy_config::import` module but have no `Calls` edge to this function, so they are unaffected.
+- **Unit test (direct):** `paths_are_substituted_once_and_untouched_when_absent`, `eqproxy-config/src/import/report.rs:618-629`. It asserts two behaviours a change could break: markers are replaced exactly once, and a report with no markers passes through unchanged (`report_with_paths("sin marcadores", "x", "y") == "sin marcadores"`).
+- **Integration tests (indirect, via the CLI binary):** `eqproxy-cli/tests/migration.rs:905-906` (`println!("{report}")` / `println!("report written to {}", …)`) and `eqproxy-cli/tests/differential.rs:2003-2004`. These never call the function directly but assert on the rendered report as CLI output, so a semantics change surfaces there at runtime, not at compile time.
+
+## Caveats
+
+- The graph records two outgoing `Calls` edges from `report_with_paths` to `replace` at `eqproxy-core/src/maps.rs:307-312`. That is a name-matching artifact for `str::replacen`; `report.rs` has no dependency on `eqproxy-core` maps, so ignore it when reasoning about the change.
+- No circular dependency was checked for this node; the reverse `Imports` walk returns only the single re-export at `eqproxy-config/src/import/mod.rs:38`.
+
+**Recommendation:** because there is only one production call site, the safe change is a local one — edit `eqproxy-config/src/import/report.rs:606-610`, update `eqproxy-cli/src/main.rs` inside `import()` (1207-1300), and adjust `eqproxy-config/src/import/report.rs:618-629`. Treat the re-export at `eqproxy-config/src/import/mod.rs:38` as a breaking-change decision for the crate's public API rather than an internal refactor.

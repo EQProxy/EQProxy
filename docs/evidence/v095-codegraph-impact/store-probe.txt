@@ -1,0 +1,45 @@
+# Direct store probe — serve_http and report_secondary_listener_knob
+
+Date: 2026-11-14. Index identity `aa330baf…` (same rebuilt index used by the
+13 `agent impact` queries). The probe was a temporary
+`crates/codegraph-graph/tests/*_probe_tmp.rs` in `~/codegraph-rust`, run with
+`PROBE_ROOT=/Volumes/Lexar/Cursor/EQProxy cargo test -p codegraph-graph
+--features surrealdb --test <probe> -- --nocapture`, then deleted. It queried
+the SurrealDB store directly, not the agent.
+
+## Nodes
+
+```
+NODE serve_http: rows=1 [{"id":"nodes:`3581c135-ed83-4426-db20-1accddfb6d92`",
+  "metadata":"{\"async\":\"true\",\"chunk_count\":\"2\",\"generics\":\"[\\\"CR\\\",\\\"CW\\\"]\",
+  \"project_id\":\"/Volumes/Lexar/Cursor/EQProxy\",
+  \"qualified_name\":\"./eqproxy-net/src/http1.rs::serve_http\",\"unsafe\":\"false\"}",
+  "name":"serve_http"}]
+
+NODE spawn_quic: rows=1 [{"id":"nodes:`fdd1b8ac-ced3-223e-870f-0186028e29c5`",
+  "metadata":"{\"async\":\"false\",\"chunk_count\":\"1\",\"generics\":\"[]\",
+  \"qualified_name\":\"./eqproxy-net/src/proxy.rs::spawn_quic\",\"unsafe\":\"false\"}",
+  "name":"spawn_quic"}]
+```
+
+## Incoming `calls` edges, grouped by caller
+
+```
+serve_http: 8 caller names, 18 edges
+  exchange             2   (http2.rs:316, http3.rs:337)
+  handle_connection    1   (proxy.rs:3158)
+  serve                1   (ws.rs:119)
+  run_all_backups_spreads_traffic_across_the_backup_pool   3
+  run_document_put_flips_the_backup_pool_live              3
+  run_panel_applies_a_table_and_drains_a_server            2
+  run_priority_ladder_fails_over_between_backups_and_back        3
+  run_verifies_the_declared_backend_hostname_not_its_ip    3
+
+report_secondary_listener_knob: 1 caller name, 9 edges
+  server               9   (nginx.rs:1817,1848,1883,1915,1950,1985,2019,2048,2084)
+```
+
+The production call sites are the first three rows of `serve_http` (four
+edges) and the nine `server` call sites; the five `run_*` callers are e2e
+tests. This contradicts the `serve_http` answer ("no symbol named serve_http")
+and the `report_secondary_listener_knob` answer ("5 incoming calls edges").

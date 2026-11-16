@@ -14,9 +14,9 @@ declaration.
 | Branch | `release/v0.9.5` |
 | Source revision | `c9234d4` + `0f03bf4` + a later documentation correction commit (current HEAD) |
 | Version | `0.9.6` in `Cargo.toml`; `CHANGELOG.md` has `## [v0.9.6]` |
-| Tag | annotated `v0.9.6` → `0f03bf4`, **local only**, not realigned to the later correction; `v0.9.5` remains at `a76f017`; no remote tag |
+| Tag | annotated `v0.9.6` → `0f03bf4`, **local only**, not realigned to the later correction; `v0.9.5` is annotated `fd65bee` → `3451c19`, remote and published 2026-11-12; no remote `v0.9.6` tag |
 | Release claims | only **M-01** and **P0-8**; P0-7, P0-10…P0-15 and P1-1…P1-10 remain open |
-| Published artifact | **none for 0.9.6**: the branch is on origin (`release/v0.9.5` at `84e5eb3`), but no `v0.9.6` tag, GitHub release, registry image, digest promotion or re-pull; the published release is `v0.9.5` (2026-11-12) |
+| Published artifact | **none for 0.9.6**: the branch is on origin (`release/v0.9.5` at `ca1f0a9`), while local HEAD is four commits ahead; no `v0.9.6` tag, GitHub release, registry image, digest promotion or re-pull; the published release is `v0.9.5` (2026-11-12) |
 | Final local suite | `cargo test --workspace --locked` → **807 passed, 0 failed, 2 ignored** (39 result blocks); see [P0-8/P0-9 evidence](evidence/v095-p0-8-p0-9.md) |
 
 ## What the evidence actually shows

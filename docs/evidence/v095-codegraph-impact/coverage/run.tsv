@@ -1,0 +1,5 @@
+ingress_annotation	1	0.0	None	0	None	None	None
+ingress_global_config	1	0.0	None	0	None	None	None
+envoy_listener	1	0.0	None	0	None	None	None
+haproxy_frontend	1	0.0	None	0	None	None	None
+tls_client_config	1	0.0	None	0	None	None	None

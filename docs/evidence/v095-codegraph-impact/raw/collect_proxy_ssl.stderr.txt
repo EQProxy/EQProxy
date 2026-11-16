@@ -1,0 +1,3 @@
+2026-11-14T11:10:28.059617Z  WARN surrealdb::core::kvs::migration: This datastore was last written by a newer version of SurrealDB. No data migration separates the two, so startup continues, but running a mixed set of versions is not supported. stored=3.3.4 running=3.3.0
+2026-11-14T11:10:31.606144Z  WARN codegraph_mcp_tools::graph_tool_executor: Tool result exceeds max_result_bytes limit, truncating tool="trace_call_chain" result_bytes=216539 max_bytes=120000 overflow_ratio="1.8x"
+2026-11-14T11:10:31.739410Z  WARN codegraph_mcp_tools::graph_tool_executor: Tool result exceeds max_result_bytes limit, truncating tool="trace_call_chain" result_bytes=145735 max_bytes=120000 overflow_ratio="1.2x"

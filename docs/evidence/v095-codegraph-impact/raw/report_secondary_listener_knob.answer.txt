@@ -1,0 +1,37 @@
+## Direct answer
+
+`report_secondary_listener_knob` (`eqproxy-config/src/import/nginx.rs:612-655`) has exactly **one production caller: `server`** (`eqproxy-config/src/import/nginx.rs:1252-2516`), which the graph records as 5 incoming `calls` edges. So nothing outside the nginx importer breaks at compile time; what changes is the *classification* of secondary-vhost listener directives in the nginx import report.
+
+## Call path, entry to target
+
+1. **`convert`** — `eqproxy-config/src/import/nginx.rs:348-381` (`pub(super) fn convert(conv, text)`). Dispatches on top-level blocks: `"http" => http(conv, node)?`.
+2. **`http`** — `eqproxy-config/src/import/nginx.rs:408-467`. Groups `server` blocks by `listen` address into `by_addr`, then iterates each `(raw_listen, servers)` group.
+3. **`multi_vhost`** — `eqproxy-config/src/import/nginx.rs:477-575`. **Branch point.** It first calls `server(..., &VhostRole::Primary)` for the `default_server` (or first block), then builds `VhostRole::Secondary { primary_label, primary_listener, .. }` and loops over the remaining vhosts calling `server` with that secondary role.
+4. **`server`** — `eqproxy-config/src/import/nginx.rs:1252-2516`. Emits the listener, and for secondary vhosts calls `report_secondary_listener_knob(...)` — 5 recorded call sites within this function.
+5. **`report_secondary_listener_knob`** — `eqproxy-config/src/import/nginx.rs:612-655`. Early `return`s unless `role` is `VhostRole::Secondary`, then branches three ways:
+   - value equals the default_server's → `conv.info(1, ...)` (the "coincide con el default_server" row)
+   - default_server sets a different value → `conv.review(1, ...)` (value discarded)
+   - default_server sets nothing → `conv.review(1, ...)` ("configúrelo en [listener.*] a mano")
+
+## Outgoing effects
+
+The function only produces report rows: `info` and `review` in `eqproxy-config/src/import/mod.rs` (`nodes:525fc3ca…` info, `nodes:9f9e1019…` review, two call edges). Those rows are what later become the review/degradation sections of the emitted report — so a change to this function alters report severity and wording, not the generated TOML.
+
+## Code paths affected by a change
+
+- **Secondary-vhost import path only** (multi_vhost → server with `VhostRole::Secondary`). Primary listeners never reach the reporting branches.
+- **Severity classification** for the vhost-scope knobs the tests enumerate: `client_header_timeout`, `keepalive_timeout`, `proxy_connect_timeout`, `proxy_read_timeout`, `client_max_body_size`, `gzip on`, `gzip_comp_level`, `gzip_min_length`, `proxy_cache` (`eqproxy-config/src/import/nginx.rs:4323-4356`).
+- **Tests that pin the current behavior** (these are the things that actually fail if the contract changes):
+  - `matching_secondary_listener_knobs_are_info_not_review` — `eqproxy-config/src/import/nginx.rs:4323`; asserts severity is `Severity::Info` and the message contains "coincide".
+  - `secondary_listener_knobs_are_reviewed_as_discarded` — `eqproxy-config/src/import/nginx.rs:4230`; asserts secondary values never reach the listener config and are `Review`, not `Degraded` (cites ADR-0051).
+  - `location_timeouts_are_not_claimed_as_applied_to_the_listener` — `eqproxy-config/src/import/nginx.rs:4388`, which depends on the same "no se aplica" review wording.
+- **Report consumers** such as `listeners_summary` in `eqproxy-config/tests/import_corpus.rs:126`, which parses the report table this function writes into.
+
+## Gaps
+
+- The graph gives 5 call edges from `server`, while the tests above exercise 9 distinct directives; either the extractor collapsed duplicate edges or some knobs are reported elsewhere. I could not get exact line numbers for the 5 call sites (the `server` body arrived truncated across lines 1252-2516).
+- I could not confirm the production caller of the nginx `convert` entry point: its reverse-dependency result returned only test functions (`super::super::convert(super::super::Source::Nginx, …)`), and the follow-up search was cut off by the result budget. The tests' `super::super::convert` form implies a sibling dispatcher in `eqproxy-config/src/import/mod.rs`, but I have no tool evidence for its identity or line.
+
+## Recommendation
+
+Treat this as a **report-contract** change, not a refactor: it has one caller, but three tests and the report-table parser depend on its exact severity (`Info` vs `Review`) and on the Spanish message fragments "coincide" and "no se aplica". Update those assertions in the same change.

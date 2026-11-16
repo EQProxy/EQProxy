@@ -1,0 +1,11 @@
+timestamp=2026-11-14T17:38:54Z
+root=/Volumes/Lexar/Cursor/EQProxy
+work=/var/folders/7z/2dgl35v966d7hs3w_jbg8klr0000gn/T//eqproxy-corpus-e2e.GUlhA0
+binary=/Volumes/Lexar/Cursor/EQProxy/target/debug/eqproxy
+binary_sha256=307ee25480a6e0de8dd552d38b0ed50fa3eed49072539f9f331cda44a5114fc3
+fixtures=/Volumes/Lexar/Cursor/EQProxy/target/debug/build/eqproxy-cli-bba6ebdaac97d24a/out/fixtures
+fixture_alpha_pem_sha256=8d6fa26145cceead6b7ac8c59cf0612ac006056aad2e4cbbb4dc9c65fe03c34a
+fixture_alpha_key_sha256=fddbe9a9bd51082fe9c177cf9cd18789eacb43f0edc1db5bff6c335414a512ce
+fixture_beta_pem_sha256=85492a91dff1106a0e6c849b9e573fbece8d57c62e2fcfdc90b33f052d3996c0
+fixture_beta_key_sha256=2841b00955ad0a828b07e44a875dc0c2de360b843372112aa3f8d16a77022497
+ports http=64004 tls=64006 app=64007,64008,64009 api=64010,64011 panel=64012

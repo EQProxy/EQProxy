@@ -1,0 +1,27 @@
+**Short answer:** In production, `annotation` (`eqproxy-config/src/import/ingress.rs:519-841`) has exactly one real caller — the Ingress converter `convert` in the same file (`ingress.rs:51-450`) — which in turn sits behind `eqproxy_config::import::convert` (`eqproxy-config/src/import/mod.rs:899`). So a change to it affects the Ingress-nginx import path only: the TOML listener fields it fills, the TLS decision for the generated listener, and the import report entries. The one other recorded caller, `validate_index` in `.github/scripts/check-ghcr-manifest.py:80-171`, is a false positive (an OCI-manifest script that merely has a local named `annotations`; it cannot call Rust code).
+
+**Call paths, in order**
+
+1. Entry point: `pub fn convert(source: Source, text: &str) -> Result<Outcome, ImportError>` at `eqproxy-config/src/import/mod.rs:899-901`, which delegates to `convert_with_degraded` (same module, node `53accf67-...`). The `import` module is public (`eqproxy-config/src/lib.rs:11`), and its external consumers recorded in the graph are `check_imports` in `eqproxy-net/src/plugin.rs` and the fuzz target `fuzz/fuzz_targets/config_import.rs`, plus the corpus tests.
+2. Dispatch to the Ingress backend: `pub(super) fn convert(conv: &mut Conv, text: &str) -> Result<(), ImportError>` at `eqproxy-config/src/import/ingress.rs:51-450` (parses YAML documents, collects `ConfigMap` globals/endpoints/services, then the Ingresses). *Gap:* the graph records no `Calls` edge from `mod.rs:899`/`convert_with_degraded` into this function, so this hop is inferred from the module layout and the tests that call `super::super::convert(...)`, not from an edge.
+3. `annotation(conv, key, value, context, &mut behaviour, &mut tls)` at `eqproxy-config/src/import/ingress.rs:519-841`. *Gap:* the exact call-site line inside `convert` could not be read (the snippet was truncated), but the incoming edge from `convert` is recorded.
+
+**Branches inside `annotation` (each is an affected path if the signature/behaviour changes)**
+
+- `proxy-connect-timeout` → `convert_duration` (`mod.rs:651-717`), then `conv.done(..., "listener.connect_timeout")` when a value was produced.
+- `proxy-read-timeout` → `listener.server_header_timeout` plus a `conv.review` note (approximate mapping).
+- `proxy-send-timeout` → `conv.review` only, "sin equivalente".
+- `proxy-body-size` → `parse_size` (`mod.rs:724-737`); on success sets `behaviour.max_body_bytes` and `conv.done("listener.limits.max_body_bytes = …")`, on failure `conv.review("tamaño no reconocido")`.
+- `ssl-redirect` / `force-ssl-redirect` → sets `*tls = true` unless `false`/`off`, then `conv.review`.
+- All branches emit report notes through `Conv::done`/`review`/`info` (`mod.rs:454-463`) and `gap` (`mod.rs:506-515`).
+
+**Coupling and what that implies**
+
+`calculate_coupling_metrics` for `annotation` reports Ca=2, Ce=11, instability 0.846 — it is a leaf-side, unstable function, so changing its internals is cheap *provided* the signature (`conv, key, value, context, behaviour, tls`) and its side effects on `Behaviour`/`tls`/the report stay the same. Its recorded dependencies are `review` (`mod.rs:465-474`), `gap` (`mod.rs:506-515`), `convert_duration` (`mod.rs:651-717`), `parse_size` (`mod.rs:724-737`), `info` (`mod.rs:454-463`), plus clearly spurious entries (`eqproxy-core/src/maps.rs:394`, `eqproxy-net/src/http1.rs:283`, `eqproxy-core/src/rules.rs:861`, `eqproxy-net/tests/e2e_http3.rs:166`).
+
+**Tests that will fail alongside it (non-production, but the safety net)**
+
+- `eqproxy-config/src/import/ingress.rs:955-969` `custom_http_errors_names_the_codes_and_the_missing_body` and `:972-996` `hsts_max_age_without_enable_hsts_is_not_done`, both driving `super::super::convert(Source::Ingress, source)`.
+- `eqproxy-config/tests/import_corpus.rs:225-242` `ingress_nginx_resolves_endpoints_and_annotations`, which asserts that `limit-rps`/`cors` land in `rate_limit`/`cors` and that `ssl-passthrough` is reported — the annotation-driven contract.
+
+**Recommendation:** keep the parameter list and the `Behaviour`/`tls`/`Conv` side effects stable and confine changes to per-key handling; if the signature must change, `ingress.rs:519` has a single production caller inside `ingress.rs` (`convert`, line 51) to update, and the report/`done`/`review` wording is what the corpus and unit tests assert on.

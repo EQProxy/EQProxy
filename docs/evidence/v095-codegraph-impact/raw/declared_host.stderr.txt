@@ -1,0 +1,1 @@
+2026-11-14T11:12:07.048115Z  WARN surrealdb::core::kvs::migration: This datastore was last written by a newer version of SurrealDB. No data migration separates the two, so startup continues, but running a mixed set of versions is not supported. stored=3.3.4 running=3.3.0

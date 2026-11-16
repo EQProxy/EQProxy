@@ -1,0 +1,2 @@
+import: /var/folders/7z/2dgl35v966d7hs3w_jbg8klr0000gn/T//eqproxy-corpus-e2e.GUlhA0/nginx.conf (nginx) → /var/folders/7z/2dgl35v966d7hs3w_jbg8klr0000gn/T//eqproxy-corpus-e2e.GUlhA0/eqproxy.toml: 25 converted, 0 degraded, 33 with notes, 4 rejected
+  the generated file is valid; 4 directive(s) have no EQProxy equivalent yet (see the report)

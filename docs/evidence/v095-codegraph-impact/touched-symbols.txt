@@ -1,0 +1,137 @@
+rs modified: 16 src-only: 13
+
+## eqproxy-cli/src/main.rs (11 items)
+  mod    profile                                  line    17 changed-lines 3
+  enum   Command                                  line    89 changed-lines 13
+  fn     main                                     line   211 changed-lines 1
+  fn     rollback                                 line  1309 changed-lines 7
+  fn     healthcheck                              line  1404 changed-lines 43
+  fn     probe_admin                              line  1447 changed-lines 25
+  fn     exchange_admin                           line  1472 changed-lines 34
+  fn     probe_listeners                          line  1506 changed-lines 25
+  fn     loopback_for                             line  1531 changed-lines 10
+  fn     resolve_with                             line  2685 changed-lines 1
+  fn     resolve_with                             line  2844 changed-lines 5
+
+## eqproxy-config/src/import/envoy.rs (1 items)
+  fn     listener                                 line   436 changed-lines 1
+
+## eqproxy-config/src/import/haproxy.rs (1 items)
+  fn     frontend                                 line  1025 changed-lines 1
+
+## eqproxy-config/src/import/ingress.rs (2 items)
+  fn     annotation                               line   519 changed-lines 25
+  fn     global_config                            line   844 changed-lines 27
+
+## eqproxy-config/src/import/mod.rs (11 items)
+  mod    report                                   line    33 changed-lines 1
+  mod    yaml                                     line    34 changed-lines 3
+  mod    security                                 line    35 changed-lines 1
+  mod    yaml                                     line    36 changed-lines 1
+  struct ListenerTls                              line   295 changed-lines 8
+  struct SniCertIr                                line   311 changed-lines 4
+  struct Rule                                     line   323 changed-lines 1
+  struct Rule                                     line   335 changed-lines 1
+  fn     convert                                  line   887 changed-lines 1
+  fn     convert                                  line   899 changed-lines 3
+  fn     convert_with_degraded                    line   910 changed-lines 2
+
+## eqproxy-config/src/import/nginx.rs (48 items)
+  fn     directive                                line   286 changed-lines 1
+  fn     first_arg                                line   295 changed-lines 10
+  struct ProxySslDefaults                         line   309 changed-lines 11
+  struct HttpTlsDefaults                          line   320 changed-lines 8
+  struct HttpDefaults                             line   330 changed-lines 6
+  fn     http                                     line   343 changed-lines 32
+  fn     convert                                  line   348 changed-lines 8
+  fn     downgrade_unfulfilled_proxy_ssl_server_name line   387 changed-lines 21
+  fn     http                                     line   408 changed-lines 34
+  fn     http_directive                           line   429 changed-lines 13
+  fn     multi_vhost                              line   477 changed-lines 90
+  enum   VhostRole                                line   580 changed-lines 10
+  impl   VhostRole                                line   590 changed-lines 1
+  fn     is_primary                               line   591 changed-lines 4
+  fn     primary_listener                         line   595 changed-lines 17
+  fn     report_secondary_listener_knob           line   612 changed-lines 48
+  fn     exact_hosts                              line   660 changed-lines 14
+  fn     ciphers_of                               line   674 changed-lines 4
+  fn     http_directive                           line   684 changed-lines 122
+  fn     server                                   line   885 changed-lines 103
+  fn     upstream                                 line  1024 changed-lines 3
+  struct Planned                                  line  1079 changed-lines 61
+  fn     server                                   line  1252 changed-lines 357
+  fn     location                                 line  1487 changed-lines 64
+  struct Planned                                  line  1700 changed-lines 472
+  fn     resolve_backend                          line  1848 changed-lines 34
+  fn     location                                 line  2519 changed-lines 142
+  fn     resolve_backend                          line  2949 changed-lines 43
+  fn     proxy_ssl_toggle                         line  2992 changed-lines 11
+  fn     proxy_ssl_path                           line  3003 changed-lines 9
+  fn     collect_proxy_ssl                        line  3012 changed-lines 32
+  fn     has_https_target                         line  3044 changed-lines 18
+  fn     tls_arg                                  line  3062 changed-lines 10
+  fn     collect_http_tls                         line  3072 changed-lines 13
+  fn     has_tls_server                           line  3085 changed-lines 18
+  enum   ClientVerifyMode                         line  3103 changed-lines 9
+  fn     client_verify_mode                       line  3112 changed-lines 9
+  fn     client_verify_active                     line  3121 changed-lines 4
+  fn     reject_optional_client_verify            line  3125 changed-lines 15
+  fn     http_client_verify_active                line  3140 changed-lines 8
+  fn     http_has_client_ca                       line  3148 changed-lines 10
+  type   TlsProtocolRange                         line  3158 changed-lines 2
+  fn     tls_protocol_range                       line  3160 changed-lines 23
+  fn     classify_proxy_ssl                       line  3183 changed-lines 77
+  fn     unknown_proxy_ssl                        line  3264 changed-lines 12
+  fn     proxy_ssl_scope_mapped                   line  3276 changed-lines 19
+  fn     proxy_ssl_scope_lost                     line  3300 changed-lines 14
+  fn     stream                                   line  3502 changed-lines 395
+
+## eqproxy-config/src/import/report.rs (5 items)
+  fn     emit_toml                                line    13 changed-lines 6
+  fn     render                                   line   336 changed-lines 1
+  fn     declared_degraded_count                  line   525 changed-lines 18
+  fn     check_degraded_names                     line   543 changed-lines 29
+  fn     report_with_paths                        line   606 changed-lines 72
+
+## eqproxy-config/src/schema.rs (2 items)
+  fn     server_entries                           line  1540 changed-lines 9
+  fn     declared_host                            line  1573 changed-lines 46
+
+## eqproxy-config/src/validate.rs (5 items)
+  fn     check_listeners                          line   586 changed-lines 11
+  fn     check_listener_addresses                 line   612 changed-lines 48
+  fn     addresses_overlap                        line   660 changed-lines 15
+  fn     ipv4_endpoint                            line   675 changed-lines 5
+  fn     alpn_problems                            line  2830 changed-lines 119
+
+## eqproxy-net/src/cache.rs (7 items)
+  fn     cache_304_invalidations                  line   370 changed-lines 1
+  fn     max_entry_bytes                          line   375 changed-lines 2
+  fn     settings                                 line   376 changed-lines 2
+  fn     end_to_end                               line  1404 changed-lines 19
+  struct StoredRepresentation                     line  1443 changed-lines 24
+  fn     store_representation                     line  1467 changed-lines 37
+  struct CachedObjectView                         line  1792 changed-lines 73
+
+## eqproxy-net/src/http1.rs (8 items)
+  struct CacheFetch                               line  2709 changed-lines 3
+  struct StorePlan                                line  2725 changed-lines 16
+  fn     drop                                     line  2866 changed-lines 3
+  fn     store_plan                               line  2878 changed-lines 40
+  struct ResponseAssembly                         line  4122 changed-lines 3
+  fn     run                                      line  4140 changed-lines 21
+  fn     run                                      line  4199 changed-lines 13
+  fn     serve_http                               line  4345 changed-lines 11
+
+## eqproxy-net/src/proxy.rs (4 items)
+  struct QuicEntry                                line  1345 changed-lines 5
+  fn     spawn_quic                               line  1595 changed-lines 4
+  fn     apply                                    line  1654 changed-lines 13
+  fn     apply                                    line  1663 changed-lines 25
+
+## eqproxy-net/src/tls.rs (5 items)
+  struct ServerTls                                line    63 changed-lines 6
+  impl   ServerTls                                line    84 changed-lines 3
+  fn     fixed_material_fingerprint               line   516 changed-lines 1
+  fn     fixed_material_fingerprint               line   517 changed-lines 2
+  fn     client_config                            line   595 changed-lines 5

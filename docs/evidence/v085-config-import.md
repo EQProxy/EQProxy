@@ -83,6 +83,12 @@ declara así en lugar de esconderlo. Salida íntegra y códigos reales (capturad
 sin tubería, para que `$?` sea el del binario) en
 [`raw/validate.txt`](v085-config-import/raw/validate.txt).
 
+> **Actualización 2026-11-14:** el límite de rutas se comprobó con una copia
+temporal del `nginx.conf` del corpus y certificados de fixture en
+[`v096-corpus-fixture-e2e.md`](v096-corpus-fixture-e2e.md): `import` exit 2,
+`validate` exit 0 y `run` sirviendo tráfico real. No reescribe este registro
+histórico de v0.8.5; documenta la verificación posterior.
+
 ## 3. E2E real: convertir → validar → servir tráfico
 
 Script: `scripts/evidence/v085-config-import/journey.sh` (local-only: `../../scripts/evidence/v085-config-import/journey.sh`)
@@ -107,6 +113,23 @@ responde **502** —el tráfico cruzó de verdad la configuración generada, no 
 el parser.
 
 ## 4. Límites declarados
+
+> **Vigencia de la nota sobre vhosts.** El informe histórico
+> [`raw/nginx.report.md`](v085-config-import/raw/nginx.report.md) se generó con
+> el binario de v0.8.5 y dice que «un listener sirve un solo
+> `[listener.*.tls]`». Eso ya no es cierto: desde ADR-0051 el conversor agrupa
+> todos los vhosts de un mismo `IP:puerto` en un listener, añade cada
+> certificado adicional a `[[listener.*.tls.certs]]` y etiqueta sus reglas con
+> `host`. El `raw/` se conserva sin reescribir como evidencia de aquella
+> versión; la conducta vigente se prueba en
+> `imported_nginx_vhosts_serve_two_certificates_and_two_backends`.
+>
+> **Actualización 2026-11-14 (redirect 80 → 443).** El conversor también
+> traduce un `server` cuyo único destino es un `return` 3xx a un listener con
+> `[listener.*.redirect]` y sin backend. El corpus `nginx.conf` genera ahora dos
+> listeners; el `raw/` histórico sigue mostrando el aviso manual de v0.8.5. La
+> prueba vigente es `imported_redirect_only_listener_serves_301_without_a_backend`
+> en `eqproxy-cli/tests/cli_e2e.rs`.
 
 - La conversión es **estática**: no ejecuta nada del origen ni compara tráfico.
   La equivalencia de comportamiento de estas cuatro configuraciones no se ha

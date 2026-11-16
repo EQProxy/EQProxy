@@ -1,0 +1,40 @@
+## Direct answer
+
+`store_representation` (`eqproxy-net/src/cache.rs:1467-1502`, node `a3a8e7f0-9664-d8a1-a193-13ff6a5c70ad`) has exactly **one production caller**: `ResponseAssembly::run` in `eqproxy-net/src/http1.rs:4140-4335`. The only other callers are three call sites inside one unit test (`cache.rs:2352-2422`). Changing it therefore affects one HTTP/1.1 code path plus that test — but that single path is the origin-fetch → assemble → store → later-HIT path, so the blast radius on behavior is the whole cache write side.
+
+## Call path, entry point to leaf
+
+1. `serve_http` (`eqproxy-net/src/http1.rs:4345-5387`, node `3581c135`) — the connection loop; entry point.
+2. `CachePhase::run` (`eqproxy-net/src/http1.rs:4008-4104`, node `c31f6330`) — plans the cache action via `plan_cache`, resolves waiters via `resolve_cache_wait`.
+   - **Branch A (hit):** `CacheAction::Serve(entry)` arm calls `serve_cached` (node `142d042f`, `http1.rs`), which calls `cache::render_head` (`cache.rs:1509`, node `1fef618e`) to render `entry.headers` + `entry.body.len()`. This is the read side that consumes whatever `store_representation` wrote.
+   - **Branch B (miss / origin fetch):** proceeds to the assembly path below.
+3. `ResponseAssembly::run` (`eqproxy-net/src/http1.rs:4140-4335`, node `8d1b4632`) — async inherent method; note it has **no recorded caller** in the graph (invoked by method syntax), so its own reverse-dependency set is empty.
+4. Inside `run`, under `CacheAction::Origin(fetch) | CacheAction::Direct(fetch)`, at `match (self.store_head, cfg.cache.as_ref())`: `(Some(head), Some(cache)) => cache::store_representation(...)` — `http1.rs:4140-4335`, call site lies in the truncated region of that function (my snippet cut off at the call, so I could not pin the exact line; it is after the `declared_len` match on `response.framing`). This is the only production call site.
+5. `store_representation` (`cache.rs:1467`) fans out to:
+   - `parse_origin_head` (`cache.rs`, node `32ebd5b9`)
+   - `storable_vary` (`cache.rs`, node `55fe0b40`)
+   - `effective_ttl` (`cache.rs`, node `61c32a6f`)
+   - `end_to_end` (`cache.rs`, node `7b858e14`)
+   - `zero_is_none` (`eqproxy-config/src/schema.rs`, node `82368844`) — this edge looks spurious for a cache helper; likely a graph artifact, don't rely on it.
+   - `vary_values(request_headers, &vary)` is called in the body (`cache.rs:1486`) but is **not** recorded as an outgoing edge — a graph gap.
+
+## What actually breaks
+
+Production impact (single site):
+- `ResponseAssembly::run` (`http1.rs:4140-4335`): the returned `Option<StoredRepresentation>` is bound as `stored` and folded into `planned`; any signature/return-type change must be updated here, and the surrounding `body_cap`/in-memory assembly + `AssemblyOutcome` (`http1.rs:4108-4117`) logic assumes the entry bound from `settings.max_entry_bytes` (`cache.rs:1477`).
+
+Field-level consumers (so a field rename breaks these too):
+- `key`, `vary`, `vary_values`, `status`, `reason`, `etag`, `last_modified`, `ttl`, `len` feed the stored entry written through `Cache::store_direct` / `complete` (`cache.rs`, nodes `bd8c93ee` region) as `FetchOutcome::Stored(StoredParts { .. })`.
+- `headers` and `len` are re-rendered by `render_head` (`cache.rs:1509`) into served HIT responses via `serve_cached` (`http1.rs`), so a change in what `end_to_end` filters is visible to clients, not just internally.
+
+Non-production callers (will fail to compile, no runtime risk):
+- `store_representation_decides_coding_length_vary_and_key_together` (`cache.rs:2352-2422`, node `863507e7`) — calls it 4 times: cacheable GET (line ~2360), pre-coded origin with `vary: accept-encoding` (~2380), `HEAD` → `None` (`cache.rs:2411`), over-bound → `None` (`cache.rs:2419`).
+- Related test-side users of the same contracts: `facts` (`eqproxy-net/tests/adversarial_properties.rs:253`) calls `parse_origin_head`, and `p10_rendered_head_round_trips` (`adversarial_properties.rs:516-538`) round-trips `render_head` → `parse_origin_head`.
+
+## Unaffected / not established
+
+No caller of `store_representation` appears from `http2`, `http3`, `ws`, or `grpc`; per the graph, those protocols do not store through this function, so a change here is confined to the HTTP/1.1 listener path (`serve_http`). Caveat: the graph did not record callers for method-syntax calls such as `ResponseAssembly::run` itself, so this negative result is suggestive rather than proven.
+
+Not established because the result budget ran out: the other users of `parse_origin_head` (its reverse-dependency query returned empty/budget-exhausted) and the exact line number of the `store_representation` call inside `run`.
+
+**Recommendation:** treat the `StoredRepresentation` field set and the five early-return gates (non-GET, missing `declared_len`, over `max_entry_bytes`, `parse_origin_head` failure, `storable_vary` refusal, zero-TTL-without-validator — `cache.rs:1471-1484`) as the change surface. Signature changes touch only `http1.rs:4140-4335` and `cache.rs:2352-2422`; semantic changes to `headers`/`len` also silently change served HIT responses via `render_head` (`cache.rs:1509`).

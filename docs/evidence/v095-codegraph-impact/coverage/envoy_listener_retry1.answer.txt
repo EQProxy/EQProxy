@@ -1,0 +1,34 @@
+## Direct answer
+
+`envoy::listener` is the module-private `fn listener(conv: &mut Conv, listener: &Value) -> Result<(), ImportError>` in `./eqproxy-config/src/import/envoy.rs:436-878` (node `0a4f53f6…`). Its only production caller is `convert` in the same file (`./eqproxy-config/src/import/envoy.rs:20-110`, node `9d1f489a…`); everything else that reaches it is test code. So a signature/shape change breaks Envoy-bootstrap import: every `static_resources.listeners[]` entry stops converting into EQProxy's internal `Listener` model.
+
+## The caller and the branch point
+
+`convert` parses the YAML bootstrap, walks `static_resources.clusters` (calling `cluster`), then walks `static_resources.listeners` and calls `listener(conv, entry)?` once per entry — `./eqproxy-config/src/import/envoy.rs:39-46`. After those two loops it switches to the `for (key, value) in doc.entries()` reporting loop (from `envoy.rs:48`), so the listener path is the second of two parallel branches off `convert`; the first is the `clusters`/`cluster` branch at `envoy.rs:30-37`. An error from `listener` aborts `convert` early via `?`, suppressing all downstream report notes.
+
+Reverse dependencies (`Calls`, depth 1) return exactly one node: `convert` (`envoy.rs:20-110`). At depth 2 the only additions are unit tests in the same file:
+
+- `tests::local_reply_config_mappers_become_error_pages` — `./eqproxy-config/src/import/envoy.rs:1162-1201`
+- `tests::tls_params_cipher_suites_are_reported_not_silently_ignored` — `./eqproxy-config/src/import/envoy.rs:1204-1220`
+- `tests::empty_yaml_is_an_error_not_an_empty_config` — `./eqproxy-config/src/import/envoy.rs:1223-1227`
+
+Those tests exercise the path through `super::super::convert(Source::Envoy, source)`, i.e. the import dispatcher above `envoy::convert`, so they would break if `listener` changes shape as well.
+
+## What breaks on the callee side
+
+`listener` is the largest fan-out point of the Envoy converter; changing what it accepts/produces destabilises these calls (`trace_call_chain`, depth 1):
+
+- `local_reply_code` — `./eqproxy-config/src/import/envoy.rs:885-915` (called only from `listener`)
+- `domains` — `./eqproxy-config/src/import/envoy.rs:923-964`
+- `route_rule` — `./eqproxy-config/src/import/envoy.rs:967-1120`
+- `conv.gap` / `conv.review` / `conv.info` — `./eqproxy-config/src/import/mod.rs:506-515`, `465-474`, `454-463` (the severity/report accounting every listener directive is funnelled through)
+- `conv.add_listener` — `./eqproxy-config/src/import/mod.rs:591-593`, writing into `Conv.listeners`; the value it stores is EQProxy's own model `struct Listener` at `./eqproxy-config/src/import/mod.rs:371-391` (impl at `393-404`), so the listener function's output shape is what later reaches the emitted TOML
+- `Listener::new` — `./eqproxy-config/src/import/mod.rs:394-403`
+- `sanitize_name` — `./eqproxy-config/src/import/mod.rs:633-643`, `free_listener_name` — `./eqproxy-config/src/import/mod.rs:558-560`
+- `convert_duration` — `./eqproxy-config/src/import/mod.rs:651-717`
+
+The other callees the trace reports for the same node — `MapRegistry::iter` (`./eqproxy-core/src/maps.rs:394-396`), `tests::miss_then_hit` (`./eqproxy-net/src/cache.rs:1943-1956`), `first` (`./eqproxy-config/src/import/nginx.rs:282-284`), `zero_is_none` (`./eqproxy-config/src/schema.rs:1259-1265`), `tls_version` (`./eqproxy-cli/src/main.rs:3384-3389`), `ReapOnDrop::deref` (`./eqproxy-cli/tests/cli_e2e.rs:6972-6974`) — are almost certainly name-resolution artifacts; `listener` touches no such module, so treat them as low confidence.
+
+## Gaps
+
+The coupling metrics call for the node returned empty (result budget exhausted), so I cannot quantify Ca/Ce. The chain above `envoy::convert` — the `Source::Envoy` dispatcher in `eqproxy-config/src/import/mod.rs` that the tests reach as `super::super::convert` — was not resolved to a node ID, so the entry point of the CLI/import path that ultimately reaches `listener` is inferred from test call sites only, not traced. Also note I read the question as the `listener` *function* in the `envoy` import module, not the `Listener` struct at `import/mod.rs:371`; if the struct was meant, the answer above still covers it because `listener` is the only code that populates it.

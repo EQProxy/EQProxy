@@ -1,0 +1,32 @@
+**Direct answer:** The graph records only two callers of `tls::client_config` (`eqproxy-net/src/tls.rs:595`) — both unit tests in the same file — and does **not** record the production call at `eqproxy-cli/src/main.rs:2986` at all. So the honest answer is: the only graph-attested breakage is test code, while the CLI call site and the remaining production path have to be established with a text search, because no `Calls`/`Uses` edge connects them to the definition.
+
+**The function's contract (what a caller must satisfy)**
+
+`client_config` is defined at `eqproxy-net/src/tls.rs:595-634` with a five-argument positional signature: `ca_pem: Option<&[u8]>`, `verify: bool`, `server_name: Option<&str>`, `alpn: &[String]`, `min: TlsVersion`, returning `Result<ClientTls, TlsError>`. It fails with `TlsError::Ca` (bad PEM or rejected root, tls.rs:603-611) and `TlsError::ServerName` (unparseable SNI name, tls.rs:625-629). The returned `ClientTls` is a three-field struct — `connector: TlsConnector`, `server_name: Option<ServerName<'static>>`, `alpn: Vec<Vec<u8>>` — declared at `eqproxy-net/src/tls.rs:51-59`.
+
+**Callers the graph actually knows about**
+
+Reverse `Calls` traversal from the definition returned exactly two dependents, both tests:
+
+- `client_config_rejects_invalid_server_name` — `eqproxy-net/src/tls.rs:1073-1077`, asserts the `TlsError::ServerName` arm fires for `Some("not a name ..")`. If you change the argument order or replace the `server_name: Option<&str>` parameter, this test stops compiling, and if you drop the `ServerName` error variant its assertion becomes meaningless.
+- `server_name_defaults_to_server_ip` — `eqproxy-net/src/tls.rs:1081-1088`, calls `client_config(None, false, None, &[], TlsVersion::V1_2)` and then feeds the result to `server_name_for(&client, addr)`.
+
+Reverse `Uses` traversal returned nothing, so no other node in the graph consumes the symbol directly.
+
+Test-module helpers elsewhere are visible in search results but are outside production scope and were not confirmed as graph edges: `backend_tls` in `eqproxy-net/tests/e2e_backend_h2.rs:100-104` and `backend_tls` in `eqproxy-net/tests/e2e_grpc.rs:219-223`, both calling `tls::client_config(Some(CERT), true, Some("localhost"), &alpn, TlsVersion::V1_2)`. These use the same positional argument list, so any signature change breaks them at compile time.
+
+**The production call site and its path**
+
+The call at `eqproxy-cli/src/main.rs:2986` sits in a backend-construction block whose neighbouring lines are visible: `format!("backend.{name}.tls.ca_file")` at `eqproxy-cli/src/main.rs:2980` and `format!("backend.{name}.tls: {e}")` at `eqproxy-cli/src/main.rs:2993`. That shape implies the call reads `TlsClientConfig.ca_file`, passes the values into `client_config`, and maps the returned `Err` into a `backend.<name>.tls:` startup error. The input type it is filled from is `TlsClientConfig` at `eqproxy-config/src/schema.rs:256-274` (`verify`, `ca_file`, `server_name`, `alpn`, `min_version`), which `tls_client_summary` at `eqproxy-cli/src/main.rs:723-735` also reads for diagnostics.
+
+Downstream, the `ClientTls` value is consumed by the net layer: `eqproxy-net/src/proxy.rs:48` imports `crate::tls::{self, ClientTls}`, so if a signature change also alters the `ClientTls` shape (rather than only the inputs), that module is the next thing to break. The struct's own doc comment at `eqproxy-net/src/tls.rs:52-58` pins behaviour other code depends on — `alpn` listing `"h2"` is what opts a backend into HTTP/2 — so changing the `alpn` parameter's type or dropping it removes that opt-in path.
+
+Branches where the path forks on a signature change:
+- Verifying vs. not (`verify = true` builds a `RootCertStore` and adds `webpki_roots` plus optional CA PEM, tls.rs:599-612; `verify = false` installs `NoVerifier`, tls.rs:613-621). A caller that could not previously express "no verification" now must handle whichever new input replaces the `bool`.
+- Error propagation at the CLI site — the `Err` arm at `eqproxy-cli/src/main.rs:2993` formats with `{e}`, so a new error variant surfaces as a startup failure with a misleading `backend.<name>.tls:` message unless that arm is updated.
+
+**Gap and recommendation**
+
+I could not identify the enclosing function name or any of its callers for `eqproxy-cli/src/main.rs:2986` — the semantic searches returned only the `format!` macro nodes on adjacent lines, and the tool budget ran out before I could resolve the function node that would let me walk its callers. My working assumption is that the call sits inside a nested expression or closure that the indexer did not attribute to a `Calls` edge, which is why reverse traversal from `eqproxy-net/src/tls.rs:595` finds only the two unit tests.
+
+Because the argument list is positional and Rust-checked, every breakage listed here is a compile error rather than a silent runtime change — so the safest path is to grep `client_config` across `eqproxy-cli/` and `eqproxy-net/` rather than trusting the graph's caller set, and to treat `eqproxy-cli/src/main.rs:2986`, the two `tls.rs` unit tests, and the two test-module `backend_tls` helpers as the known call sites to update.

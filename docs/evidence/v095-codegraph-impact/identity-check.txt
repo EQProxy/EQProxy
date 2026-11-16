@@ -1,0 +1,1 @@
+identity-check: OK aa330baf93b96a1ffba64f2a1e4a2143dd357eafbff946a9155fde6229ecb51f (model=embeddinggemma-2:270m serving=32768 chunk=8192)

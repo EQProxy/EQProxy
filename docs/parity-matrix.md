@@ -10,6 +10,9 @@
 - Result: **11 E1 · 88 E2 · 21 E3 · 0 unclassified**. The counts are the
   arithmetic of the tables below; every E3 names its ADR and every E1 names
   the differential case that proves it.
+- **2026-11-14 impact addendum:** rows A2, A3, A4, A7, A12, A17, C12, D7, D11,
+  B-N2, B-N6, B-N7, B-N19, B-E4 and B-I10 are annotated in §7. Classes and counts
+  are unchanged; the addendum adds no PASS.
 
 This document is a **scope classification**, not a compatibility announcement:
 «compatibility not announced until demonstrated» (SPEC). The maintainer's
@@ -179,7 +182,7 @@ this is the mapping used to classify them without duplicating evidence.
 | B-N17 | FastCGI/uwsgi/scgi/gRPC | **E3** | ADR-0032/ADR-0038. Alternative: gRPC is proxied as h2; FastCGI/uwsgi/scgi are not gateways. |
 | B-N18 | `resolver` | E2 | `e2e_dns.rs` (hot re-resolution, hung DNS 503). Difference: a hostname in `server`; no nginx `resolver`/variable syntax. |
 | B-N19 | Buffer and body limits | E2 | `e2e_limits.rs` (`max_headers`, `max_body_bytes`, declared/chunked/h2 caps, 413). Difference: no `proxy_buffering` strategy; limits are listener settings. |
-| B-N20 | Minor gaps (static, variables, stream) | **E3** | ADR-0047: static file serving, `geo`/`split_clients`/`set`/`perl_set`/`js_set` variables, `ssl_preread` and `zone` are out of scope. E2 exceptions: `map` is covered by `[maps]` (C10), `include` is manual, `slow_start`/`max_conns` have equivalents, safe retries replace `proxy_next_upstream`, WebSockets work in HTTP mode. |
+| B-N20 | Minor gaps (static, variables, stream) | **E3** | ADR-0047: static file serving, `geo`/`split_clients`/`set`/`perl_set`/`js_set` variables, `ssl_preread` and `zone` are out of scope. E2 exceptions: `map` is covered by `[maps]` (C10), `include` is expanded with `--include-root` (deterministic glob order, cycle and size limits; manual without the flag), `slow_start`/`max_conns` have equivalents, safe retries replace `proxy_next_upstream`, WebSockets work in HTTP mode. |
 
 ## 3. ingress-nginx
 
@@ -262,3 +265,31 @@ timings, connection reuse, TLS parameters or error-page bytes.
   and on the external review (box 18, 0.9.3).
 - The matrix is source-level evidence: it does not benchmark, and it does not
   replace the Docker/multi-architecture journeys.
+
+## 7. CodeGraph impact review — 2026-11-14
+
+The review in [v095-codegraph-impact](evidence/v095-codegraph-impact.md) was
+run on the uncommitted tree at `ae85cf9`, after the v0.9.5 classification. It
+does not change any class, count or historical test citation below. Statuses
+here are **SOURCE-VERIFIED** (caller/path checked with `rg`) or **NOT EXECUTED**
+(no new test or E2E in this review); neither is a PASS.
+
+Affected rows: **A2, A3, A4, A7** (`serve_http`), **A4, D7** (`spawn_quic`),
+**C12, B-N7, B-E4** (`store_representation`), **A12** (`declared_host`), **A17, D11,
+B-N2, B-N6, B-N7, B-N19** (listener knobs), and **B-I10, D11** (ingress HSTS
+classification). B-I1 and B-E2 are secondary references for the h2/h3
+`serve_http` path.
+
+| Affected rows | Symbol / risk | Verified source fact | Review status |
+|---|---|---|---|
+| A2, A3, A4, A7; B-I1/B-E2 secondary | `serve_http` | Shared HTTP/1.1 handler at `http1.rs:4345`; production callers `http2::exchange`, `http3::exchange`, `ws::serve` and `proxy::handle_connection`. The pre-fix baseline answer said the node was absent; `rg` and the store probe refute it. | **SOURCE-VERIFIED**; no new E2E: **NOT EXECUTED**. The false absence is a baseline tool failure, not a PASS or a current-behaviour claim. |
+| A4, D7 | `spawn_quic` | Startup `bind` → `make_entry` and live reload `apply` (`KeptQuic::Adopt`) at `proxy.rs:1595`; caller set matches `rg`. | **SOURCE-VERIFIED**; no new reload E2E: **NOT EXECUTED**. |
+| C12, B-N7, B-E4 | `store_representation` | One production consumer, `ResponseAssembly::run` (`http1.rs:4183`); `StoredRepresentation` follows the same cache write path. | **SOURCE-VERIFIED**; no new cache E2E: **NOT EXECUTED**. |
+| A12 | `declared_host` | Consumed only by `resolve_with` (`main.rs:2985`); it selects backend TLS SNI, not listener routing (A13). The production `tls::client_config` call at `main.rs:2986` is missing from the graph. | **SOURCE-VERIFIED**; graph caller set incomplete; no new TLS E2E: **NOT EXECUTED**. |
+| A17, D11, B-N2, B-N6, B-N7, B-N19 | Listener knobs | `report_secondary_listener_knob` has **9** call sites (`nginx.rs:1817`–`:2084`), not the 5 the answer reported: `proxy_cache`, `client_header_timeout`, `keepalive_timeout`, `proxy_connect_timeout`, `proxy_read_timeout`, `client_max_body_size`, `gzip`, `gzip_comp_level`, `gzip_min_length`. `multi_vhost` and `check_listener_addresses` caller sets are correct. | **SOURCE-VERIFIED**; no new import E2E: **NOT EXECUTED**. |
+| B-I10, D11 | Ingress HSTS classification | `ingress::annotation` (`:519`) and `global_config` (`:844`) have caller `convert` (`:183`/`:317`); the HSTS branch now reports `review` instead of `done` when no `Strict-Transport-Security` header exists. Envoy `listener` and HAProxy `frontend` only add the mechanical `certs: Vec::new()` field. | **SOURCE-VERIFIED**; import-report classification only; no new E2E: **NOT EXECUTED**. |
+| all rows | Coverage boundary | 92/110 changed-symbol entries, the four changed test files and the untracked test-only `security.rs` were not evaluated. | **NOT EXECUTED**; this addendum adds no row evidence and no PASS. |
+
+The existing E1/E2/E3 classes and test citations remain the evidence recorded in
+the tables above. `SOURCE-VERIFIED` here means only the caller/path was checked
+in the source; this review did not run the tests those rows cite.

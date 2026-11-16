@@ -1,0 +1,10 @@
+I could not establish an answer: no evidence was retrievable for `envoy::listener`. Both searches ran but returned zero results, and the run's tool-result budget was reported as exhausted before any node IDs could be obtained, so no dependency or call-chain tools could be run.
+
+Concretely, what is missing:
+
+- No node (function, class, or otherwise) matching `envoy::listener` was found — neither by the semantic query `envoy::listener` nor by the broader `listener class definition envoy` query. Neither result set contained an `exact_name` match, so I cannot even confirm the symbol exists under that name in the indexed graph.
+- Because there is no node ID, I could not query reverse `Calls`, `Imports`, `Uses`, `Extends`, `Implements`, or `References` edges, so I cannot enumerate direct callers, indirect dependents, or affected code paths, and I have no file paths or line numbers to report.
+
+I will not guess at callers from general knowledge of Envoy-style listener code, since every name and location in the answer has to come from tool output.
+
+To get an answer, one of these would unblock the trace: confirm the exact qualified symbol name as it appears in the index (for example a namespace-qualified class, a method such as a listener factory or `ListenerManager`-style type, or a config struct), or re-run with a fresh budget so the searches return node IDs that can be fed into `get_reverse_dependencies` with `edge_type="Calls"` (and separately `"Uses"`/`"Implements"` for non-call coupling) at depth 2.

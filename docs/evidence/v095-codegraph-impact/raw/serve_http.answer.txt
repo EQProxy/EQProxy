@@ -1,0 +1,22 @@
+I could not answer as asked: the indexed graph contains no symbol named `serve_http`, so there are no production callers of it to list.
+
+**What the searches did and did not return**
+
+- A semantic search for `serve_http` (threshold 0.3) returned no node whose name is `serve_http`. Its top hit was an unrelated assertion inside `assert_eq` in `./eqproxy-cli/tests/cli_e2e.rs:4586`, matched on the word "serving" in the message string, not on any function.
+- A second search for the server-entry concept ("serve_http server start HTTP listener") also returned no `serve_http` node. It surfaced only listener *configuration* and test-harness helpers, e.g. `http_listener` in `./eqproxy-net/tests/e2e_ws_h2.rs:30`, `./eqproxy-net/tests/e2e_http2.rs:37`, `./eqproxy-net/tests/e2e_grpc.rs:225`, and `ResolvedListener::new(...)` call sites.
+- A third search for `fn serve` could not be run — the tool-result budget was exhausted before it returned.
+
+**What the graph does show as the serve entry point**
+
+The serving call that appears throughout the results is a method call on the bound-proxy value, `bound.serve(signal, WAIT)`, reached after `bind(vec![cfg], metrics)` in test harness helpers such as `start_proxy` at `./eqproxy-net/tests/e2e_error_pages.rs:75`, `./eqproxy-net/tests/e2e_admin.rs:219`, and `./eqproxy-net/tests/e2e_plugins.rs:112`. A separate `serve` function exists in the gRPC test/utility path at `./eqproxy-net/src/grpc.rs` (node `ad6ea612-5b44-2b50-0f73-1271c8bc0b45`), which calls `h2::server::SendResponse`; its own callers were not resolved.
+
+The production modules that the serve path reaches into — `crate::http1`, `crate::http2`, `crate::http3`, `ws`, plus the `eqproxy-net/src/proxy.rs` imports at lines 43–45 — appear only as import/call edges from those files, not as a `serve_http` symbol.
+
+**Gaps I could not close**
+
+- Whether a function literally named `serve_http` exists anywhere in this codebase. Nothing in the returned evidence confirms it, and I will not infer a caller list for a name the graph does not contain.
+- If the intended symbol is the `serve` method used as `bound.serve(...)`, I did not obtain its node ID or its production (non-test) callers, so I cannot give a call path to it or say what breaks.
+
+**Recommendation**
+
+Confirm the exact identifier first — most likely candidates are a `serve` method on the bound-proxy type in `eqproxy-net/src/proxy.rs` or `eqproxy-net/src/lib.rs`, or `serve` in `eqproxy-net/src/grpc.rs`. Once the real name is known, a reverse-`Calls` traversal at depth 2–3 from that node will give the production callers and affected paths in one step.

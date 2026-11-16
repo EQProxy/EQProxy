@@ -1,0 +1,36 @@
+## Direct answer
+
+`spawn_quic` (eqproxy-net/src/proxy.rs:1595–1618) has exactly two production callers, both in the same file: `make_entry` (eqproxy-net/src/proxy.rs:1538–1566) and `BoundProxy::apply` (eqproxy-net/src/proxy.rs:1663–1818). A signature or return-type change therefore breaks the startup path (`bind` → `make_entry`) and the live-reload path (`apply`), and any change to the `QuicEntry` fields it builds ripples into `apply`'s keep/adopt decision.
+
+## Call paths into `spawn_quic`
+
+Both direct callers come from `get_reverse_dependencies(edge_type="Calls", depth=1)` on the `spawn_quic` node:
+
+1. **Startup path**
+   - `bind(listeners: Vec<ResolvedListener>, metrics)` — eqproxy-net/src/proxy.rs:1470–1524. It binds the TCP socket, calls `open_quic(&cfg, local)` (eqproxy-net/src/proxy.rs:1572–1592) inside a retry loop for port-0 listeners (`QUIC_BIND_ATTEMPTS`), then does `entries.push(make_entry(cfg, listener, quic, Arc::clone(&metrics)))`.
+   - `make_entry(...)` — eqproxy-net/src/proxy.rs:1538–1566 — calls `spawn_quic` via `endpoint.map(|endpoint| spawn_quic(Arc::clone(&shared), endpoint, name, metrics))`, i.e. only when the endpoint is `Some`.
+   - Branch point: if `cfg.quic` is false, `bind` breaks out with `(listener, None)` and `spawn_quic` is never reached, so no QUIC task is started.
+
+2. **Reload / swap path**
+   - `BoundProxy::apply(&mut self, listeners)` — eqproxy-net/src/proxy.rs:1663–1818 — calls `spawn_quic` directly (depth-1 dependent). Here a *new* listener gets `open_quic` → `PreparedSocket::Fresh { listener, quic }`, and an *existing* listener goes through the `KeptQuic` decision (the `matches!(quic, KeptQuic::Adopt)` branch at eqproxy-net/src/proxy.rs:1747), because a live endpoint freezes ALPN/mTLS/TLS version but consults its certificate resolver per handshake.
+   - `apply` also calls `make_entry` for freshly bound sockets (listed as an incoming `calls` edge on `make_entry`), so the two paths converge on `spawn_quic`.
+
+## What `spawn_quic` itself calls (outgoing edges)
+
+- `current_cfg(&shared)` — eqproxy-net/src/proxy.rs:1320–1326 — captures the current `server_tls` generation before spawning, and stores it into `QuicEntry.server_tls` (the resolver snapshot a live endpoint keeps consulting).
+- `eqproxy_core::shutdown::channel()` — eqproxy-core/src/shutdown.rs:35–38 — builds the `(ShutdownHandle, Shutdown)` pair stored as `QuicEntry.stop` and passed into the task.
+- `crate::http3::serve_endpoint(...)` — eqproxy-net/src/http3.rs:75–109 — spawned via `tokio::spawn`; the returned `JoinHandle` becomes `QuicEntry.task`. It then loops on `endpoint.accept()` under `tokio::select!` with `shutdown.wait()`, calls `metrics.try_acquire_connection(cfg.maxconn)` (eqproxy-core/src/metrics.rs:781–792) to enforce maxconn, and spawns `serve_connection` (eqproxy-net/src/http3.rs:112–219) per connection; on exit it calls `endpoint.close(... b"shutdown")`.
+
+(`mirror::spawn` — eqproxy-net/src/mirror.rs:60–64 — also appears in `spawn_quic`'s outgoing edge list, but the same spurious edge appears on nearly every function in this graph, so I do not treat it as a real dependency.)
+
+## What breaks if `spawn_quic` changes
+
+- **`make_entry`** (eqproxy-net/src/proxy.rs:1538–1566): any argument-order/type change to the four parameters (`SharedCfg`, `quinn::Endpoint`, `String`, `Arc<Metrics>`) must be mirrored at its call site, and the `QuicEntry` it receives is stored in `Entry.quic: Option<QuicEntry>`.
+- **`bind`** (eqproxy-net/src/proxy.rs:1470–1524): reached transitively through `make_entry`; a change to `spawn_quic`'s error behaviour would also interact with the `QUIC_BIND_ATTEMPTS` retry on `ProxyError::QuicBind` in `bind`, though `spawn_quic` currently returns no `Result`.
+- **`BoundProxy::apply`** (eqproxy-net/src/proxy.rs:1663–1818): the strongest coupling — it both calls `spawn_quic` and reasons about `QuicEntry` fields (`server_tls`, `stop`, `task`, `endpoint`) when deciding whether a running endpoint can be adopted in place (`KeptQuic::Adopt`, eqproxy-net/src/proxy.rs:1747) or must be restarted/refused. Changing the `QuicEntry` shape or how `server_tls` is snapshotted invalidates the "renewal can be adopted, anything else needs a restart" logic.
+- Non-production callers exist only in eqproxy-net/tests/e2e_http3.rs (e.g. `quic_listener`, eqproxy-net/tests/e2e_http3.rs:69–73, and the reload test), which exercise the same `BoundProxy` paths and would break if the reload/QUIC semantics change.
+
+## Gaps
+
+- The graph records **no incoming `Calls` edges for `bind` or `BoundProxy::apply`** (`get_reverse_dependencies(depth=1)` returned empty for both), so the upstream production entry points (presumably the CLI runtime in eqproxy-cli/src/main.rs, where `ResolvedListener::with_quic` is used at eqproxy-net/src/proxy.rs:1097–1100) could not be confirmed from the graph. Treat `bind` and `apply` as the top of the traceable chain.
+- Line-level precision for the individual `spawn_quic` call sites is limited to the enclosing function ranges (1538–1566 and 1663–1818); the graph did not expose exact call-line numbers.

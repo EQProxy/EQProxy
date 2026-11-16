@@ -1,0 +1,4 @@
+ingress_global_config	0	15.1	8	4641	Medium	Rig	Completed in 13669ms with 8 tool calls
+envoy_listener	0	11.5	11	1520	Medium	Rig	Completed in 10120ms with 11 tool calls
+haproxy_frontend	0	10.9	4	5075	Medium	Rig	Completed in 9580ms with 4 tool calls
+tls_client_config	0	12.7	7	3923	Medium	Rig	Completed in 11305ms with 7 tool calls

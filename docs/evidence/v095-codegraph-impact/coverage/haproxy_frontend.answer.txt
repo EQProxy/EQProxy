@@ -1,0 +1,31 @@
+## Direct answer
+
+The graph records only one credible production caller of `haproxy::frontend` — `convert` in `./eqproxy-config/src/import/haproxy.rs:297` (the HAProxy section dispatcher). Everything downstream of the change is confined to the import/convert path: the CLI `import` command (`./eqproxy-cli/src/main.rs`) → source detection/dispatch (`./eqproxy-config/src/import/mod.rs:80`, `parse`) → `haproxy.rs::convert` → `frontend` at `./eqproxy-config/src/import/haproxy.rs:1025-1651`. **Caveat up front:** the depth‑1 reverse-call query returned a noisy set (see "Unverified" below), and the depth‑2 and outgoing-call queries returned nothing because this run's result budget was exhausted, so I could not close out branch-level detail inside the function.
+
+## Evidence
+
+The target symbol is `frontend`, a `Function` at `./eqproxy-config/src/import/haproxy.rs`, lines 1025–1651 (node `nodes:`81cf523a-4cda-7842-fc38-5d92c7158d4c``, matched by exact name). It is long (625 lines), i.e. the whole HAProxy `frontend` section handler.
+
+Production entry path:
+
+1. `./eqproxy-cli/src/main.rs` — `import` (node `nodes:`70724ca3-9929-9ac9-c8b2-33ac2aca9c20``) is the user-facing entry point; the graph shows it calls `Source::detect` in `./eqproxy-config/src/import/mod.rs:80`.
+2. `./eqproxy-config/src/import/mod.rs:80-107` — `detect` classifies a config as `Source::Haproxy` when a trimmed line starts with any of `frontend `, `backend `, `defaults`, `global`, `default_backend`, `default-server` (the `for keyword in [...]` loop). So every config containing a HAProxy `frontend` section reaches the HAProxy importer through this branch.
+3. `./eqproxy-config/src/import/mod.rs` — `parse` (node `nodes:`86937502-01ec-a02f-4cb3-496f1bea1670``) dispatches on the detected source (it calls `Source::as_str`, defined at `mod.rs:68-75`), routing to `mod haproxy;` declared at `mod.rs:30`.
+4. `./eqproxy-config/src/import/haproxy.rs:297-516` — `convert(conv: &mut Conv, text: &str)` iterates the parsed `sections(text)`, handling `Kind::Global` (line ~301) then `Kind::Defaults` (line ~497) blocks and dispatching by keyword.
+5. `./eqproxy-config/src/import/haproxy.rs:1025-1651` — `frontend`: the section handler this request is about.
+
+Behaviour visible inside `frontend` from the indexed text: it emits/handles `default_backend` directives — a `format!("default_backend {reference}")` macro invocation sits at `haproxy.rs:1339`, inside the function's line range. That is the only interior branch boundary I could pin to a line.
+
+Test callers (not production):
+
+- `./eqproxy-config/tests/import_corpus.rs:136-161` — `haproxy_frontend_backend_and_httpchk_convert` calls its local `convert` helper (node `nodes:`d7636f42-e03e-e285-4101-3830e84341e0``) and asserts on `outcome.toml` containing `type = "http"` and on frontend-derived `path_prefix` / `[[listener.` rules. A signature or output change to `frontend` breaks these assertions directly.
+- `./eqproxy-config/src/import/security.rs:221` — test code embeds `docs/evidence/v085-config-import/raw/haproxy.cfg` via `include_str!`, i.e. a fixture corpus that flows through the same converter.
+- `./eqproxy-cli/tests/cli_e2e.rs:1971-1981` writes a `frontend fe` / `use_backend ... if { hdr(...) }` config and drives the real CLI through it; `./eqproxy-cli/tests/migration.rs:651` mounts a `haproxy.cfg` into a container as the differential baseline.
+
+## Unverified — treat with suspicion
+
+The depth‑1 reverse-`Calls` result also listed `all_backends` (`./eqproxy-net/src/proxy.rs:1073`), `RequestPrepPhase::run` (`./eqproxy-net/src/http1.rs:3792`), `serve_http` (`http1.rs:4345`), `serve_cached` (`http1.rs:2861`), `OriginHeadPhase::read` (`http1.rs:3542`), `ws::serve` (`ws.rs:65`), `http2::relay_response` (`http2.rs:539`), `http3::relay_inner` (`http3.rs:789`), `cache::response_facts` (`cache.rs:1275`), `tls::client_config` (`tls.rs:595`), `yaml::item_entries` (`yaml.rs:205`), `nginx::server` (`nginx.rs:1252`), `nginx::multi_vhost` (`nginx.rs:477`), plus test helpers (`Scope::run` in `tests/differential.rs:542` and `tests/migration.rs:275`, `start_compression_origin`, `start_scripted_backend`, `differential_shared_semantics_corpus`). None of these can plausibly call a private HAProxy config-section converter — they are name-collision artifacts (generic `run`/`read`/`server`/`serve` symbols), which is consistent with the same name-fallback behaviour that produced the `format` macro hits in the initial search. Two further items from that result were dropped on the size budget.
+
+## Recommendation
+
+Treat `haproxy.rs::convert` (line 297) and the four callers listed under tests as the real change surface, and re-run a depth‑1 reverse query restricted to confirmed edges before refactoring `frontend`; the raw incoming-edge set on this node is too polluted to audit from. Because `frontend` is a 625-line private function reached only through `convert`, changing its signature touches one call site in production — but changing its *emitted TOML* surfaces in `tests/import_corpus.rs:136` and `tests/cli_e2e.rs:1971`.

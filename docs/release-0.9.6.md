@@ -10,19 +10,26 @@ move an existing tag or claim a publication.
 - Version: **0.9.6**, from `[workspace.package] version` in `Cargo.toml`.
 - Tag: annotated `v0.9.6`, local only, pointing at release commit
   `0f03bf4864a0557f1e23f280be052fe9a7b6bd1a`. The tag was not moved.
-- Pre-existing tag: annotated `v0.9.5` remains at
-  `a76f017c099c8cf1e92b209a7d4e74cd8bc19220`; it was neither moved nor
-  deleted.
+- Pre-existing tag: at v0.9.6 preparation the local `v0.9.5` tag was
+  `a76f017c099c8cf1e92b209a7d4e74cd8bc19220`; it was later retagged for the
+  v0.9.5 publication and is now the annotated object
+  `fd65bee0b62055e427afa4360560fca76d400813` over commit
+  `3451c190362147a95e44eb1f08f306a39ec73125` (remote and published on
+  2026-11-12). It was neither moved nor deleted by this v0.9.6 preparation;
+  the publication record is [release-0.9.5](release-0.9.5.md).
 - Current tree: `0f03bf4` plus a later **documentation correction commit**
   (HEAD) that corrects the release claims. That correction is not in the
   `v0.9.6` tag.
 
 ## Why 0.9.6
 
-The repository already had `Cargo.toml` at **0.9.5**, a `## [v0.9.5]` section
-and an annotated `v0.9.5` tag at `a76f017`. That tag does not contain P0-8 and
-is an ancestor of the current tree. It cannot be moved or deleted, so 0.9.5 is
-not available for the current commit; **0.9.6** is the next patch version.
+At v0.9.6 preparation the repository already had `Cargo.toml` at **0.9.5**,
+a `## [v0.9.5]` section and an annotated `v0.9.5` tag at `a76f017`. That
+historical tag does not contain P0-8 and is an ancestor of the current tree.
+It was later retagged for the v0.9.5 publication (`fd65bee…` → `3451c19`),
+which is still an ancestor and does not contain P0-8. The tag cannot be moved
+or deleted for this patch, so 0.9.5 is not available for the current commit;
+**0.9.6** is the next patch version.
 
 On 2026-11-11, `git ls-remote --tags origin refs/tags/v0.9.5
 refs/tags/v0.9.6` returned no rows and `gh release view v0.9.5` answered
@@ -67,9 +74,10 @@ working tree is the corrected one.
 | `git diff --check` | exit 0 |
 
 **Missing for publication of 0.9.6:** the branch `release/v0.9.5` is on origin
-(`84e5eb3`), but there is no remote `v0.9.6` tag, no GitHub release for it, no
-Docker Scout gate, no cross-architecture amd64/arm64 E2E and no re-pull of an
-image built from this tree; the published release is still `v0.9.5`. P0-7 and
-the open P0/P1 work remain unclosed. The tag/version pair is consistent, but the tag target still
+(`ca1f0a9`), while local HEAD is four commits ahead; there is no remote
+`v0.9.6` tag, no GitHub release for it, no Docker Scout gate, no
+cross-architecture amd64/arm64 E2E and no re-pull of an image built from this
+tree; the published release is still `v0.9.5`. P0-7 and the open P0/P1 work
+remain unclosed. The tag/version pair is consistent, but the tag target still
 contains the pre-correction release text; realigning it requires a tag move
 that was not performed. The verdict is **NOT PRODUCTION READY**.

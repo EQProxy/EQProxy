@@ -47,6 +47,15 @@ Storage rules (each a named E2E journey, not a comment):
 - Only `Content-Length` bodies under the entry bound assemble in memory;
   chunked and close-delimited responses stream through uncached, never
   re-framed. Larger bodies stream through, never truncated.
+- Compression never reaches the entry. A stored body is the origin's bytes;
+  its `Content-Encoding` is only the origin's own (a body the origin already
+  coded), its `Content-Length` is the stored body's, rendered on serve, and
+  its `Vary` is the origin's list — the `Vary: Accept-Encoding` the proxy adds
+  when it codes a reply never enters the key, so one entry serves gzip,
+  brotli and identity. The decision lives in one function,
+  `cache::store_representation`, fed the origin's head before any
+  client-facing rewrite (P0-10/EXT-H-01: the coding, the length, the `Vary`
+  and the key cannot disagree because one place decides all four).
 - Stale entries with validators revalidate with `If-None-Match` /
   `If-Modified-Since`; an origin `304` refreshes only representation
   metadata without touching the body (replacement, never mutation: a

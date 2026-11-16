@@ -69,9 +69,10 @@ clarity:
 - `zone`/shared upstream state: one process, no shared worker memory.
 
 The remaining `B-N20` entries are **E2** (documented differences): `include`
-is not expanded by the converter, `slow_start` and per-server `max_conns` have
-the EQProxy equivalents, `proxy_next_upstream` maps to safe retries, and
-WebSockets are tunnelled in HTTP mode.
+is expanded only when the operator supplies `--include-root` (without it the
+converter keeps reporting it for manual review), `slow_start` and per-server
+`max_conns` have the EQProxy equivalents, `proxy_next_upstream` maps to safe
+retries, and WebSockets are tunnelled in HTTP mode.
 
 ### 3. What remains E2
 

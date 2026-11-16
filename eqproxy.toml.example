@@ -83,8 +83,15 @@ shutdown_grace = "10s"
 
 [listener.web]
 listen = "127.0.0.1:8080"   # IP:PORT (port 0 = ephemeral)
-backend = "api"             # reference to a [backend.*] section
+backend = "api"             # reference to a [backend.*] section; optional
+                            # only when [listener.web.redirect] is set
 mode = "tcp"                # "tcp" (tunnel) or "http" (strict HTTP/1.1)
+# Redirect-only listener (nginx `server { listen 80; return 301 …; }`):
+# answers every request that matches no rule with a local 3xx, without a
+# backend. Mutually exclusive with `backend`; requires mode = "http".
+#[listener.web.redirect]
+#status = 301               # 301/302/303/307/308 (default 301)
+#location = "https://$host$request_uri"  # $host, $uri, $request_uri
 maxconn = 1024              # concurrent connections; newcomers are refused when full
 connect_timeout = "5s"      # connect to the backend
 idle_timeout = "60s"        # inactivity per tunnel direction
@@ -232,7 +239,7 @@ max_stream_duration = "0s"
 #status = 302
 
 # Routing rules (B-H3/B-H4; mode = "http" only): ordered, first match
-# wins; the listener's `backend` is the fallback when no rule matches.
+# wins; the listener's `backend` or `redirect` is the fallback when no rule matches.
 # Conditions AND together: host/host_prefix/host_regex (case-insensitive,
 # port-free), path/path_prefix/path_regex (matched against the normalized
 # path: `.`/`..` resolved, `//` collapsed, unreserved `%XX` decoded),

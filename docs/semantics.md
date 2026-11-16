@@ -123,7 +123,9 @@ not hidden behind the same word.
   match decides** (`eqproxy-core/src/rules.rs`). Conditions: exact/regex host,
   path/prefix, method, IP and headers. Actions: backend, `redirect`,
   `direct_response`, request/response headers, prefix rewrite, CORS, auth, rate
-  limit and mirror.
+  limit and mirror. A listener may instead have a `[listener.*.redirect]`
+  fallback and no `backend`: unmatched requests get that local 3xx (the
+  nginx `server { return 301 …; }` shape), so no origin is contacted.
 - **Limits.** `rate_limit` is an in-memory token bucket **per client IP and per
   rule**; `burst` defaults to `rate`. `auth` is fail-closed: `2xx` allows,
   `401`/`403` deny with the service's response, any other status is `500`, and

@@ -17,6 +17,9 @@
 //! 4. converting twice yields the same bytes (deterministic: `BTreeMap`s and no
 //!    timestamps).
 //!
+//! The include and TLS-divergence corpora are test fixtures under
+//! `tests/fixtures/`, not evidence files: `docs/` publishes documentation.
+//!
 //! It does not claim traffic equivalence: that would need the origin backends
 //! of each file. What it proves is the shape of the artifact and the honesty of
 //! the report.
@@ -31,8 +34,16 @@ fn corpus(name: &str) -> PathBuf {
         .join(name)
 }
 
+/// The nginx include and TLS-divergence corpora are test fixtures: `docs/`
+/// publishes documentation and the evidence it cites, not inputs a test reads.
+fn fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name)
+}
+
 fn include_corpus(name: &str) -> PathBuf {
-    corpus("nginx-includes").join(name)
+    fixture("nginx-includes").join(name)
 }
 
 fn convert(name: &str, source: Source) -> (String, Outcome) {
@@ -368,7 +379,7 @@ fn nginx_tls_divergence_corpus_names_all_three_lost_policies() {
     // One listener cannot carry per-vhost TLS versions, ciphers and mTLS
     // policy. The default_server wins and the other vhost loses those three
     // properties; the report must name every one and count exactly three.
-    let path = corpus("nginx-tls-divergence/nginx.conf");
+    let path = fixture("nginx-tls-divergence/nginx.conf");
     let text = std::fs::read_to_string(&path)
         .unwrap_or_else(|err| panic!("corpus file {} must be readable: {err}", path.display()));
     let (outcome, degraded) = import::convert_with_degraded(Source::Nginx, &text)

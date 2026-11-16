@@ -10370,7 +10370,7 @@ fn config_import_tls_divergence_corpus_names_three_degradations() {
     // another cipher list and mTLS; the real binary must convert it, keep the
     // default policy and report exactly those three security losses.
     let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../docs/evidence/v085-config-import/raw/nginx-tls-divergence/nginx.conf");
+        .join("../eqproxy-config/tests/fixtures/nginx-tls-divergence/nginx.conf");
     assert!(source.is_file(), "missing corpus file {}", source.display());
     let converted = std::env::temp_dir().join(format!(
         "eqproxy-cli-e2e-{}-tls-divergence.toml",

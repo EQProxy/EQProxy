@@ -2160,7 +2160,8 @@ async fn accept_loop(
                 // Config in force at accept time (S-CFG-01): established
                 // connections keep it until they drain.
                 let cfg = Arc::clone(&current_cfg(&shared));
-                if !metrics.try_acquire_connection(cfg.maxconn) {
+                // EXT-H-06: the bound is the listener's, not the process's.
+                if !metrics.try_acquire_listener_connection(&cfg.name, cfg.maxconn) {
                     metrics.connections_rejected.fetch_add(1, Ordering::Relaxed);
                     // Explicit refusal: immediate close, no queue.
                     drop(socket);
@@ -2179,18 +2180,23 @@ async fn accept_loop(
 /// RAII guard: releases the connection slot no matter what.
 pub(crate) struct ConnectionGuard {
     metrics: Arc<Metrics>,
+    /// Listener whose slot this connection holds (EXT-H-06).
+    listener: String,
 }
 
 impl ConnectionGuard {
     /// Takes ownership of an already-acquired slot (TCP and QUIC both use it).
-    pub(crate) fn new(metrics: Arc<Metrics>) -> Self {
-        Self { metrics }
+    pub(crate) fn new(metrics: Arc<Metrics>, listener: &str) -> Self {
+        Self {
+            metrics,
+            listener: listener.to_owned(),
+        }
     }
 }
 
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
-        self.metrics.release_connection();
+        self.metrics.release_listener_connection(&self.listener);
     }
 }
 
@@ -3202,7 +3208,7 @@ async fn handle_connection(
     cfg: Arc<ResolvedListener>,
     metrics: Arc<Metrics>,
 ) {
-    let _guard = ConnectionGuard::new(Arc::clone(&metrics));
+    let _guard = ConnectionGuard::new(Arc::clone(&metrics), &cfg.name);
     let _ = client.set_nodelay(true);
     let local = client.local_addr().unwrap_or(cfg.listen);
 

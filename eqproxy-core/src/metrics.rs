@@ -174,6 +174,11 @@ pub struct Metrics {
     /// Opt-in per-server/per-route series (CE4): disabled and empty until the
     /// configuration asks for it.
     pub detail: DetailMetrics,
+    /// Active connections **per listener**, keyed by listener name (EXT-H-06):
+    /// `maxconn` is scoped to the listener that accepted the connection, not
+    /// to the process. The public `connections_active` gauge stays the sum of
+    /// these slots, so the exported series keeps its meaning.
+    listener_connections: std::sync::Mutex<Vec<(String, std::sync::Arc<AtomicU64>)>>,
 }
 
 /// Kind of an opt-in detail series (CE4).
@@ -840,6 +845,55 @@ impl Metrics {
         self.connections_completed.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Slot counter of one listener, created on first use. Reloading a
+    /// configuration keeps the name, so a swap does not reset the count of a
+    /// listener that stayed in the configuration.
+    fn listener_counter(&self, listener: &str) -> std::sync::Arc<AtomicU64> {
+        let mut slots = self
+            .listener_connections
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((_, counter)) = slots.iter().find(|(name, _)| name == listener) {
+            return std::sync::Arc::clone(counter);
+        }
+        let counter = std::sync::Arc::new(AtomicU64::new(0));
+        slots.push((listener.to_owned(), std::sync::Arc::clone(&counter)));
+        counter
+    }
+
+    /// Reserves a connection slot **for one listener** (EXT-H-06): the bound
+    /// compared is `maxconn` of the listener that accepted the connection,
+    /// never the count of every listener in the process. Returns `false` when
+    /// that listener is full.
+    pub fn try_acquire_listener_connection(&self, listener: &str, maxconn: u32) -> bool {
+        let slot = self.listener_counter(listener);
+        if slot
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                (active < u64::from(maxconn)).then_some(active + 1)
+            })
+            .is_err()
+        {
+            return false;
+        }
+        self.connections_active.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    /// Releases a slot taken by [`Self::try_acquire_listener_connection`] and
+    /// keeps the global gauge in step.
+    pub fn release_listener_connection(&self, listener: &str) {
+        let slot = self.listener_counter(listener);
+        let _ = slot.try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+            Some(active.saturating_sub(1))
+        });
+        let _ = self
+            .connections_active
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |v| {
+                Some(v.saturating_sub(1))
+            });
+        self.connections_completed.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Counts a chunked trailer section refused for exceeding the shared
     /// byte/field budget (AUD-03). The storage lives in the opaque detail
     /// substructure so the public `Metrics` field set stays constructible.
@@ -988,6 +1042,41 @@ mod tests {
         assert!(
             metrics.try_acquire_connection(2),
             "releasing the slot allows accepting again"
+        );
+    }
+
+    /// EXT-H-06: one listener's `maxconn` cannot spend another's slots, and
+    /// the public gauge keeps being the sum of every listener.
+    #[test]
+    fn maxconn_is_scoped_to_each_listener() {
+        let metrics = Metrics::default();
+        assert!(metrics.try_acquire_listener_connection("a", 1));
+        assert!(
+            !metrics.try_acquire_listener_connection("a", 1),
+            "listener a is full"
+        );
+        assert!(
+            metrics.try_acquire_listener_connection("b", 1),
+            "listener b has its own slot"
+        );
+        assert_eq!(
+            metrics.connections_active.load(Ordering::Relaxed),
+            2,
+            "the exported gauge is the sum of the listeners"
+        );
+        metrics.release_listener_connection("a");
+        assert_eq!(
+            metrics.connections_active.load(Ordering::Relaxed),
+            1,
+            "a release lowers the gauge exactly once"
+        );
+        assert!(
+            metrics.try_acquire_listener_connection("a", 1),
+            "the released slot is reusable"
+        );
+        assert!(
+            !metrics.try_acquire_listener_connection("b", 1),
+            "listener b stayed full while a released"
         );
     }
 

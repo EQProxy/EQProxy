@@ -11654,6 +11654,113 @@ fn grpc_requests_obey_max_body_bytes_and_the_wasm_plugin() {
     );
     let _ = std::fs::remove_file(&body);
 }
+
+/// Starts `eqproxy run` and waits until both named listeners are announced.
+fn spawn_run_and_wait_two(
+    config: &Path,
+    first: &str,
+    second: &str,
+) -> (
+    std::process::Child,
+    String,
+    String,
+    BufReader<std::process::ChildStderr>,
+) {
+    let mut child = bin()
+        .args(["run", "--config"])
+        .arg(config)
+        .args(["--metrics-interval", "1h"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn eqproxy run");
+    let mut stderr = BufReader::new(child.stderr.take().expect("stderr piped"));
+    let mut first_addr = String::new();
+    let mut second_addr = String::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut line = String::new();
+    while Instant::now() < deadline && (first_addr.is_empty() || second_addr.is_empty()) {
+        line.clear();
+        let read = stderr.read_line(&mut line).expect("read stderr");
+        assert!(
+            read > 0,
+            "eqproxy closed stderr before announcing both listeners"
+        );
+        for (name, slot) in [(first, &mut first_addr), (second, &mut second_addr)] {
+            if slot.is_empty()
+                && let Some(found) = line.split(&format!("listener {name} listening on ")).nth(1)
+            {
+                found.trim().clone_into(slot);
+            }
+        }
+    }
+    assert!(
+        !first_addr.is_empty() && !second_addr.is_empty(),
+        "both listeners must be announced"
+    );
+    (child, first_addr, second_addr, stderr)
+}
+
+/// EXT-H-06 (P0-15): `maxconn` bounds the **listener that accepted the
+/// connection**. A process-wide counter made one busy listener refuse traffic
+/// on a listener whose own configuration had slots left.
+#[cfg_attr(
+    miri,
+    ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
+)]
+#[test]
+fn maxconn_is_per_listener_not_process_wide() {
+    let echo = start_static_backend("ok");
+    let config = temp_config(
+        "p015",
+        &format!(
+            "schema_version = 1\n\
+             [listener.a]\n\
+             listen = \"127.0.0.1:0\"\nmode = \"http\"\nbackend = \"api\"\nmaxconn = 1\n\
+             [listener.b]\n\
+             listen = \"127.0.0.1:0\"\nmode = \"http\"\nbackend = \"api\"\nmaxconn = 1\n\
+             [backend.api]\n\
+             server = \"{echo}\"\n"
+        ),
+    );
+    let (mut child, addr_a, addr_b, mut stderr) = spawn_run_and_wait_two(&config, "a", "b");
+    // One idle connection holds the only slot `a` has.
+    let hold = TcpStream::connect(&addr_a).expect("hold listener a");
+    std::thread::sleep(Duration::from_millis(150));
+    // `b` keeps serving: a global cap would have already refused it.
+    let served = proxied(
+        &addr_b,
+        b"GET / HTTP/1.1\r\nHost: b.test\r\nConnection: close\r\n\r\n",
+    );
+    assert!(
+        served.starts_with("HTTP/1.1 200"),
+        "listener b must keep serving while listener a is full: {served:?}"
+    );
+    // A second connection to `a` is refused explicitly: closed, no response.
+    let mut second = TcpStream::connect(&addr_a).expect("second connection to a");
+    let _ = second.set_read_timeout(Some(Duration::from_secs(2)));
+    let mut buf = [0u8; 16];
+    let read = second.read(&mut buf).unwrap_or(0);
+    assert_eq!(read, 0, "a full listener must refuse the connection");
+    // Releasing the slot lets `a` serve again, so the accounting is per slot.
+    drop(hold);
+    std::thread::sleep(Duration::from_millis(150));
+    let after = proxied(
+        &addr_a,
+        b"GET / HTTP/1.1\r\nHost: a.test\r\nConnection: close\r\n\r\n",
+    );
+    assert!(
+        after.starts_with("HTTP/1.1 200"),
+        "a released slot must be reusable: {after:?}"
+    );
+    wait_for_sigint_shutdown(&mut child, &config);
+    let mut log = String::new();
+    let _ = stderr.read_to_string(&mut log);
+    assert!(
+        log.contains("rejected_maxconn=1"),
+        "the refusal must be counted once in the final METRICS: {log}"
+    );
+}
 /// Stands in for the backend an operator deploys behind PROXY-over-TLS
 /// (EXT-H-03): it records the raw opening bytes of every connection and only
 /// then relays to a real TLS origin, so the request still completes end to

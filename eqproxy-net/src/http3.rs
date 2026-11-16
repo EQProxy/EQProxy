@@ -89,7 +89,8 @@ pub(crate) async fn serve_endpoint(
             break;
         };
         let cfg = current_cfg(&shared);
-        if !metrics.try_acquire_connection(cfg.maxconn) {
+        // EXT-H-06: `maxconn` is the listener's bound, not the process's.
+        if !metrics.try_acquire_listener_connection(&cfg.name, cfg.maxconn) {
             metrics.connections_rejected.fetch_add(1, Ordering::Relaxed);
             incoming.refuse();
             continue;
@@ -117,7 +118,7 @@ async fn serve_connection(
     name: String,
     metrics: Arc<Metrics>,
 ) {
-    let _guard = crate::proxy::ConnectionGuard::new(Arc::clone(&metrics));
+    let _guard = crate::proxy::ConnectionGuard::new(Arc::clone(&metrics), &cfg.name);
     let connection = match tokio::time::timeout(cfg.client_header_timeout, incoming).await {
         Ok(Ok(connection)) => connection,
         Ok(Err(err)) => {

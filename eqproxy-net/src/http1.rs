@@ -2905,8 +2905,9 @@ async fn serve_cached<CW: AsyncWrite + Unpin>(
     } else {
         cache::render_head(entry)
     };
-    let mut extra = rule_headers
-        .map_or_default(|actions| render_header_lines(&actions.response, peer, host, scheme));
+    let mut extra = rule_headers.map_or_else(Default::default, |actions| {
+        render_header_lines(&actions.response, peer, host, scheme)
+    });
     if let Some(cors) = rule_headers.and_then(|actions| actions.cors.as_ref()) {
         extra.extend(cors_response_lines(cors, false));
     }
@@ -3937,7 +3938,7 @@ impl RequestPrepPhase<'_, '_> {
                 && drain_body(from_client, &request.framing, cfg.idle_timeout, metrics).await;
             let close = !aligned || request.wants_close;
             let mut extra_headers = cors_response_lines(cors, true);
-            extra_headers.extend(rule_headers.map_or_default(|actions| {
+            extra_headers.extend(rule_headers.map_or_else(Default::default, |actions| {
                 render_header_lines(&actions.response, peer, &request.host, scheme)
             }));
             if let Some(record) = access.as_mut() {
@@ -4511,7 +4512,7 @@ pub async fn serve_http<CR, CW>(
                     )
                     .await;
                 let close = !aligned || request.wants_close;
-                let mut extra_headers = headers.map_or_default(|actions| {
+                let mut extra_headers = headers.map_or_else(Default::default, |actions| {
                     render_header_lines(&actions.response, peer, &request.host, scheme)
                 });
                 if let Some(cors) = headers.and_then(|actions| actions.cors.as_ref()) {
@@ -4558,7 +4559,7 @@ pub async fn serve_http<CR, CW>(
                     )
                     .await;
                 let close = !aligned || request.wants_close;
-                let mut extra_headers = headers.map_or_default(|actions| {
+                let mut extra_headers = headers.map_or_else(Default::default, |actions| {
                     render_header_lines(&actions.response, peer, &request.host, scheme)
                 });
                 if let Some(cors) = headers.and_then(|actions| actions.cors.as_ref()) {
@@ -5130,7 +5131,7 @@ pub async fn serve_http<CR, CW>(
 
             // Response header actions (B-N4/B-I4/B-E17) on the proxied
             // response the client sees.
-            let mut response_lines = rule_headers.map_or_default(|actions| {
+            let mut response_lines = rule_headers.map_or_else(Default::default, |actions| {
                 render_header_lines(&actions.response, peer, &request.host, scheme)
             });
             // Sticky cookie (B-H8): re-issued only when the request had none

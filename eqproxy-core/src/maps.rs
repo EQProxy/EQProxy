@@ -488,7 +488,7 @@ impl MapKey {
                 .headers
                 .iter()
                 .find(|(header, _)| header.eq_ignore_ascii_case(name))
-                .map_or_default(|(_, value)| value.clone()),
+                .map_or_else(Default::default, |(_, value)| value.clone()),
         }
     }
 }

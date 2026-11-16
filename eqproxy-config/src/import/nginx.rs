@@ -1458,7 +1458,7 @@ fn http_directive(
     has_tls_servers: bool,
 ) {
     let name = node.name.as_str();
-    let arg = node.args.first().map_or_default(String::as_str);
+    let arg = node.args.first().map_or("", String::as_str);
     let text = directive(node);
     match name {
         "gzip" => {
@@ -3124,7 +3124,7 @@ fn server(
                 let detail = format!(
                     "[[listener.*.error_pages]] codes = [{list}], file = \"{file}\"{}: la ruta se \
                      resuelve contra el directorio del TOML, no contra el root de nginx",
-                    status.map_or_default(|s| format!(", status = {s}"))
+                    status.map_or_else(Default::default, |s| format!(", status = {s}"))
                 );
                 let same_as_primary = role
                     .primary_listener()
@@ -4513,7 +4513,7 @@ fn stream(conv: &mut Conv, stream: &Node) -> Result<(), ImportError> {
                 "proxy_timeout" => {
                     listener.idle_timeout = convert_duration(
                         conv,
-                        child.args.first().map_or_default(String::as_str),
+                        child.args.first().map_or("", String::as_str),
                         "s",
                         &text,
                         &context,
@@ -4523,7 +4523,7 @@ fn stream(conv: &mut Conv, stream: &Node) -> Result<(), ImportError> {
                 "proxy_connect_timeout" => {
                     listener.connect_timeout = convert_duration(
                         conv,
-                        child.args.first().map_or_default(String::as_str),
+                        child.args.first().map_or("", String::as_str),
                         "s",
                         &text,
                         &context,

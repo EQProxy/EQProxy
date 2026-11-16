@@ -306,7 +306,7 @@ impl HotCerts {
             .default
             .cert
             .first()
-            .map_or_default(leaf_fingerprint_of)
+            .map_or_else(Default::default, leaf_fingerprint_of)
     }
 }
 

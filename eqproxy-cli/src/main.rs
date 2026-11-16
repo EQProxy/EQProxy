@@ -3109,14 +3109,14 @@ fn resolve_with(
                     let at = why
                         .field
                         .as_deref()
-                        .map_or_default(|field| format!(".{field}"));
+                        .map_or_else(Default::default, |field| format!(".{field}"));
                     format!("listener.{name}.rules[{i}]{at}: {}", why.cause)
                 })?;
                 let compiled = eqproxy_core::rules::Rule::compile(&spec).map_err(|why| {
                     let at = why
                         .field
                         .as_deref()
-                        .map_or_default(|field| format!(".{field}"));
+                        .map_or_else(Default::default, |field| format!(".{field}"));
                     format!("listener.{name}.rules[{i}]{at}: {}", why.cause)
                 })?;
                 // The rewrite applies to the forwarded request on both

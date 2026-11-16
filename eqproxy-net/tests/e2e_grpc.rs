@@ -63,7 +63,9 @@ fn header(request: &Request<h2::RecvStream>, name: &str) -> String {
     request
         .headers()
         .get(name)
-        .map_or_default(|value| String::from_utf8_lossy(value.as_bytes()).into_owned())
+        .map_or_else(Default::default, |value| {
+            String::from_utf8_lossy(value.as_bytes()).into_owned()
+        })
 }
 
 /// A TLS HTTP/2 origin that speaks gRPC: every message is echoed as it

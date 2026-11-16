@@ -6305,7 +6305,7 @@ fn await_log_line(
             Ok(line) if line.contains(need) => return line,
             Ok(_) => {}
             Err(_) => {
-                let log = log.lock().map_or_default(|l| l.clone());
+                let log = log.lock().map_or_else(|_| String::default(), |l| l.clone());
                 panic!("{what} within {budget:?}: {log}");
             }
         }
@@ -6470,7 +6470,7 @@ fn run_hot_maps_swap_under_traffic_without_config_reload() {
         assert!(
             Instant::now() < deadline,
             "the reloaded map did not reach traffic (last response: {response}; log: {})",
-            log.lock().map_or_default(|l| l.clone())
+            log.lock().map_or_else(|_| String::default(), |l| l.clone())
         );
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -6521,7 +6521,7 @@ fn run_hot_maps_swap_under_traffic_without_config_reload() {
     // The process has exited: the reader thread hits EOF and the log is
     // complete (including the final METRICS line) once it is joined.
     reader.join().expect("stderr reader thread");
-    let log = log.lock().map_or_default(|l| l.clone());
+    let log = log.lock().map_or_else(|_| String::default(), |l| l.clone());
     remove_temp(&config);
     let _ = std::fs::remove_file(&mapfile);
     assert_eq!(status.code(), Some(0), "clean shutdown must exit with 0");
@@ -8152,7 +8152,7 @@ fn run_admin_plane_serves_status_and_metrics_with_a_bearer_token() {
         status.code(),
         Some(0),
         "clean shutdown with the admin plane up; log:\n{}",
-        log.lock().map_or_default(|l| l.clone())
+        log.lock().map_or_else(|_| String::default(), |l| l.clone())
     );
 }
 
@@ -8328,7 +8328,7 @@ fn run_admin_plane_drains_a_server_with_the_write_token() {
         log.lock()
             .is_ok_and(|log| log.contains("config reload applied")),
         "the SIGHUP reload must land: {:?}",
-        log.lock().map_or_default(|l| l.clone())
+        log.lock().map_or_else(|_| String::default(), |l| l.clone())
     );
     let (status, _, body) = admin_get(
         &admin_addr,
@@ -8387,7 +8387,7 @@ fn run_admin_plane_drains_a_server_with_the_write_token() {
     remove_temp(&config);
     let _ = std::fs::remove_file(&read_path);
     let _ = std::fs::remove_file(&write_path);
-    let log = log.lock().map_or_default(|l| l.clone());
+    let log = log.lock().map_or_else(|_| String::default(), |l| l.clone());
     assert_eq!(status.code(), Some(0), "clean shutdown; log:\n{log}");
     assert!(
         log.contains("AUDIT ") && log.contains("\"to\":\"drain\""),
@@ -8638,7 +8638,7 @@ fn run_admin_plane_reports_drain_progress_and_completion() {
     remove_temp(&config);
     let _ = std::fs::remove_file(&read_path);
     let _ = std::fs::remove_file(&write_path);
-    let log = log.lock().map_or_default(|l| l.clone());
+    let log = log.lock().map_or_else(|_| String::default(), |l| l.clone());
     assert_eq!(status.code(), Some(0), "clean shutdown; log:\n{log}");
     assert_eq!(
         log.matches("INFO server drained:").count(),
@@ -9103,7 +9103,7 @@ fn run_admin_plane_applies_backend_config_under_traffic() {
         status["revision"],
         "v5",
         "the SIGHUP reload must commit a new revision: {status}\nlog:\n{}",
-        log.lock().map_or_default(|l| l.clone())
+        log.lock().map_or_else(|_| String::default(), |l| l.clone())
     );
     assert_eq!(status["listeners"][0]["backend"], "api");
     assert_eq!(
@@ -9188,7 +9188,7 @@ fn run_admin_plane_applies_backend_config_under_traffic() {
     remove_temp(&config);
     let _ = std::fs::remove_file(&read_path);
     let _ = std::fs::remove_file(&write_path);
-    let log = log.lock().map_or_default(|l| l.clone());
+    let log = log.lock().map_or_else(|_| String::default(), |l| l.clone());
     assert_eq!(status.code(), Some(0), "clean shutdown; log:\n{log}");
     assert!(
         log.contains("\"status\":200"),

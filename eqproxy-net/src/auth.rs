@@ -248,8 +248,9 @@ mod tests {
             expect_continue: false,
             wants_upgrade: false,
             host: "svc.example".to_owned(),
-            headers: authorization
-                .map_or_default(|value| vec![("authorization".to_owned(), value.to_owned())]),
+            headers: authorization.map_or_else(Default::default, |value| {
+                vec![("authorization".to_owned(), value.to_owned())]
+            }),
         }
     }
 

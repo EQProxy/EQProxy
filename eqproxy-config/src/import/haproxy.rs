@@ -445,7 +445,7 @@ pub(super) fn convert(conv: &mut Conv, text: &str) -> Result<(), ImportError> {
                     }
                 }
                 "option" => {
-                    let option = args.get(1).map_or_default(String::as_str);
+                    let option = args.get(1).map_or("", String::as_str);
                     if option == "forwardfor" {
                         defaults.forwardfor = true;
                         conv.done(
@@ -644,7 +644,7 @@ fn backend_body(
             "option" => {
                 let option = args
                     .get(1)
-                    .map_or_default(|v| v.to_ascii_lowercase());
+                    .map_or_else(Default::default, |v| v.to_ascii_lowercase());
                 if option == "httpchk" {
                     let mut health = backend
                         .health_check
@@ -1263,7 +1263,9 @@ fn frontend(
                 }
             }
             "option" => {
-                let option = args.get(1).map_or_default(|v| v.to_ascii_lowercase());
+                let option = args
+                    .get(1)
+                    .map_or_else(Default::default, |v| v.to_ascii_lowercase());
                 if option == "forwardfor" {
                     forwarded = true;
                     conv.done(
@@ -1655,7 +1657,7 @@ fn http_request(
     let text = args.join(" ");
     let action = args
         .get(1)
-        .map_or_default(|value| value.to_ascii_lowercase());
+        .map_or_else(Default::default, |value| value.to_ascii_lowercase());
     match action.as_str() {
         "set-header" | "add-header" => {
             let (Some(name), Some(value)) = (args.get(2), args.get(3)) else {

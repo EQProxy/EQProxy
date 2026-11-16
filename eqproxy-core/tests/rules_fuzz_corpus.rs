@@ -358,7 +358,7 @@ fn conforming_facts(rng: &mut Rng, spec: &RuleSpec) -> OwnedFacts {
             VALID_HEADER_REGEXES
                 .iter()
                 .find(|(v, _)| v == regex)
-                .map_or_default(|(_, s)| (*s).to_owned())
+                .map_or_else(Default::default, |(_, s)| (*s).to_owned())
         } else {
             "1".to_owned()
         };

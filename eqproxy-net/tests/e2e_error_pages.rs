@@ -129,9 +129,7 @@ async fn request(addr: SocketAddr, method: &str) -> String {
 }
 
 fn body_of(response: &str) -> &str {
-    response
-        .split_once("\r\n\r\n")
-        .map_or_default(|(_, body)| body)
+    response.split_once("\r\n\r\n").map_or("", |(_, body)| body)
 }
 
 fn header_value<'a>(head: &'a str, name: &str) -> Option<&'a str> {

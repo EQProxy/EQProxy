@@ -781,7 +781,9 @@ fn probe_client_ip(addr: &str) -> String {
     let body = String::from_utf8_lossy(&response.body).into_owned();
     let ip = body
         .find("xff=[")
-        .map_or_default(|i| body[i + 5..].split(']').next().unwrap_or_default())
+        .map_or_else(Default::default, |i| {
+            body[i + 5..].split(']').next().unwrap_or_default()
+        })
         .to_owned();
     assert!(!ip.is_empty(), "calibration probe saw no XFF entry: {body}");
     ip

@@ -71,18 +71,27 @@ pub(super) fn convert(conv: &mut Conv, text: &str) -> Result<(), ImportError> {
                     .to_owned();
                 match name.as_str() {
                     "ingress-nginx-controller" | "nginx-configuration" => {
-                        for (key, value) in doc.get("data").map_or_default(Value::entries) {
+                        for (key, value) in doc
+                            .get("data")
+                            .map_or_else(Default::default, Value::entries)
+                        {
                             global.insert(key.clone(), value.text().unwrap_or_default().to_owned());
                         }
                     }
                     "tcp-services" => {
-                        for (port, target) in doc.get("data").map_or_default(Value::entries) {
+                        for (port, target) in doc
+                            .get("data")
+                            .map_or_else(Default::default, Value::entries)
+                        {
                             tcp_services
                                 .push((port.clone(), target.text().unwrap_or_default().to_owned()));
                         }
                     }
                     "udp-services" => {
-                        for (port, _) in doc.get("data").map_or_default(Value::entries) {
+                        for (port, _) in doc
+                            .get("data")
+                            .map_or_else(Default::default, Value::entries)
+                        {
                             udp_ports.push(port.clone());
                         }
                     }
@@ -97,15 +106,21 @@ pub(super) fn convert(conv: &mut Conv, text: &str) -> Result<(), ImportError> {
             "Endpoints" => {
                 let (namespace, name) = metadata(doc);
                 let mut addrs = Vec::new();
-                for subset in doc.get("subsets").map_or_default(Value::items) {
+                for subset in doc
+                    .get("subsets")
+                    .map_or_else(Default::default, Value::items)
+                {
                     let port = subset
                         .get("ports")
-                        .map_or_default(Value::items)
+                        .map_or_else(Default::default, Value::items)
                         .iter()
                         .find_map(|port| port.get("port").and_then(Value::text))
                         .and_then(|text| text.parse::<u16>().ok());
                     let Some(port) = port else { continue };
-                    for address in subset.get("addresses").map_or_default(Value::items) {
+                    for address in subset
+                        .get("addresses")
+                        .map_or_else(Default::default, Value::items)
+                    {
                         if let Some(ip) = address.get("ip").and_then(Value::text) {
                             addrs.push((ip.to_owned(), port));
                         }
@@ -118,7 +133,7 @@ pub(super) fn convert(conv: &mut Conv, text: &str) -> Result<(), ImportError> {
                 if let Some(port) = doc
                     .get("spec")
                     .and_then(|s| s.get("ports"))
-                    .map_or_default(Value::items)
+                    .map_or_else(Default::default, Value::items)
                     .first()
                     .and_then(|p| p.get("port"))
                     .and_then(Value::text)
@@ -149,7 +164,7 @@ pub(super) fn convert(conv: &mut Conv, text: &str) -> Result<(), ImportError> {
         let annotations: BTreeMap<String, String> = doc
             .get("metadata")
             .and_then(|m| m.get("annotations"))
-            .map_or_default(Value::entries)
+            .map_or_else(Default::default, Value::entries)
             .iter()
             .map(|(key, value)| {
                 (
@@ -185,7 +200,7 @@ pub(super) fn convert(conv: &mut Conv, text: &str) -> Result<(), ImportError> {
         for entry in doc
             .get("spec")
             .and_then(|s| s.get("tls"))
-            .map_or_default(Value::items)
+            .map_or_else(Default::default, Value::items)
         {
             if let Some(secret) = entry.get("secretName").and_then(Value::text) {
                 tls = true;
@@ -222,13 +237,13 @@ pub(super) fn convert(conv: &mut Conv, text: &str) -> Result<(), ImportError> {
         for rule in doc
             .get("spec")
             .and_then(|s| s.get("rules"))
-            .map_or_default(Value::items)
+            .map_or_else(Default::default, Value::items)
         {
             let host = rule.get("host").and_then(Value::text).map(str::to_owned);
             for path in rule
                 .get("http")
                 .and_then(|h| h.get("paths"))
-                .map_or_default(Value::items)
+                .map_or_else(Default::default, Value::items)
             {
                 let raw_path = path
                     .get("path")

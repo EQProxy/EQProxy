@@ -205,10 +205,10 @@ fn cluster(conv: &mut Conv, cluster: &Value) -> Result<(), ImportError> {
                 ),
             },
             "load_assignment" => {
-                for endpoint in value.get("endpoints").map_or_default(Value::items) {
+                for endpoint in value.get("endpoints").map_or_else(Default::default, Value::items) {
                     for balancer in endpoint
                         .get("lb_endpoints")
-                        .map_or_default(Value::items)
+                        .map_or_else(Default::default, Value::items)
                     {
                         let Some(address) = balancer
                             .get("endpoint")
@@ -469,7 +469,9 @@ fn listener(conv: &mut Conv, listener: &Value) -> Result<(), ImportError> {
         return Ok(());
     };
 
-    let chains = listener.get("filter_chains").map_or_default(Value::items);
+    let chains = listener
+        .get("filter_chains")
+        .map_or_else(Default::default, Value::items);
     if chains.len() > 1 {
         conv.gap(
             1,
@@ -497,7 +499,7 @@ fn listener(conv: &mut Conv, listener: &Value) -> Result<(), ImportError> {
         let far = typed.get("common_tls_context").unwrap_or(typed);
         if let Some(cert) = far
             .get("tls_certificates")
-            .map_or_default(Value::items)
+            .map_or_else(Default::default, Value::items)
             .first()
         {
             let cert_file = cert
@@ -511,7 +513,7 @@ fn listener(conv: &mut Conv, listener: &Value) -> Result<(), ImportError> {
             if let (Some(cert_file), Some(key_file)) = (cert_file, key_file) {
                 let alpn = far
                     .get("alpn_protocols")
-                    .map_or_default(Value::items)
+                    .map_or_else(Default::default, Value::items)
                     .iter()
                     .filter_map(|item| item.text().map(str::to_owned))
                     .collect();
@@ -601,7 +603,10 @@ fn listener(conv: &mut Conv, listener: &Value) -> Result<(), ImportError> {
     // locally. EQProxy models them per listener (ADR-0045).
     let mut error_pages: Vec<super::ErrorPageIr> = Vec::new();
 
-    for filter in chain.get("filters").map_or_default(Value::items) {
+    for filter in chain
+        .get("filters")
+        .map_or_else(Default::default, Value::items)
+    {
         let filter_name = filter.get("name").and_then(Value::text).unwrap_or_default();
         let typed = filter.get("typed_config").unwrap_or(filter);
         let before = conv.notes.len();
@@ -619,7 +624,10 @@ fn listener(conv: &mut Conv, listener: &Value) -> Result<(), ImportError> {
                         convert_duration(conv, value, "s", "request_headers_timeout", &context);
                 }
                 if let Some(local) = typed.get("local_reply_config") {
-                    for mapper in local.get("mappers").map_or_default(Value::items) {
+                    for mapper in local
+                        .get("mappers")
+                        .map_or_else(Default::default, Value::items)
+                    {
                         let code = match local_reply_code(mapper) {
                             Ok(code) => code,
                             Err(reason) => {
@@ -699,10 +707,13 @@ fn listener(conv: &mut Conv, listener: &Value) -> Result<(), ImportError> {
                 if let Some(route_config) = typed.get("route_config") {
                     for host in route_config
                         .get("virtual_hosts")
-                        .map_or_default(Value::items)
+                        .map_or_else(Default::default, Value::items)
                     {
                         let (host_regex, host_exact) = domains(host, conv, &context);
-                        for route in host.get("routes").map_or_default(Value::items) {
+                        for route in host
+                            .get("routes")
+                            .map_or_else(Default::default, Value::items)
+                        {
                             let Some(rule) = route_rule(
                                 conv,
                                 route,
@@ -716,7 +727,10 @@ fn listener(conv: &mut Conv, listener: &Value) -> Result<(), ImportError> {
                         }
                     }
                 }
-                for http_filter in typed.get("http_filters").map_or_default(Value::items) {
+                for http_filter in typed
+                    .get("http_filters")
+                    .map_or_else(Default::default, Value::items)
+                {
                     let filter = http_filter
                         .get("name")
                         .and_then(Value::text)
@@ -923,7 +937,10 @@ fn local_reply_parse(raw: &str) -> Result<u16, String> {
 fn domains(host: &Value, conv: &mut Conv, context: &str) -> (Option<String>, Option<String>) {
     let mut exact = None;
     let mut regex = None;
-    for domain in host.get("domains").map_or_default(Value::items) {
+    for domain in host
+        .get("domains")
+        .map_or_else(Default::default, Value::items)
+    {
         let Some(domain) = domain.text() else {
             continue;
         };

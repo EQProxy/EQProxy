@@ -181,7 +181,7 @@ async fn answer(
     let authority = request
         .uri()
         .authority()
-        .map_or_default(std::string::ToString::to_string);
+        .map_or_else(Default::default, std::string::ToString::to_string);
     let version = request.version();
     let headers: Vec<(String, String)> = request
         .headers()

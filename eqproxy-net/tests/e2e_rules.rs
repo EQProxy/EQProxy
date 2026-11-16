@@ -228,7 +228,7 @@ async fn request_body(proxy: SocketAddr, head: &str) -> String {
     request_response(proxy, head)
         .await
         .split_once("\r\n\r\n")
-        .map_or_default(|(_, body)| body.to_owned())
+        .map_or_else(Default::default, |(_, body)| body.to_owned())
 }
 
 /// Header actions end to end (B-N4/B-I4/B-E17): the backend sees the
@@ -295,9 +295,7 @@ async fn header_actions_apply_to_request_and_response() {
         "GET /h/x HTTP/1.1\r\nHost: svc.example\r\nx-beta: off\r\nx-gone: please\r\nx-added: base\r\nx-forwarded-proto: https\r\nConnection: close\r\n\r\n",
     )
     .await;
-    let body = response
-        .split_once("\r\n\r\n")
-        .map_or_default(|(_, body)| body);
+    let body = response.split_once("\r\n\r\n").map_or("", |(_, body)| body);
     assert_eq!(
         body,
         "xff=[127.0.0.1] real=[] proto=[http] beta=[on-http] gone=[] added=[base, extra@127.0.0.1]"
@@ -386,9 +384,7 @@ async fn cors_preflight_is_local_and_responses_carry_headers() {
     );
     assert!(response.contains("vary: origin"), "{response}");
     assert!(response.contains("x-marker: cors"), "{response}");
-    let body = response
-        .split_once("\r\n\r\n")
-        .map_or_default(|(_, body)| body);
+    let body = response.split_once("\r\n\r\n").map_or("", |(_, body)| body);
     assert!(body.is_empty(), "preflight answered locally: {body}");
 
     // A normal request gets the CORS response headers + the backend body.
@@ -397,9 +393,7 @@ async fn cors_preflight_is_local_and_responses_carry_headers() {
         "GET /c/x HTTP/1.1\r\nHost: svc.example\r\nOrigin: https://app.example\r\nConnection: close\r\n\r\n",
     )
     .await;
-    let body = response
-        .split_once("\r\n\r\n")
-        .map_or_default(|(_, body)| body);
+    let body = response.split_once("\r\n\r\n").map_or("", |(_, body)| body);
     assert_eq!(body, "api");
     assert!(
         response.contains("access-control-allow-origin: https://app.example"),
@@ -558,7 +552,7 @@ async fn affinity_cookie_and_source_pin_clients_to_a_server() {
     let first = request_response(proxy, &get("svc.example", "/c/x")).await;
     let body = first
         .split_once("\r\n\r\n")
-        .map_or_default(|(_, body)| body)
+        .map_or("", |(_, body)| body)
         .to_owned();
     let token = cookie_token(&first).expect("the first response sets the sticky cookie");
     assert!(
@@ -576,9 +570,7 @@ async fn affinity_cookie_and_source_pin_clients_to_a_server() {
             ),
         )
         .await;
-        let pinned = response
-            .split_once("\r\n\r\n")
-            .map_or_default(|(_, body)| body);
+        let pinned = response.split_once("\r\n\r\n").map_or("", |(_, body)| body);
         assert_eq!(pinned, body, "the cookie pins: {response}");
         assert!(
             !response.to_lowercase().contains("set-cookie: eq_aff="),

@@ -124,7 +124,17 @@ Run on the tip of `release/v0.9.5` after `P0-12`, `P0-11` and `P0-15`.
 | `check-secrets`, `check-evidence-test-citations`, `check-short-health-probes`, `check-docker-build-target`, `check-uid-skips` (each with `--self-test`) | exit 0 — 149 documents, 257 cited identifiers, 865 `#[test]` functions; 18 probes, 2 declared |
 | `git diff --check` | exit 0 |
 | `veyra audit . --profile standard` | exit 0 — **ACCEPTED**, 13 tools OK (`rustfmt`, `cargo check`, `clippy`, `cargo test`, `cargo-audit`, `veyra-anti-theater`, `nextest`, `llvm-cov`, `cargo-deny`, `cargo-machete`, `dylint`, **`cargo-semver-checks`**, `veyra-e2e`); `cargo-geiger` INCONCLUSIVE (4 dependency files unscanned — a lower bound, not a pass); 789.83 s in tools; evidence `.veyra/evidence/20261116T220825Z/` |
-| CodeGraph `index . --stats-json` | see the index cited below; an index of an older tree is not evidence for this one |
+| CodeGraph `index . --batch-size 16 --stats-json /tmp/cg-index-0100.json` | exit 0 — 99 files, 101 551 lines, 11 110 nodes, 22 784 edges, `graph_complete` and `vector_index_ready` both true, `index_ms` 861 051 (~14 min). The first attempt aborted with `Source changed during indexing: ./eqproxy-cli/src/main.rs` because the tree moved under it, and the `--batch-size 64` retry failed with a SurrealDB write conflict; the cited index is the `--batch-size 16` run on the committed tree |
+
+The `file:line` facts used from that index were re-resolved with `rg` before
+being repeated: `Metrics::listener_counter` (`eqproxy-core/src/metrics.rs:851`),
+`try_acquire_listener_connection` (`:868`) and the summed gauge write (`:878`),
+the TCP gate (`eqproxy-net/src/proxy.rs:2164`) and its guard (`:3211`), the QUIC
+gate (`eqproxy-net/src/http3.rs:93`) and its guard (`:121`), and the tests that
+pin the behaviour (`metrics.rs:1033`, `cli_e2e.rs:11712`). The agent's `impact`
+answer named `spawn_quic`/`open_quic` (`proxy.rs:1720`/`:1697`), both correct;
+its `context` answer could not see the QUIC guard line, which `rg` places at
+`http3.rs:121`.
 
 The earlier run on the same tree before the version step
 (`.veyra/evidence/20261116T183815Z/`) was **REJECTED** with

@@ -11,9 +11,15 @@ timeout_seconds = 60
 
 # v0.9.1 is the published baseline. The workspace is not on crates.io, so
 # without an explicit Git tag cargo-semver-checks would skip the check.
+# `release_type` uses cargo-semver-checks' own vocabulary, where "major" means
+# "breaking-class change". The crate is pre-1.0, so that class is exactly the
+# 0.9.1 -> 0.10.0 middle-digit bump the tool derives on its own when the flag
+# is omitted (`Checking eqproxy-config v0.9.1 -> v0.10.0 (major change)`).
+# 0.10.0 is the version step that absorbs the `#[must_use]` additions from the
+# pedantic migration and `ListenerConfig.redirect` (ADR-0052).
 [semver]
 baseline = "v0.9.1"
-release_type = "patch"
+release_type = "major"
 
 # Real happy path: a valid config is accepted and reports the summary.
 # /dev/stdin delivers the config via stdin without checkout paths.

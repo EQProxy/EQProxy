@@ -1,8 +1,8 @@
-# Production verdict — EQProxy v0.9.6
+# Production verdict — EQProxy v0.10.0
 
 **Verdict: NOT PRODUCTION READY.**
 
-This page is the production verdict for the v0.9.6 hardening tree. It separates
+This page is the production verdict for the v0.10.0 hardening tree. It separates
 what has actually been executed from what is still a hypothesis, a local-only
 result or a known open defect. A green local build is not a production
 declaration.
@@ -12,20 +12,23 @@ declaration.
 | Item | State |
 |---|---|
 | Branch | `release/v0.9.5` |
-| Source revision | `c9234d4` + `0f03bf4` + a later documentation correction commit (current HEAD) |
-| Version | `0.9.6` in `Cargo.toml`; `CHANGELOG.md` has `## [v0.9.6]` |
-| Tag | annotated `v0.9.6` → `0f03bf4`, **local only**, not realigned to the later correction; `v0.9.5` is annotated `fd65bee` → `3451c19`, remote and published 2026-11-12; no remote `v0.9.6` tag |
+| Source revision | `da407ec` on `release/v0.9.5`, plus the uncommitted 0.10.0 release preparation (version bump, `veyra.toml`, release notes, ADR-0052); `v0.9.5` was published from `3451c19` |
+| Version | `0.10.0` in `Cargo.toml`; `CHANGELOG.md` has `## [v0.10.0]` |
+| Tag | **none for `0.10.0`**, local or remote; the earlier local annotated `v0.9.6` (`0f03bf4`) points at a tree whose `Cargo.toml` says `0.9.6`, so the workflow's version pin rejects it for this release; `v0.9.5` is annotated `fd65bee` → `3451c19`, remote and published 2026-11-12 |
 | Release claims | only **M-01** and **P0-8**; P0-7, P0-10…P0-15 and P1-1…P1-10 remain open |
-| Published artifact | **none for 0.9.6**: the branch is on origin (`release/v0.9.5` at `ca1f0a9`), while local HEAD is four commits ahead; no `v0.9.6` tag, GitHub release, registry image, digest promotion or re-pull; the published release is `v0.9.5` (2026-11-12) |
-| Final local suite | `cargo test --workspace --locked` → **807 passed, 0 failed, 2 ignored** (39 result blocks); see [P0-8/P0-9 evidence](evidence/v095-p0-8-p0-9.md) |
+| Published artifact | **none for 0.10.0**: the branch is on origin (`release/v0.9.5` at `ca1f0a9`) with this tree ahead of it and unpushed; no `v0.10.0` tag, GitHub release, registry image, digest promotion or re-pull; the published release is `v0.9.5` (2026-11-12) |
+| Final local suite | `cargo test --workspace` → **873 passed, 0 failed, 2 ignored** (41 result blocks) on 2026-11-16; fmt, clippy `-D warnings` and `cargo dylint --all` exit 0; see [release-0.10.0](release-0.10.0.md) |
 
 ## What the evidence actually shows
 
-- **Workspace suite:** the P0-8/P0-9 tree passed
-  `cargo test --workspace --locked` with **807 passed, 0 failed, 2 ignored**
-  (39 result blocks). The previous committed tree (`a0ac3fc`) had 804 passed;
-  the three new tests are the importer parser, the importer conversion and the
-  real-binary E2E. Details: [v095-p0-8-p0-9](evidence/v095-p0-8-p0-9.md).
+- **Workspace suite:** `cargo test --workspace` on this tree (`da407ec` plus the
+  0.10.0 preparation) ran **873 passed, 0 failed, 2 ignored** across **41 result
+  blocks** on 2026-11-16, inside the Veyra run cited above
+  (`.veyra/evidence/20261116T201501Z/`). The earlier P0-8/P0-9 tree (`0f03bf4`)
+  recorded 807 passed in 39 blocks; the difference is the v0.9.6 import work —
+  importer parser and conversion, the corpus fixture move and the real-binary
+  E2E — plus the HTTP/3 hot-reload E2E. Historical detail:
+  [v095-p0-8-p0-9](evidence/v095-p0-8-p0-9.md).
 - **M-01 framing regression:** the fix is present in `http1.rs`; the unit test
   `chunked_transfer_encoding_is_rejected_in_http10` and the two
   `http10_` E2E tests are executed in the final suite. A destructive check
@@ -58,12 +61,12 @@ declaration.
 - **P1-1 / architectures:** no native `linux/amd64` journey on `netcup-bench`
   and no native `linux/arm64` journey on `oracle-quasar` for this tree.
 - **Docker / Scout:** no image build, no native image E2E and no Docker Scout
-  critical/high gate for v0.9.6. **NOT EXECUTED.**
-- **Publication:** no remote `v0.9.6` tag, GitHub release, image digest or
+  critical/high gate for v0.10.0. **NOT EXECUTED.**
+- **Publication:** no remote `v0.10.0` tag, GitHub release, image digest or
   checksum of an artifact built from this tree exists. `v0.9.5` was published
   from a different commit (`3451c19`), so it does not cover this tree.
-- **P1-4:** version and changelog exist, but the release is not closed; the
-  local tag is not a publication.
+- **P1-4:** version and changelog exist at `0.10.0`, but the release is not
+  closed; there is no tag and a tag is not a publication.
 
 ### Open defects
 
@@ -87,15 +90,23 @@ semantics (P1-9), and supply-chain/CI evidence (P1-10).
 
 ### Audit and platform limits
 
-- **Veyra Proof, Rust Audit and CodeGraph** have not been repeated on this
-  final P0-8/P0-9 tree. The historical P0-7/P1 Veyra run was ACCEPTED; that
-  result does not cover later changes. A stale CodeGraph index is **NOT
-  EXECUTED**, never a pass.
+- **Veyra Proof (2026-11-16, v0.10.0 tree): exit 0, decision ACCEPTED, 566.83 s
+  in tools, evidence `.veyra/evidence/20261116T201501Z/`.** 13 tools OK,
+  including `cargo-semver-checks` (`cargo semver-checks check-release
+  --baseline-rev v0.9.1 --release-type major` → `no semver update required` on
+  all three crates) and `dylint`. `cargo-geiger` stays INCONCLUSIVE (coverage
+  warnings in 4 runs, pre-existing). The previous run on the same tree before
+  the version step (`.veyra/evidence/20261116T183815Z/`) was REJECTED on
+  `semver-checks:semver-violation` and is kept on disk.
+- **Rust Audit (2026-11-16):** `.github/scripts/rust-audit-gate.sh` exit 0 —
+  6 reviewed high findings, 0 new, 0 extra, 0 stale.
+- **CodeGraph** was not rebuilt over the v0.10.0 tree; a query against a stale
+  index is **NOT EXECUTED**, never a pass.
 - **HTTP/3** remains experimental; browser and `curl` h3 journeys and QUIC
   adversarial tests are not executed here.
 - **macOS** is the local build platform; the release image and both Linux
   architectures are unverified for this tree.
-- **No users outside the author.** v0.9.6 has not been operated in production
+- **No users outside the author.** v0.10.0 has not been operated in production
   and does not claim production readiness.
 
 ## Conditions required before a production declaration
@@ -115,5 +126,5 @@ PRODUCTION READY**.
 - [P0-5 trailer budget and RSS](evidence/v095-p0-5.md)
 - [P0-7/P1 fuzz, CI and audit record](evidence/v095-p1.md)
 - [EXT-H reproduction](evidence/v095-ext-h-repro.md)
-- [Current release preparation and publication status](release-0.9.6.md)
+- [Current release preparation and publication status](release-0.10.0.md)
 - [Historical v0.9.5 preparation record](release-0.9.5.md)

@@ -19,7 +19,18 @@ Fixed); versions are `vMAJOR.MINOR.PATCH` git tags.
   release: the `v0.9.5` artifacts are unchanged and its `SHA256SUMS.txt` still
   lists only the two binaries and the source tarball.
 
-## [v0.9.6] — 2026-11-11
+## [v0.10.0] — 2026-11-16
+
+### Changed
+
+- **The release is `0.10.0`, not the `0.9.6` patch it started as.** On the
+  prepared tree `cargo-semver-checks` against `v0.9.1` reports one major-class
+  change — the new `ListenerConfig.redirect` field breaks exhaustive struct
+  literals — plus four `#[must_use]` additions in `eqproxy-config` and
+  `eqproxy-net`. Under the pre-1.0 convention the tool applies, the
+  major-class step is the middle digit, so the version moves `0.9.6 -> 0.10.0`
+  and the semver leg passes. Details:
+  [docs/release-0.10.0.md](docs/release-0.10.0.md), ADR-0052.
 
 ### Fixed
 
@@ -55,7 +66,7 @@ Only M-01 and P0-8 are claimed as closed fixes in this release.
   [v095-p1](docs/evidence/v095-p1.md); the P1 group remains open and none of
   them is claimed as a completed release item in this section.
 
-Release evidence: [docs/release-0.9.6.md](docs/release-0.9.6.md).
+Release evidence: [docs/release-0.10.0.md](docs/release-0.10.0.md).
 
 ## [v0.9.5] — 2026-11-11
 

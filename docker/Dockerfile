@@ -2,9 +2,9 @@
 #
 # Usage:
 #   docker buildx build --file docker/Dockerfile --platform linux/amd64,linux/arm64 \
-#     --build-arg VERSION=0.9.6 --build-arg VCS_REF="$(git rev-parse HEAD)" \
+#     --build-arg VERSION=0.10.0 --build-arg VCS_REF="$(git rev-parse HEAD)" \
 #     --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-#     --tag ghcr.io/eqproxy/eqproxy:0.9.6 --tag ghcr.io/eqproxy/eqproxy:latest \
+#     --tag ghcr.io/eqproxy/eqproxy:0.10.0 --tag ghcr.io/eqproxy/eqproxy:latest \
 #     --provenance=mode=max --sbom=true --push .
 #
 # The binary runs with `docker run ghcr.io/eqproxy/eqproxy --help`.

@@ -2,7 +2,10 @@
 
 Language: **English**.
 
-- State: **Accepted** (2026-10-28, roadmap v0.8.5 audit debt)
+- State: **Accepted** (2026-10-28, roadmap v0.8.5 audit debt); **superseded in
+  part** by [ADR-0052](0052-api-compatibility-and-dylint-at-0-10-0.md) — §1
+  (dylint is now adopted with `lints/eqproxy-lints`) and §2 (the git baseline
+  now runs and its findings are documented there)
 - Date: 2026-10-28
 - Related: roadmap v0.8.5, §3 (local-only:
   `../../ROADMAP EQPROXY/ROADMAP/Roadmap 0.8.5.md`) (the debt this closes),

@@ -11563,6 +11563,97 @@ fn run_verifies_the_declared_backend_hostname_not_its_ip() {
     wait_for_sigint_shutdown(&mut origin_child, &origin);
 }
 
+/// EXT-H-02 (P0-11): a gRPC request is not a way around the WASM filter or the
+/// request-body bound. Both journeys point the backend at a closed port with
+/// the `h2` ALPN opt-in, so a refusal that dialed would surface as `502`: a
+/// `413`/`403` is the proof the gate ran before any backend byte.
+#[cfg_attr(
+    miri,
+    ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
+)]
+#[test]
+fn grpc_requests_obey_max_body_bytes_and_the_wasm_plugin() {
+    let body =
+        std::env::temp_dir().join(format!("eqproxy-cli-e2e-{}-p011.bin", std::process::id()));
+    std::fs::write(&body, vec![0u8; 4096]).expect("write oversized gRPC body");
+    let dead = "127.0.0.1:1";
+    let request = |addr: &str| {
+        curl_stdout(&[
+            "--http2-prior-knowledge",
+            "-H",
+            "content-type: application/grpc",
+            "--data-binary",
+            &format!("@{}", body.display()),
+            &format!("http://{addr}/svc/Call"),
+        ])
+    };
+
+    // (1) `max_body_bytes` applies to gRPC exactly like any other request.
+    let limited = temp_config(
+        "p011-limit",
+        &format!(
+            "schema_version = 1\n\
+             [listener.web]\n\
+             listen = \"127.0.0.1:0\"\nmode = \"http\"\nbackend = \"api\"\n\
+             [listener.web.limits]\n\
+             max_body_bytes = 1024\n\
+             [backend.api]\n\
+             server = \"{dead}\"\n\
+             [backend.api.tls]\n\
+             verify = false\n\
+             alpn = [\"h2\"]\n"
+        ),
+    );
+    let (mut child, addr, mut stderr) = spawn_run_and_wait(&limited, "web");
+    let response = request(&addr);
+    wait_for_sigint_shutdown(&mut child, &limited);
+    let mut log = String::new();
+    let _ = stderr.read_to_string(&mut log);
+    assert!(
+        response.starts_with("HTTP/2 413"),
+        "a gRPC body over max_body_bytes must be refused like HTTP/2: {response}\nproxy log:\n{log}"
+    );
+    assert!(
+        response.to_ascii_lowercase().contains("grpc-status: 8"),
+        "the refusal must carry RESOURCE_EXHAUSTED: {response}"
+    );
+
+    // (2) The plugin runs for gRPC too, and its denial reaches the client as a
+    //     gRPC status instead of an unexplained HTTP error.
+    let plugin = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../eqproxy-net/tests/fixtures/plugins/deny_403.wasm"
+    );
+    let denied = temp_config(
+        "p011-plugin",
+        &format!(
+            "schema_version = 1\n\
+             [listener.web]\n\
+             listen = \"127.0.0.1:0\"\nmode = \"http\"\nbackend = \"api\"\n\
+             [listener.web.plugin]\n\
+             path = \"{plugin}\"\n\
+             [backend.api]\n\
+             server = \"{dead}\"\n\
+             [backend.api.tls]\n\
+             verify = false\n\
+             alpn = [\"h2\"]\n"
+        ),
+    );
+    let (mut child, addr, mut stderr) = spawn_run_and_wait(&denied, "web");
+    let response = request(&addr);
+    wait_for_sigint_shutdown(&mut child, &denied);
+    let mut log = String::new();
+    let _ = stderr.read_to_string(&mut log);
+    assert!(
+        response.starts_with("HTTP/2 403"),
+        "a plugin denial must reach a gRPC client: {response}\nproxy log:\n{log}"
+    );
+    assert!(
+        response.to_ascii_lowercase().contains("grpc-status: 7"),
+        "the denial must carry PERMISSION_DENIED: {response}"
+    );
+    let _ = std::fs::remove_file(&body);
+}
 /// Stands in for the backend an operator deploys behind PROXY-over-TLS
 /// (EXT-H-03): it records the raw opening bytes of every connection and only
 /// then relays to a real TLS origin, so the request still completes end to

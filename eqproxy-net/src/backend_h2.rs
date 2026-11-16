@@ -564,6 +564,7 @@ pub fn open(
 fn describe(err: StreamError) -> &'static str {
     match err {
         StreamError::Truncated => "body shorter than its declared length",
+        StreamError::BodyTooLarge => "request body crossed max_body_bytes",
         StreamError::Framing => "framing that has no HTTP/2 translation",
         StreamError::Io => "I/O or timeout",
         StreamError::H2 => "HTTP/2 protocol error",

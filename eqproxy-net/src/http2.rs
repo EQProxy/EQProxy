@@ -124,6 +124,10 @@ pub(crate) enum StreamError {
     /// is reset with `ENHANCE_YOUR_CALM`, never ended as if the trailers were
     /// complete.
     TrailerLimit,
+    /// A request body crossed `limits.max_body_bytes` (B-N19/EXT-H-02). The
+    /// frame that would cross is refused **before** its bytes are forwarded and
+    /// the exchange is cut, the same bound the h1 engine enforces.
+    BodyTooLarge,
 }
 
 // A converter handed straight to `map_err(copy_error)`: by-value is the

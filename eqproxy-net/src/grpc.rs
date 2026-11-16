@@ -172,6 +172,49 @@ pub(crate) async fn serve(
         return Err(Box::new((request, respond)));
     }
 
+    // EXT-H-02 (P0-11): the WASM request filter is not an HTTP/1-only gate.
+    // It runs here exactly where the h1 engine runs it — after authentication,
+    // before any backend byte is dialed — and its mutations are applied last,
+    // after the rule actions, the forwarded headers and the rewrite.
+    let mut plugin_set: Vec<(String, String)> = Vec::new();
+    let mut plugin_remove: Vec<String> = Vec::new();
+    if let Some(plugin) = cfg.plugin.as_ref() {
+        metrics.plugin_requests.fetch_add(1, Ordering::Relaxed);
+        match plugin.run(&h1.head) {
+            crate::plugin::PluginOutcome::Allow { set, remove } => {
+                plugin_set = set;
+                plugin_remove = remove;
+            }
+            crate::plugin::PluginOutcome::Deny(status) => {
+                metrics.plugin_denied.fetch_add(1, Ordering::Relaxed);
+                // `7` is gRPC's PERMISSION_DENIED, so a gRPC client sees a
+                // status instead of decoding an unknown HTTP error.
+                let status = StatusCode::from_u16(status).unwrap_or(StatusCode::FORBIDDEN);
+                let _ = local_answer(
+                    &mut respond,
+                    status,
+                    &grpc_refusal("7"),
+                    b"denied by plugin",
+                );
+                return Ok(());
+            }
+            crate::plugin::PluginOutcome::Failed { .. } => {
+                metrics.plugin_errors.fetch_add(1, Ordering::Relaxed);
+                if plugin.policy() == crate::plugin::FailurePolicy::Closed {
+                    // `14` is gRPC's UNAVAILABLE.
+                    let _ = local_answer(
+                        &mut respond,
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        &grpc_refusal("14"),
+                        b"plugin failure",
+                    );
+                    return Ok(());
+                }
+                // `open`: forward unchanged, never a partial set of mutations.
+            }
+        }
+    }
+
     let scheme = if cfg.server_tls.is_some() {
         "https"
     } else {
@@ -198,6 +241,11 @@ pub(crate) async fn serve(
         Some(rewrite) => apply_rewrite(&forwarded, rewrite, &head.target),
         None => forwarded,
     };
+    let forwarded = if plugin_set.is_empty() && plugin_remove.is_empty() {
+        forwarded
+    } else {
+        crate::http1::apply_plugin_headers(&forwarded, &plugin_set, &plugin_remove)
+    };
     let Ok(forwarded) = parse_head(&forwarded, grpc_head_limits(cfg)) else {
         metrics
             .http_requests_rejected
@@ -210,6 +258,26 @@ pub(crate) async fn serve(
         );
         return Ok(());
     };
+    // EXT-H-02 (P0-11): the same body bound the h1 engine enforces. A declared
+    // length over it is refused before the backend is dialed — not one byte of
+    // an unacceptable body is forwarded — and a streamed body is cut by
+    // `forward_request` at the bound.
+    let body_cap = cfg.limits.max_body_bytes;
+    if let BodyFraming::ContentLength(len) = forwarded.framing
+        && let Some(cap) = body_cap
+        && len > cap.get()
+    {
+        metrics
+            .http_requests_rejected
+            .fetch_add(1, Ordering::Relaxed);
+        let _ = local_answer(
+            &mut respond,
+            StatusCode::PAYLOAD_TOO_LARGE,
+            &grpc_refusal("8"),
+            b"request body too large",
+        );
+        return Ok(());
+    }
     let Ok(outbound) = outbound_request(&forwarded, scheme) else {
         metrics
             .http_requests_rejected
@@ -267,7 +335,15 @@ pub(crate) async fn serve(
     let client_body = request.into_body();
     let up_metrics = Arc::clone(metrics);
     let mut up = tokio::spawn(async move {
-        let result = forward_request(client_body, stream.send, idle, &up_metrics, deadline).await;
+        let result = forward_request(
+            client_body,
+            stream.send,
+            idle,
+            &up_metrics,
+            deadline,
+            body_cap,
+        )
+        .await;
         if let Err(err) = result {
             eprintln!(
                 "WARN [{label}] gRPC request direction ended: {}",
@@ -465,7 +541,9 @@ async fn forward_request(
     idle: Duration,
     metrics: &Metrics,
     deadline: Option<tokio::time::Instant>,
+    body_cap: Option<std::num::NonZeroU64>,
 ) -> Result<(), StreamError> {
+    let mut total: u64 = 0;
     loop {
         let chunk = match next_data(&mut client, idle, None).await {
             Ok(Some(chunk)) => chunk,
@@ -478,6 +556,18 @@ async fn forward_request(
             Err(ReadError::Deadline) => return Err(StreamError::Io),
         };
         if !chunk.is_empty() {
+            // The chunk that would cross the bound is refused **before** its
+            // bytes reach the backend, exactly like the h1 engine's copy loop.
+            if let Some(cap) = body_cap {
+                let next = total.saturating_add(chunk.len() as u64);
+                if next > cap.get() {
+                    metrics
+                        .http_requests_rejected
+                        .fetch_add(1, Ordering::Relaxed);
+                    return Err(StreamError::BodyTooLarge);
+                }
+                total = next;
+            }
             send_chunk(&mut backend, &chunk, idle).await?;
             metrics
                 .bytes_client_to_backend
@@ -607,6 +697,7 @@ async fn send_chunk(
 fn describe(err: StreamError) -> &'static str {
     match err {
         StreamError::Truncated => "body shorter than its declared length",
+        StreamError::BodyTooLarge => "request body crossed max_body_bytes",
         StreamError::Framing => "framing that has no HTTP/2 translation",
         StreamError::Io => "I/O, timeout or stream deadline",
         StreamError::H2 => "HTTP/2 protocol error",
@@ -615,6 +706,12 @@ fn describe(err: StreamError) -> &'static str {
         StreamError::StreamRefused => "reset with REFUSED_STREAM and not replayable",
         StreamError::TrailerLimit => "chunked trailers exceeded their byte/field budget",
     }
+}
+
+/// Immediate answer headers that also carry a gRPC status, so a gRPC client
+/// reads a status code instead of an unknown HTTP-level failure.
+fn grpc_refusal(status: &str) -> [(String, String); 1] {
+    [("grpc-status".to_owned(), status.to_owned())]
 }
 
 /// Local answer for a stream that never becomes a backend exchange.

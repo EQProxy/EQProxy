@@ -81,6 +81,16 @@ Fixed); versions are `vMAJOR.MINOR.PATCH` git tags.
   listener whose own configuration still had slots. Each listener now has its
   own slot counter (TCP and QUIC) and `eqproxy_connections_active` stays the
   sum, so the exported series keeps its meaning.
+- **P0-15 on QUIC is verified, not inferred.** A real-binary journey runs a
+  plain-TCP listener with `maxconn = 1` and a QUIC listener with `maxconn = 2`:
+  a served, held TCP connection does not stop two real quinn `h3` handshakes
+  from being admitted, a third handshake is refused with the QUIC
+  `CONNECTION_REFUSED` close code (asserted on the code, not an error string),
+  and the admitted TCP connection keeps answering `200` while the QUIC listener
+  is full. The public `eqproxy_connections_active` reads `3` — the sum — after
+  those admissions; no gauge is polled and no idle timeout is relied on. Against
+  the process-wide counter the same journey is red (`CONNECTION_REFUSED` on the
+  QUIC handshake, caused by the TCP listener's connection).
 - **N-2: a degraded conversion can no longer be reported as `convertido`.**
   `Severity::Degraded` carries a mandatory, typed `Degradation` reason and is
   counted in the report's «revisar» column with its own section.

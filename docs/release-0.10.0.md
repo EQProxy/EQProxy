@@ -90,7 +90,18 @@ claimed as closed fixes:
   public gauge stays the sum. `cargo test -p eqproxy-core --lib
   maxconn_is_scoped_to_each_listener` and `cargo test -p eqproxy-cli --test
   cli_e2e maxconn_is_per_listener_not_process_wide`, the latter red against
-  the process-wide counter.
+  the process-wide counter. The QUIC path is exercised through the real binary
+  too: `cargo test -p eqproxy-cli --test cli_http3_reload_e2e
+  maxconn_is_per_listener_across_tcp_and_quic` runs a TCP listener at
+  `maxconn = 1` and a QUIC listener at `maxconn = 2`, holds one served
+  keep-alive connection on TCP and two real quinn `h3` handshakes on QUIC, and
+  requires a third handshake to be refused with the QUIC `CONNECTION_REFUSED`
+  close code while the admitted TCP connection keeps answering `200`.
+  `eqproxy_connections_active` is read once, from the admin `/metrics`
+  endpoint, after those admissions and must be `3` (1 + 2): the journey never
+  polls the gauge and never relies on an idle timeout. With the per-listener
+  keying reverted it fails with `CONNECTION_REFUSED` on the QUIC handshake
+  caused by the TCP listener's connection.
 - **N-2:** `Severity::Degraded` carries a mandatory typed reason and is
   reported in its own «revisar» section. Regression in
   `eqproxy-config/src/import/mod.rs`.
@@ -115,7 +126,7 @@ Run on the tip of `release/v0.9.5` after `P0-12`, `P0-11` and `P0-15`.
 |---|---|
 | `cargo fmt --all -- --check` | exit 0 |
 | `cargo clippy --workspace --all-targets -- -D warnings` | exit 0 |
-| `cargo test --workspace` | exit 0 — **882 passed, 0 failed, 2 ignored** across 41 result blocks |
+| `cargo test --workspace` | exit 0 — **883 passed, 0 failed, 2 ignored** across 41 result blocks |
 | `cargo dylint --all` (`nightly-2026-05-28`) | exit 0 |
 | `cargo semver-checks --baseline-rev v0.9.1 --release-type major` | exit 0 — `no semver update required` for `eqproxy-net` (0 checks run, 254 skipped: a major step accepts the delta by construction) |
 | Release workflow version pin (`test "v$VER" = "$GITHUB_REF_NAME"`) | `VER=0.10.0`, exit 0 for a `v0.10.0` tag |

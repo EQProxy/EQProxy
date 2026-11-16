@@ -894,3 +894,374 @@ fn listener_put_removes_an_sni_name_from_http3_and_tcp_before_and_after_a_swap()
 
     proxy.shutdown();
 }
+
+// ------------------------------------------------- EXT-H-06, QUIC scope ---
+
+/// A plain-TCP listener at `maxconn = 1` and a QUIC listener at `maxconn = 2`:
+/// different caps, so a cross-listener leak is visible in both directions. The
+/// generous idle/header budgets keep a held connection alive on its own; the
+/// journey never waits for a timeout to make progress.
+fn maxconn_config(dir: &Path, backend: &str) -> String {
+    format!(
+        "schema_version = 1\n\
+         shutdown_grace = \"1s\"\n\
+         [listener.tcp]\n\
+         listen = \"127.0.0.1:0\"\n\
+         mode = \"http\"\n\
+         backend = \"api\"\n\
+         maxconn = 1\n\
+         idle_timeout = \"30s\"\n\
+         client_header_timeout = \"30s\"\n\
+         [listener.web]\n\
+         listen = \"127.0.0.1:0\"\n\
+         mode = \"http\"\n\
+         backend = \"api\"\n\
+         quic = true\n\
+         maxconn = 2\n\
+         idle_timeout = \"30s\"\n\
+         client_header_timeout = \"30s\"\n\
+         [listener.web.tls]\n\
+         cert = \"{}\"\n\
+         key = \"{}\"\n\
+         [backend.api]\n\
+         server = \"{backend}\"\n\
+         [admin]\n\
+         listen = \"127.0.0.1:0\"\n\
+         token_file = \"{}\"\n",
+        dir.join("server.pem").display(),
+        dir.join("server.key").display(),
+        dir.join("read.token").display(),
+    )
+}
+
+/// A live QUIC connection the test keeps open; dropping it releases the slot.
+struct QuicWindow {
+    endpoint: quinn::Endpoint,
+    connection: quinn::Connection,
+}
+
+impl QuicWindow {
+    /// The held connection is still alive, so the slot it occupies is a real
+    /// one: the gauge assertions below are not reading a closed connection.
+    fn is_open(&self) -> bool {
+        self.endpoint.local_addr().is_ok() && self.connection.close_reason().is_none()
+    }
+}
+
+struct MaxconnProxy {
+    child: ChildGuard,
+    dir: PathBuf,
+    tcp: SocketAddr,
+    quic: SocketAddr,
+    admin: String,
+    runtime: tokio::runtime::Runtime,
+}
+
+impl MaxconnProxy {
+    fn start(tag: &str, backend: &str) -> Self {
+        let dir = fixture_dir(tag);
+        let config_path = dir.join("eqproxy.toml");
+        std::fs::write(&config_path, maxconn_config(&dir, backend)).expect("write config");
+        let mut child = ChildGuard(
+            bin()
+                .args(["run", "--config"])
+                .arg(&config_path)
+                .args(["--metrics-interval", "1h"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("spawn eqproxy run"),
+        );
+        let mut stderr = BufReader::new(child.0.stderr.take().expect("stderr piped"));
+        let tcp: SocketAddr = stderr_address(&mut stderr, "listener tcp listening on ")
+            .parse()
+            .expect("tcp address");
+        let quic: SocketAddr = stderr_address(&mut stderr, "listener web listening on ")
+            .parse()
+            .expect("quic address");
+        let admin = stderr_address(&mut stderr, "admin listening on ");
+        wait_admin(&admin);
+        std::thread::spawn(move || {
+            let _ = std::io::copy(&mut stderr, &mut std::io::sink());
+        });
+        Self {
+            child,
+            dir,
+            tcp,
+            quic,
+            admin,
+            runtime: tokio::runtime::Runtime::new().expect("tokio runtime"),
+        }
+    }
+}
+
+impl Drop for MaxconnProxy {
+    fn drop(&mut self) {
+        let _ = self.child.0.kill();
+        let _ = self.child.0.wait();
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// A real HTTP/1.1 origin that answers keep-alive, so a connection the test
+/// holds is a *served* one: the listener counted it before the response, which
+/// removes the need to poll any counter to know a slot was taken.
+fn start_keepalive_origin(body: &'static str) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind h1 origin");
+    let addr = listener.local_addr().expect("h1 origin addr");
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            std::thread::spawn(move || {
+                let mut request = [0u8; 4096];
+                loop {
+                    match stream.read(&mut request) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nX-Origin: h1\r\n\r\n{body}",
+                        body.len()
+                    );
+                    if stream.write_all(response.as_bytes()).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    addr
+}
+
+/// One keep-alive request/response on an already admitted connection. The
+/// response is read up to its declared `content-length`, so a complete 200 is
+/// the event that proves the listener is serving that connection.
+fn h1_keepalive_get(reader: &mut BufReader<TcpStream>) -> String {
+    reader
+        .get_mut()
+        .set_read_timeout(Some(WAIT))
+        .expect("read timeout");
+    reader
+        .get_mut()
+        .write_all(b"GET / HTTP/1.1\r\nHost: tcp\r\nConnection: keep-alive\r\n\r\n")
+        .expect("write request");
+    let mut head = String::new();
+    loop {
+        let mut line = String::new();
+        let read = reader.read_line(&mut line).expect("read response line");
+        assert!(
+            read > 0,
+            "the listener closed before the response head: {head:?}"
+        );
+        if line == "\r\n" || line == "\n" {
+            break;
+        }
+        head.push_str(&line);
+    }
+    let length = head
+        .lines()
+        .find_map(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower
+                .strip_prefix("content-length:")
+                .map(|value| value.trim().to_owned())
+        })
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or_else(|| panic!("the response must declare content-length: {head}"));
+    let mut body = vec![0u8; length];
+    reader.read_exact(&mut body).expect("read response body");
+    format!("{head}\r\n{}", String::from_utf8_lossy(&body))
+}
+
+/// A connection the listener must refuse: accepted by the kernel, closed with
+/// no bytes, because `maxconn` rejects explicitly instead of queueing.
+fn refused_without_a_response(addr: SocketAddr) -> bool {
+    let mut client = TcpStream::connect(addr).expect("connect listener");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("read timeout");
+    let mut buf = [0u8; 16];
+    matches!(client.read(&mut buf), Ok(0))
+}
+
+/// A QUIC client endpoint that keeps idle connections alive: a held connection
+/// stays up on its own instead of riding a configured idle timeout.
+fn h3_client_endpoint(runtime: &tokio::runtime::Runtime) -> quinn::Endpoint {
+    // `quinn::Endpoint::client` spawns its driver on the ambient runtime, so it
+    // must be created inside the one the test keeps alive.
+    let _entered = runtime.enter();
+    let mut config =
+        rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+            .dangerous()
+            .with_custom_certificate_verifier(AcceptAny::new())
+            .with_no_client_auth();
+    config.alpn_protocols = vec![b"h3".to_vec()];
+    let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(config)
+        .expect("QUIC client TLS 1.3 config");
+    let mut transport = quinn::TransportConfig::default();
+    transport.keep_alive_interval(Some(Duration::from_secs(1)));
+    let mut client = quinn::ClientConfig::new(Arc::new(crypto));
+    client.transport_config(Arc::new(transport));
+    let mut endpoint = quinn::Endpoint::client("127.0.0.1:0".parse().expect("client addr"))
+        .expect("client QUIC endpoint");
+    endpoint.set_default_client_config(client);
+    endpoint
+}
+
+/// Opens a QUIC connection and keeps it alive; asserts the h3 ALPN and the
+/// presented leaf on the way.
+fn h3_connect_hold(runtime: &tokio::runtime::Runtime, addr: SocketAddr, sni: &str) -> QuicWindow {
+    let endpoint = h3_client_endpoint(runtime);
+    let connection = runtime
+        .block_on(async {
+            tokio::time::timeout(WAIT, async {
+                endpoint
+                    .connect(addr, sni)
+                    .expect("QUIC connect")
+                    .await
+                    .expect("QUIC handshake")
+            })
+            .await
+        })
+        .expect("QUIC handshake in time");
+    let handshake = connection
+        .handshake_data()
+        .expect("handshake data")
+        .downcast::<quinn::crypto::rustls::HandshakeData>()
+        .expect("rustls handshake data");
+    assert_eq!(
+        handshake.protocol.as_deref(),
+        Some(b"h3".as_slice()),
+        "the admitted QUIC connection must negotiate h3"
+    );
+    let presented = connection
+        .peer_identity()
+        .expect("peer identity")
+        .downcast::<Vec<CertificateDer<'static>>>()
+        .expect("rustls peer certificates");
+    assert_eq!(
+        presented
+            .first()
+            .expect("the handshake must present a certificate")
+            .as_ref(),
+        leaf(FIXTURE_CERT).as_slice(),
+        "the admitted QUIC connection must present the listener's leaf"
+    );
+    QuicWindow {
+        endpoint,
+        connection,
+    }
+}
+
+/// A handshake the QUIC listener must refuse because its `maxconn` is spent.
+/// The assertion is the QUIC transport close code the listener chose, not an
+/// error string and not a deadline.
+fn assert_h3_refused(runtime: &tokio::runtime::Runtime, addr: SocketAddr, sni: &str) {
+    let endpoint = h3_client_endpoint(runtime);
+    let outcome = runtime.block_on(async {
+        tokio::time::timeout(WAIT, async {
+            endpoint.connect(addr, sni).expect("QUIC connect").await
+        })
+        .await
+    });
+    endpoint.close(0u32.into(), b"refused probe");
+    runtime.block_on(endpoint.wait_idle());
+    match outcome {
+        Ok(Err(quinn::ConnectionError::ConnectionClosed(close))) => assert_eq!(
+            close.error_code,
+            quinn::TransportErrorCode::CONNECTION_REFUSED,
+            "a full listener must refuse the handshake with CONNECTION_REFUSED, got {close:?}"
+        ),
+        Ok(Err(other)) => panic!("the refusal must be a QUIC CONNECTION_CLOSE, not {other:?}"),
+        Err(elapsed) => {
+            panic!("the handshake neither succeeded nor was refused within {WAIT:?}: {elapsed}")
+        }
+        Ok(Ok(_)) => panic!("a full QUIC listener must refuse the handshake"),
+    }
+}
+
+/// Reads the public gauge the operator sees, not an internal counter.
+fn connections_active_gauge(admin: &str) -> u64 {
+    let request = format!(
+        "GET /metrics HTTP/1.1\r\n\
+         host: admin\r\n\
+         authorization: Bearer {READ_TOKEN}\r\n\
+         connection: close\r\n\
+         \r\n"
+    );
+    let (status, body) = admin_exchange(admin, &request);
+    assert_eq!(status, 200, "metrics must answer the read token: {body}");
+    body.lines()
+        .find_map(|line| line.strip_prefix("eqproxy_connections_active "))
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or_else(|| panic!("no eqproxy_connections_active in:\n{body}"))
+}
+
+/// EXT-H-06 on the QUIC path: `maxconn` of the QUIC listener is its own, the
+/// TCP listener cannot spend it, the QUIC listener cannot starve TCP, and the
+/// public `eqproxy_connections_active` gauge stays the sum of the two.
+#[cfg_attr(
+    miri,
+    ignore = "needs processes and UDP/TCP sockets: miri does not support them (rust-lang/miri#3449)"
+)]
+#[test]
+#[allow(clippy::too_many_lines)]
+fn maxconn_is_per_listener_across_tcp_and_quic() {
+    let origin = start_keepalive_origin("origin-ok");
+    let proxy = MaxconnProxy::start("maxconn-quic", &origin.to_string());
+
+    // Every gauge read below follows a completed event (a served response or a
+    // finished handshake), so the journey never polls a counter and never waits
+    // for a timeout to advance.
+
+    // (1) One served, held TCP connection: the TCP listener's only slot.
+    let mut tcp = BufReader::new(TcpStream::connect(proxy.tcp).expect("connect tcp listener"));
+    let first = h1_keepalive_get(&mut tcp);
+    assert!(
+        first.starts_with("HTTP/1.1 200") && first.contains("origin-ok"),
+        "the admitted tcp connection must be served by the origin: {first}"
+    );
+    assert_eq!(
+        connections_active_gauge(&proxy.admin),
+        1,
+        "a connection the listener already served is one active connection"
+    );
+
+    // (2) The QUIC listener's own cap is 2, so both handshakes are admitted
+    //     while the TCP listener is already at 1/1.
+    let quic_a = h3_connect_hold(&proxy.runtime, proxy.quic, "default.invalid");
+    let quic_b = h3_connect_hold(&proxy.runtime, proxy.quic, "default.invalid");
+    assert!(
+        quic_a.is_open() && quic_b.is_open(),
+        "both admitted QUIC connections must still be open"
+    );
+    assert_eq!(
+        connections_active_gauge(&proxy.admin),
+        3,
+        "the public gauge must be the sum: 1 TCP + 2 QUIC"
+    );
+
+    // (3) QUIC at its own cap: a third handshake is refused by the QUIC
+    //     listener with the QUIC transport close code, and adds no slot.
+    assert_h3_refused(&proxy.runtime, proxy.quic, "default.invalid");
+    assert_eq!(
+        connections_active_gauge(&proxy.admin),
+        3,
+        "a refused handshake must not count as an active connection"
+    );
+
+    // (4) TCP at its own cap of 1: a new connection is closed without a byte,
+    //     which is the listener refusing instead of queueing.
+    assert!(
+        refused_without_a_response(proxy.tcp),
+        "a full TCP listener must refuse the second connection"
+    );
+
+    // (5) The already admitted TCP connection keeps serving while the QUIC
+    //     listener is full: neither quota is process-wide.
+    let second = h1_keepalive_get(&mut tcp);
+    assert!(
+        second.starts_with("HTTP/1.1 200") && second.contains("origin-ok"),
+        "the tcp listener must keep serving while the quic listener is at its cap: {second}"
+    );
+}

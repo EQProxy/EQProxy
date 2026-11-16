@@ -543,9 +543,14 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
+          BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           docker buildx build --pull --file docker/Dockerfile \
             --target runtime \
             --platform linux/amd64,linux/arm64 \
+            --build-arg VERSION="$VERSION" \
+            --build-arg VCS_REF="$GITHUB_SHA" \
+            --build-arg BUILD_DATE="$BUILD_DATE" \
+            --build-arg SOURCE_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             --provenance=mode=max --sbom=true \
             --tag "ghcr.io/eqproxy/eqproxy:${VERSION}-candidate" --push .
 
@@ -967,19 +972,38 @@ jobs:
           # A branch name may contain `/`, which is not valid in a Docker
           # tag; the dry run gets a valid, clearly non-release tag.
           VERSION="dryrun-${GITHUB_SHA::12}"
+          BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           TAGS="--tag ghcr.io/eqproxy/eqproxy:$VERSION"
           case "$VERSION" in *-*) ;; *) TAGS="$TAGS --tag ghcr.io/eqproxy/eqproxy:latest" ;; esac
           docker buildx build --pull --file docker/Dockerfile \
             --target runtime \
             --platform linux/amd64,linux/arm64 \
+            --build-arg VERSION="$VERSION" \
+            --build-arg VCS_REF="$GITHUB_SHA" \
+            --build-arg BUILD_DATE="$BUILD_DATE" \
+            --build-arg SOURCE_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             --provenance=mode=max --sbom=true \
             $TAGS .
           # A dry run publishes nothing, but the image must still be shown to
           # work: load the native build and run it (Scout and the arm64 E2E
           # need a registry reference, so they stay tag-only).
           docker buildx build --pull --file docker/Dockerfile --target runtime \
-            --platform linux/amd64 --tag eqproxy-dryrun:ci --load .
+            --platform linux/amd64 --tag eqproxy-dryrun:ci --load \
+            --build-arg VERSION="$VERSION" \
+            --build-arg VCS_REF="$GITHUB_SHA" \
+            --build-arg BUILD_DATE="$BUILD_DATE" \
+            --build-arg SOURCE_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" .
           VER=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           docker run --rm eqproxy-dryrun:ci --version | grep -q "eqproxy $VER" \
             || { echo "dry-run image reports the wrong version"; exit 1; }
-          echo "dry-run image: eqproxy $VER"
+          LABELS=$(docker image inspect --format '{{json .Config.Labels}}' eqproxy-dryrun:ci)
+          echo "$LABELS" | grep -q '"org.opencontainers.image.version":"'"$VERSION"'"' \
+            || { echo "dry-run image has no project version label"; exit 1; }
+          echo "$LABELS" | grep -q '"org.opencontainers.image.revision":"'"$GITHUB_SHA"'"' \
+            || { echo "dry-run image has no project revision label"; exit 1; }
+          echo "$LABELS" | grep -q '"org.opencontainers.image.source":' \
+            || { echo "dry-run image has no project source label"; exit 1; }
+          HEALTH=$(docker image inspect --format '{{json .Config.Healthcheck}}' eqproxy-dryrun:ci)
+          echo "$HEALTH" | grep -q 'healthcheck' \
+            || { echo "dry-run image has no healthcheck"; exit 1; }
+          echo "dry-run image: eqproxy $VER, OCI metadata and healthcheck present"

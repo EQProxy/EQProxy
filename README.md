@@ -119,6 +119,15 @@ reproducible pull. `docker run` reuses a tag already present locally, so it does
 not prove what a registry serves: run `docker pull` first, or pass
 `--pull=always` to `docker run`, before checking a tag.
 
+The project image carries `org.opencontainers.image.*` labels for its version,
+source, revision, build date, licence and base image, and a `HEALTHCHECK` that
+runs `eqproxy healthcheck`. With `[admin]` configured it probes the
+authenticated `/api/v1/status` endpoint (the strongest generic liveness probe);
+without it, it checks the TCP listeners. It reads `/etc/eqproxy.toml`, the path
+used in the example above; override the healthcheck in Compose if your config
+lives elsewhere. The default `CMD` is `--help`, so the healthcheck becomes
+meaningful when the container is started with `run --config …`.
+
 ## Docs
 
 | Document | Contents |

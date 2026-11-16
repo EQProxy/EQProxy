@@ -2,6 +2,8 @@
 #
 # Usage:
 #   docker buildx build --file docker/Dockerfile --platform linux/amd64,linux/arm64 \
+#     --build-arg VERSION=0.9.6 --build-arg VCS_REF="$(git rev-parse HEAD)" \
+#     --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
 #     --tag ghcr.io/eqproxy/eqproxy:0.9.6 --tag ghcr.io/eqproxy/eqproxy:latest \
 #     --provenance=mode=max --sbom=true --push .
 #
@@ -23,6 +25,13 @@
 # version CI builds and tests with) and checked by the CI gate that compares
 # this value with that file: one compiler for the tested tree and these bytes.
 ARG RUST_VERSION=1.100.0
+# OCI metadata for the project image. Release builds pass the real values;
+# local builds get explicit, honest placeholders instead of inheriting only
+# the base image's labels. VERSION is the workspace version without the `v`.
+ARG VERSION=dev
+ARG VCS_REF=unknown
+ARG BUILD_DATE=1970-01-01T00:00:00Z
+ARG SOURCE_URL=https://github.com/EQProxy/EQProxy
 # 0 = release binary (default). 1 = profiling variant with the `profile`
 # feature and frame pointers, built as the explicit `profile` target below.
 ARG PROFILE=0
@@ -83,6 +92,23 @@ COPY --from=builder /opt/eqproxy /eqproxy
 # inside the container. It is created here and mounted as a volume by
 # operators that want it to survive a container replacement.
 FROM cgr.dev/chainguard/wolfi-base:latest@sha256:8509ee4351a2e501b7f98201f2e2642396e82020c61a589cacdcfe74b9de46c1 AS runtime
+ARG VERSION=dev
+ARG VCS_REF=unknown
+ARG BUILD_DATE=1970-01-01T00:00:00Z
+ARG SOURCE_URL=https://github.com/EQProxy/EQProxy
+LABEL org.opencontainers.image.title="EQProxy" \
+      org.opencontainers.image.authors="ExyonQ" \
+      org.opencontainers.image.description="Reverse proxy and load balancer" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.source="${SOURCE_URL}" \
+      org.opencontainers.image.url="${SOURCE_URL}" \
+      org.opencontainers.image.documentation="${SOURCE_URL}#readme" \
+      org.opencontainers.image.licenses="MIT OR Apache-2.0" \
+      org.opencontainers.image.vendor="ExyonQ" \
+      org.opencontainers.image.base.name="cgr.dev/chainguard/wolfi-base:latest" \
+      org.opencontainers.image.base.digest="sha256:8509ee4351a2e501b7f98201f2e2642396e82020c61a589cacdcfe74b9de46c1"
 RUN mkdir -p /var/lib/eqproxy \
     && chown 65532:65532 /var/lib/eqproxy
 COPY --from=builder /opt/eqproxy /opt/eqproxy
@@ -92,6 +118,11 @@ EXPOSE 8080
 EXPOSE 8443
 ENTRYPOINT ["/opt/eqproxy"]
 CMD ["--help"]
+# The default config path is /etc/eqproxy.toml. With [admin] the probe is an
+# authenticated /api/v1/status read; without it, the probe checks the TCP
+# listeners. Override the healthcheck in Compose if the config is elsewhere.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD ["/opt/eqproxy", "healthcheck"]
 
 # Profiling variant, never the default target. `perf` is blocked on the
 # evidence hosts (perf_event_paranoid=4); the feature samples with SIGPROF

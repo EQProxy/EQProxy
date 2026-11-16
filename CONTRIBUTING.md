@@ -10,7 +10,7 @@ written.
 
 Install a Rust toolchain: the workspace uses edition 2024, so **Rust 1.85 or
 newer** is required. The version every leg actually builds with is pinned in
-`rust-toolchain.toml` (currently 1.99.1) and `rustup` installs it
+`rust-toolchain.toml` (currently 1.100.0) and `rustup` installs it
 automatically when you enter the checkout; CI and the release image use that
 same compiler, so bumping the pin is a deliberate change with its own
 verification rather than a moving `stable`.

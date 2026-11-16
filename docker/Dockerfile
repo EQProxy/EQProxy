@@ -22,7 +22,7 @@
 # Toolchain of the release image, kept equal to rust-toolchain.toml (the
 # version CI builds and tests with) and checked by the CI gate that compares
 # this value with that file: one compiler for the tested tree and these bytes.
-ARG RUST_VERSION=1.99.1
+ARG RUST_VERSION=1.100.0
 # 0 = release binary (default). 1 = profiling variant with the `profile`
 # feature and frame pointers, built as the explicit `profile` target below.
 ARG PROFILE=0

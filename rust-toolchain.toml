@@ -8,6 +8,6 @@
 # image's builder names the same version in docker/Dockerfile
 # (ARG RUST_VERSION) and a CI gate refuses a mismatch.
 [toolchain]
-channel = "1.99.1"
+channel = "1.100.0"
 profile = "minimal"
 components = ["rustfmt", "clippy"]

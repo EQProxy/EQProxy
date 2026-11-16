@@ -94,6 +94,14 @@ claimed as closed fixes:
 - **N-2:** `Severity::Degraded` carries a mandatory typed reason and is
   reported in its own «revisar» section. Regression in
   `eqproxy-config/src/import/mod.rs`.
+- **P1-9 / EXT-M-08, EXT-M-09:** the conversion report masks a credential
+  instead of printing it, and the TOML and report are replaced by rename.
+  `cargo test -p eqproxy-cli --test cli_e2e
+  config_import_redacts_secrets_and_never_writes_half_a_file` and `...
+  config_import_never_leaves_a_half_written_file` were red with the three
+  files reverted (the report leaked the `Authorization` value; the destination
+  kept its inode, i.e. it had been truncated in place) and are green now. The
+  `--include-root` escape rejection (`EXT-M-15`) gained its regression.
 
 P0-7 has no GitHub Actions run yet; `P1-1`…`P1-10` remain open. No P1 gate is
 claimed, and the version step is an API-compatibility decision, not a feature
@@ -107,7 +115,7 @@ Run on the tip of `release/v0.9.5` after `P0-12`, `P0-11` and `P0-15`.
 |---|---|
 | `cargo fmt --all -- --check` | exit 0 |
 | `cargo clippy --workspace --all-targets -- -D warnings` | exit 0 |
-| `cargo test --workspace` | exit 0 — **878 passed, 0 failed, 2 ignored** across 41 result blocks |
+| `cargo test --workspace` | exit 0 — **882 passed, 0 failed, 2 ignored** across 41 result blocks |
 | `cargo dylint --all` (`nightly-2026-05-28`) | exit 0 |
 | `cargo semver-checks --baseline-rev v0.9.1 --release-type major` | exit 0 — `no semver update required` for `eqproxy-net` (0 checks run, 254 skipped: a major step accepts the delta by construction) |
 | Release workflow version pin (`test "v$VER" = "$GITHUB_REF_NAME"`) | `VER=0.10.0`, exit 0 for a `v0.10.0` tag |

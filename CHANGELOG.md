@@ -84,6 +84,15 @@ Fixed); versions are `vMAJOR.MINOR.PATCH` git tags.
 - **N-2: a degraded conversion can no longer be reported as `convertido`.**
   `Severity::Degraded` carries a mandatory, typed `Degradation` reason and is
   counted in the report's «revisar» column with its own section.
+- **P1-9 / EXT-M-08, EXT-M-09: the import report carries no credential, and
+  the generated TOML is replaced by rename.** A source directive such as
+  `proxy_set_header Authorization "Basic …"` or haproxy `stats auth user:pass`
+  used to reach the report verbatim; the value is now masked, and the
+  directive name stays so the report still says what was converted. The report
+  and the TOML are written through the same rename-based helper `config apply`
+  uses, so a failed import cannot leave a half-written `eqproxy.toml` in place
+  of a complete one, and the certificate the source names is still only named,
+  never copied.
 
 All six `EXT-H` defects reproduced by the external audit are fixed in this
 release, each with a regression that fails without the change. The gRPC, PROXY
@@ -104,8 +113,9 @@ interface, not with in-process doubles alone.
 - **P0-7 is not closed.** `.github/workflows/fuzz.yml` is committed, but it
   has not run in GitHub Actions; there is no remote run, log or artifact. This
   release does not claim P0-7 as verified.
-- **P1 is not closed.** P1-1…P1-10 remain open in the roadmap and the
-  production verdict; no gate or evidence item from that list is claimed here.
+- **P1 is not closed.** P1-9 is fixed in this tree; the rest of the group
+  (P1-1, P1-2 and P1-10, with the remote journeys and supply-chain artifacts)
+  remains open in the roadmap and the production verdict.
 - **The post-0.9.5 local changes are not release-cleared.** The `a0ac3fc`
   tree contains the `Metrics` compatibility, importer-report and cache-auth
   changes, with local tests recorded in

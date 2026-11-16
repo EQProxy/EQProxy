@@ -11563,6 +11563,147 @@ fn run_verifies_the_declared_backend_hostname_not_its_ip() {
     wait_for_sigint_shutdown(&mut origin_child, &origin);
 }
 
+/// Stands in for the backend an operator deploys behind PROXY-over-TLS
+/// (EXT-H-03): it records the raw opening bytes of every connection and only
+/// then relays to a real TLS origin, so the request still completes end to
+/// end and the recorded order is the observable result.
+fn start_proxy_first_tls_relay(
+    origin: std::net::SocketAddr,
+) -> (
+    std::net::SocketAddr,
+    std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind PROXY-first relay");
+    let addr = listener.local_addr().expect("relay address");
+    let recorded = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let slot = std::sync::Arc::clone(&recorded);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut client) = stream else { continue };
+            let slot = std::sync::Arc::clone(&slot);
+            std::thread::spawn(move || {
+                let _ = client.set_read_timeout(Some(Duration::from_secs(5)));
+                let mut head = Vec::new();
+                let mut buf = [0u8; 512];
+                loop {
+                    match client.read(&mut buf) {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => head.extend_from_slice(&buf[..n]),
+                    }
+                    // The PROXY line plus the first TLS record header: exactly
+                    // the two things whose order the defect got backwards.
+                    if let Some(at) = head.windows(2).position(|w| w == b"\r\n")
+                        && head.len() >= at + 2 + 5
+                    {
+                        break;
+                    }
+                    if head.len() > 4096 {
+                        return;
+                    }
+                }
+                if let Ok(mut seen) = slot.lock()
+                    && seen.is_empty()
+                {
+                    (*seen).clone_from(&head);
+                }
+                let Ok(mut upstream) = TcpStream::connect(origin) else {
+                    return;
+                };
+                if upstream.write_all(&head).is_err() {
+                    return;
+                }
+                let Ok(mut client_read) = client.try_clone() else {
+                    return;
+                };
+                let Ok(mut upstream_write) = upstream.try_clone() else {
+                    return;
+                };
+                let client_to_origin = std::thread::spawn(move || {
+                    let _ = std::io::copy(&mut client_read, &mut upstream_write);
+                });
+                let _ = std::io::copy(&mut upstream, &mut client);
+                let _ = client_to_origin.join();
+            });
+        }
+    });
+    (addr, recorded)
+}
+
+#[cfg_attr(
+    miri,
+    ignore = "needs processes and TCP sockets: miri does not support them (rust-lang/miri#3449)"
+)]
+#[test]
+fn backend_proxy_header_precedes_the_tls_handshake() {
+    let echo = start_static_backend("origin-ok");
+    // A real TLS origin: a second `eqproxy` process terminating TLS with the
+    // `localhost`-only leaf in front of a real HTTP origin.
+    let origin = temp_config(
+        "p012-origin",
+        &format!(
+            "schema_version = 1\n\
+             [listener.origin]\n\
+             listen = \"127.0.0.1:0\"\nmode = \"http\"\nbackend = \"echo\"\n\
+             proxy_receive = true\n\
+             proxy_allow = [\"127.0.0.1/32\"]\n\
+             [listener.origin.tls]\n\
+             cert = \"{FIXTURE_HOSTONLY_CERT}\"\n\
+             key = \"{FIXTURE_HOSTONLY_KEY}\"\n\
+             [backend.echo]\n\
+             server = \"{echo}\"\n"
+        ),
+    );
+    let (mut origin_child, origin_addr, _origin_stderr) = spawn_run_and_wait(&origin, "origin");
+    let origin_sock = origin_addr
+        .parse::<std::net::SocketAddr>()
+        .expect("the announced origin address is an IP:PORT");
+    let (relay, recorded) = start_proxy_first_tls_relay(origin_sock);
+    let proxy = temp_config(
+        "p012-proxy",
+        &format!(
+            "schema_version = 1\n\
+             [listener.web]\n\
+             listen = \"127.0.0.1:0\"\nmode = \"http\"\nbackend = \"api\"\n\
+             [backend.api]\n\
+             server = \"{relay}\"\n\
+             proxy_protocol = \"v1\"\n\
+             [backend.api.tls]\n\
+             verify = true\n\
+             ca_file = \"{FIXTURE_HOSTONLY_CERT}\"\n\
+             server_name = \"localhost\"\n"
+        ),
+    );
+    let (mut child, addr, mut stderr) = spawn_run_and_wait(&proxy, "web");
+    let response = proxied(
+        &addr,
+        b"GET / HTTP/1.1\r\nHost: shop.example.test\r\nConnection: close\r\n\r\n",
+    );
+    wait_for_sigint_shutdown(&mut child, &proxy);
+    let mut log = String::new();
+    let _ = stderr.read_to_string(&mut log);
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "a PROXY-over-TLS backend must be reachable: {response}\nproxy log:\n{log}"
+    );
+    assert_eq!(body_of(&response), "origin-ok", "proxy log:\n{log}");
+    let seen = recorded.lock().expect("recorder lock").clone();
+    let text = String::from_utf8_lossy(&seen).into_owned();
+    assert!(
+        seen.starts_with(b"PROXY TCP4 "),
+        "the backend must read the PROXY line first: {text:?}"
+    );
+    let end = seen
+        .windows(2)
+        .position(|w| w == b"\r\n")
+        .expect("the PROXY line ends with CRLF")
+        + 2;
+    let after = &seen[end..];
+    assert!(
+        after.len() >= 3 && after[0] == 0x16 && after[1] == 0x03,
+        "the TLS ClientHello must follow the header, not precede it: {text:?}"
+    );
+    wait_for_sigint_shutdown(&mut origin_child, &origin);
+}
 /// Reads the decimal count immediately before `label` in a summary line.
 /// Parsing the whole token keeps `0 degraded` from accepting `10 degraded`.
 fn summary_count(summary: &str, label: &str) -> usize {

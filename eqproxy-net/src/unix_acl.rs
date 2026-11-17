@@ -75,6 +75,12 @@ pub fn access_blob(uids: &[u32]) -> Vec<u8> {
 ///
 /// Fail-closed: an unsupported filesystem, a kernel that rejects the blob or
 /// a missing permission is an `Err`, never a silent "the mode still works".
+///
+/// # Errors
+///
+/// Returns the I/O error from the `system.posix_acl_access` extended attribute
+/// when the ACL cannot be installed, or when clearing it fails for any reason
+/// other than the attribute already being absent.
 #[cfg(target_os = "linux")]
 pub fn set_access(path: &Path, uids: &[u32]) -> io::Result<()> {
     if uids.is_empty() {

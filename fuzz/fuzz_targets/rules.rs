@@ -81,6 +81,7 @@ fuzz_target!(|data: &[u8]| {
                 path: &at(16),
                 headers: &headers,
                 peer,
+                maps: eqproxy_core::maps::MapRegistry::empty(),
             };
             let verdict = rule.matches(&facts);
             let explained = rule.explain(&facts);

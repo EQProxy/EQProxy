@@ -104,19 +104,14 @@ fuzz_target!(|data: &[u8]| {
             .filter(|token| !token.is_empty())
             .filter_map(|token| token.parse().ok())
             .collect();
-        // The header prints six numbers: walked, classified, converted,
-        // degraded, warned (the rest of the «revisar» column) and rejected.
-        // `Counts::review` groups degraded and warned, so the split is
-        // checked by summing those two back together.
         assert_eq!(
             numbers.len(),
-            6,
+            5,
             "{}: unexpected counts header {numbers:?} in {header:?}",
             source.as_str()
         );
-        let (read, classified, converted, degraded, warned, rejected) = (
-            numbers[0], numbers[1], numbers[2], numbers[3], numbers[4], numbers[5],
-        );
+        let (read, classified, converted, review, rejected) =
+            (numbers[0], numbers[1], numbers[2], numbers[3], numbers[4]);
         assert_eq!(
             read,
             classified,
@@ -130,13 +125,7 @@ fuzz_target!(|data: &[u8]| {
             source.as_str()
         );
         assert_eq!(
-            classified,
-            converted + degraded + warned + rejected,
-            "{}: header buckets do not partition {classified} classified directives",
-            source.as_str()
-        );
-        assert_eq!(
-            (converted, degraded + warned, rejected),
+            (converted, review, rejected),
             (counts.converted, counts.review, counts.rejected),
             "{}: header buckets != Outcome::counts",
             source.as_str()

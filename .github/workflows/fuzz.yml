@@ -1,0 +1,107 @@
+name: Fuzz
+
+# LibFuzzer needs nightly and runs far longer than the regular suite. The
+# scheduled run keeps the three committed targets building and exercising
+# their seeds; a manual run accepts a different budget. It is deliberately
+# separate from ci.yml so a slow campaign never delays a pull request.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Campaign duration per target (seconds)"
+        required: false
+        default: "60"
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: ${{ matrix.target }} (short campaign)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: framing
+            seed_dir: fuzz/seeds/framing
+          - target: rules
+            seed_dir: fuzz/seeds/rules
+          - target: config_import
+            seed_dir: docs/evidence/v085-config-import/raw
+    steps:
+      - uses: actions/checkout@v4
+
+      # cargo-fuzz requires the nightly compiler for the sanitizer and
+      # libFuzzer instrumentation; the workspace itself stays on the pin in
+      # rust-toolchain.toml.
+      - name: Install nightly Rust for libFuzzer
+        run: rustup toolchain install nightly --profile minimal
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+
+      - name: Cache fuzz build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            fuzz/target
+          key: fuzz-${{ runner.os }}-${{ hashFiles('fuzz/Cargo.lock', 'Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            fuzz-${{ runner.os }}-
+
+      # This is the stable-toolchain gate from the v0.9.5 roadmap. It fails
+      # before the nightly build if a target stops compiling against the
+      # workspace API (the exact regression AUD-04 recorded).
+      - name: Check fuzz workspace
+        run: cargo check --manifest-path fuzz/Cargo.toml --bins
+
+      - name: Build ${{ matrix.target }}
+        run: cargo +nightly fuzz build "${{ matrix.target }}"
+
+      # Seed from committed inputs only: fuzz/corpus is a local cache and is
+      # intentionally not in git. The campaign writes its new corpus into a
+      # temporary directory, so a scheduled run never dirties the checkout.
+      - name: Short campaign
+        env:
+          CAMPAIGN_SECONDS: ${{ github.event.inputs.seconds || '60' }}
+          TARGET: ${{ matrix.target }}
+          SEED_DIR: ${{ matrix.seed_dir }}
+        run: |
+          set -euo pipefail
+          case "$CAMPAIGN_SECONDS" in
+            ''|*[!0-9]*)
+              echo "campaign seconds must be a positive integer" >&2
+              exit 1
+              ;;
+          esac
+          if [ "$CAMPAIGN_SECONDS" -lt 1 ]; then
+            echo "campaign seconds must be at least 1" >&2
+            exit 1
+          fi
+          corpus="$RUNNER_TEMP/corpus/$TARGET"
+          mkdir -p "$corpus"
+          cp -R "$SEED_DIR/." "$corpus/"
+          cargo +nightly fuzz run "$TARGET" "$corpus" -- \
+            -max_total_time="$CAMPAIGN_SECONDS" \
+            -rss_limit_mb=2048 \
+            -print_final_stats=1 2>&1 | tee "$RUNNER_TEMP/fuzz-$TARGET.log"
+
+      - name: Keep crash artifacts and log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-${{ matrix.target }}-failure
+          path: |
+            fuzz/artifacts
+            ${{ runner.temp }}/fuzz-${{ matrix.target }}.log
+          if-no-files-found: ignore

@@ -91,7 +91,7 @@ COPY --from=builder /opt/eqproxy /eqproxy
 # documented offline state commands used to fail with "Permission denied"
 # inside the container. It is created here and mounted as a volume by
 # operators that want it to survive a container replacement.
-FROM cgr.dev/chainguard/wolfi-base:latest@sha256:8509ee4351a2e501b7f98201f2e2642396e82020c61a589cacdcfe74b9de46c1 AS runtime
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:e9b8c3739e5fb5fc778843a2ce74f8620588c9ddc9c44918cead527abcb0b628 AS runtime
 ARG VERSION=dev
 ARG VCS_REF=unknown
 ARG BUILD_DATE=1970-01-01T00:00:00Z
@@ -108,7 +108,7 @@ LABEL org.opencontainers.image.title="EQProxy" \
       org.opencontainers.image.licenses="MIT OR Apache-2.0" \
       org.opencontainers.image.vendor="ExyonQ" \
       org.opencontainers.image.base.name="cgr.dev/chainguard/wolfi-base:latest" \
-      org.opencontainers.image.base.digest="sha256:8509ee4351a2e501b7f98201f2e2642396e82020c61a589cacdcfe74b9de46c1"
+      org.opencontainers.image.base.digest="sha256:e9b8c3739e5fb5fc778843a2ce74f8620588c9ddc9c44918cead527abcb0b628"
 RUN mkdir -p /var/lib/eqproxy \
     && chown 65532:65532 /var/lib/eqproxy
 COPY --from=builder /opt/eqproxy /opt/eqproxy

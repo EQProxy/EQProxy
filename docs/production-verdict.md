@@ -56,18 +56,19 @@ declaration.
 
 ### Release and delivery
 
-- **P0-7 / remote CI — executed, and red.** The workflow runs from the default
-  branch: `44124253752` green on `main` on 2026-11-17, `44119523205` green on
-  `release/v0.9.5`. The scheduled run of 2026-11-18 (`44235938866`) failed:
-  `framing` and `rules` passed, `config_import` aborted on `attempt to add with
-  overflow` at `eqproxy-config/src/import/mod.rs:752`, in
-  `convert_duration`'s `u64` accumulation — a hostile figure parses as
-  `f64::INFINITY`, the cast saturates to `u64::MAX` and the next part overflows.
-  The input is attached to that run (`fuzz-config_import-failure`,
-  `crash-4e019cfb…`). Release builds have `overflow-checks` off, so the
-  published binary wraps the total instead of panicking; the fuzz oracle
-  ("`convert` never panics") still fails. Fixing it is the first item of the
-  next patch release; until then P0-7 is **not** a pass.
+- **P0-7 / remote CI — executed.** The workflow runs from the default branch:
+  `44124253752` green on `main` (2026-11-17), `44119523205` green on
+  `release/v0.9.5`, and `44324110633` green on `main` at `513f6c9`
+  (workflow_dispatch, three targets, `config_import` 21 373 executions). The
+  scheduled run of 2026-11-18 (`44235938866`) is the one that failed:
+  `config_import` aborted on `attempt to add with overflow` in
+  `convert_duration`'s `u64` accumulation, with the crash input attached
+  (`fuzz-config_import-failure`, `crash-4e019cfb…`). Root cause: a 22-digit
+  figure does not fit the millisecond total, the `as u64` cast saturates to
+  `u64::MAX` and the next part overflows — a panic under overflow checks, a
+  wrapped duration without them. Fixed on `main` in `513f6c9` with a
+  regression test that reproduces that artifact. The published `v0.10.0` was
+  built from `bdf88bb`, before the fix, and still carries it.
 - **P1-1 / architectures:** no native `linux/amd64` journey on `netcup-bench`
   and no native `linux/arm64` journey on `oracle-quasar` for this tree. The
   container journeys the release workflow runs on both architectures are
@@ -106,8 +107,9 @@ The details, the exact red→green commands and the remaining caveats are in
 [release-0.10.0](release-0.10.0.md).
 
 The one defect found **after** the tag is the `convert_duration` overflow of
-P0-7 above: a panic under overflow checks, a wrong duration in the released
-build, and the reason the fuzz leg is red. It is not fixed in `v0.10.0`.
+P0-7 above: a panic under overflow checks and a wrong duration in the released
+build. It is fixed on `main` (`513f6c9`) and **not** in `v0.10.0`, whose assets
+were built from `bdf88bb`.
 
 The EXT-M groups are still open: cache/HIT header duplication and h1
 hop-by-hop stripping (P1-5), SNI/Host and duplicate/non-UTF-8 header semantics
@@ -173,16 +175,18 @@ supply-chain/CI evidence (P1-10).
 
 Done for `0.10.0`: fix and E2E-verify EXT-H-01…06; execute the final
 Veyra/Rust Audit/CodeGraph legs on the final tree; run the fuzz workflow
-remotely and cite its artifacts (`P0-7` found a real crash, so this is a red
-result, not a pass); pass Docker Scout with zero critical/high on both
+remotely and cite its artifacts (`P0-7` found a real crash, fixed on `main` in
+`513f6c9` and green in run `44324110633`); pass Docker Scout with zero
+critical/high on both
 architectures; publish and verify the image digest and checksums; re-run the
 complete suite on the tag target.
 
-Still required: fix the `convert_duration` overflow so the fuzz leg is green;
-close the EXT-M groups; run native `linux/amd64` and `linux/arm64` binary and
-image journeys on the named hosts; and have someone other than the author
-operate the published release. Until every one of those is executed, the
-verdict remains **NOT PRODUCTION READY**.
+Still required: cut the patch that carries `513f6c9` (the `convert_duration`
+overflow is fixed on `main` but absent from the published `v0.10.0`); close the
+EXT-M groups; run native `linux/amd64` and `linux/arm64` binary and image
+journeys on the named hosts; and have someone other than the author operate the
+published release. Until every one of those is executed, the verdict remains
+**NOT PRODUCTION READY**.
 
 ## Evidence index
 

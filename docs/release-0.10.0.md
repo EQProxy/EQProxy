@@ -118,11 +118,14 @@ claimed as closed fixes:
   kept its inode, i.e. it had been truncated in place) and are green now. The
   `--include-root` escape rejection (`EXT-M-15`) gained its regression.
 
-P0-7's workflow now runs from the default branch and from this branch
-(`Fuzz` run `44124253752` green on `main` before the tag, `44119523205` green on
+P0-7's workflow runs from the default branch and from this branch (`Fuzz` run
+`44124253752` green on `main` before the tag, `44119523205` green on
 `release/v0.9.5`). The scheduled run of 2026-11-18 then found the
-`convert_duration` overflow recorded under [the post-tag finding](#post-tag-finding-fuzz-overflow-in-convert_duration),
-so P0-7 is **not** green. `P1-1`…`P1-10` remain open. No P1 gate is claimed,
+`convert_duration` overflow recorded under
+[the post-tag finding](#post-tag-finding-fuzz-overflow-in-convert_duration). It
+is fixed on `main` in `513f6c9` and `Fuzz` run `44324110633` is green on that
+commit, so P0-7 is green for `main` and stays red for the published tag, which
+still carries the defect. `P1-1`…`P1-10` remain open. No P1 gate is claimed,
 and the version step is an API-compatibility decision, not a feature claim.
 
 ## Local gates on this tree (2026-11-16)
@@ -255,7 +258,35 @@ the existing «duración no reconocida» review note; it is **not** in `v0.10.0`
 and is the first item of the next patch release. Until it lands, the fuzz leg
 on the default branch stays red and P0-7 is not green.
 
-The release itself is published and its own gates are green; the production
+### Resolution — fixed on `main` in `513f6c9`
+
+`513f6c9` (`fix(import): reject a duration that does not fit instead of
+overflowing`) adds the regression test `a_duration_that_cannot_fit_is_
+reviewed_not_wrapped`, which panicked at `eqproxy-config/src/import/mod.rs:584`
+— the line of the run's log — before the fix and passes after it. The
+accumulator now rejects a part that is not finite or does not fit the
+remaining total (`checked_add`), leaves `rest` unconsumed, and the existing
+«duración no reconocida» review classifies the directive: no new error path, no
+silent fallback, and a duration that fits converts exactly as before.
+
+Verified against the real artifact and the real target:
+
+| Check | Result |
+|---|---|
+| `cargo +nightly fuzz run config_import <artifact> -- -runs=1`, before the fix (this branch's tree) | aborted: `attempt to add with overflow` at `import/mod.rs:752` — the local reproduction of the scheduled run |
+| the same command after the fix | exit 0, no crash |
+| `cargo test -p eqproxy-config --lib a_duration_that_cannot_fit` on `main`, before the fix | FAILED, exit 101, `import/mod.rs:584`, the run's exact line |
+| the same test after the fix | passed |
+| 60 s campaign, seeds `docs/evidence/v085-config-import/raw`, this branch | exit 0, 22 535 executions |
+| 60 s campaign, same seeds, `main` tree | exit 0, 33 183 executions |
+| `Fuzz` run [44324110633](https://github.com/EQProxy/EQProxy/actions/runs/44324110633) on `main` `513f6c9` | **success**, three targets, `config_import` 21 373 executions, peak RSS 564 MB |
+| `cargo test --workspace` on `main` `513f6c9` | **761 passed, 0 failed, 2 ignored** (37 result blocks) |
+| `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings` on `main` | exit 0 |
+
+The published `v0.10.0` assets and images were built from `bdf88bb` and still
+carry the defect; the fix sits in `main` for the next patch, which is not cut.
+The release itself is published and its own gates are green, and the production
 verdict stays **NOT PRODUCTION READY** for the reasons on
-[production-verdict](production-verdict.md): P1-1…P1-10 are open, this finding
-is unfixed in the published tree, and no external operator has run it.
+[production-verdict](production-verdict.md): P1-1…P1-10 are open, the published
+tag carries this finding until a patch ships, and no external operator has run
+it.

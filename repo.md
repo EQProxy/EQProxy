@@ -5,21 +5,28 @@ Language: **English**.
 Minimal-observability TCP/HTTP reverse proxy, written in safe Rust
 (`#![forbid(unsafe_code)]`).
 
-## Status — v0.9.5 «cache, framing and trailer fixes»
+## Status — v0.10.0 «the six EXT-H fixes and the gRPC bypass»
 
-Current version: **v0.9.5** (2026-11-11), released and published on
-2026-11-12: annotated tag `fd65bee…` over `3451c19`, release run 43232479817
-green, the scanned image index `sha256:ec3413b8…` served identically by GHCR
-and Docker Hub behind `:0.9.5` and `:latest`, 0 critical / 0 high on both
-architectures ([release record](docs/release-0.9.5.md)). It closes AUD-01 (a
-revalidating `304` can no longer pollute a shared cache entry), AUD-02 (client
-`Cache-Control` directives), ADV-01/P0-3 (bodyless framing), ADV-02/P0-4
-(`Connection`-nominated headers) and AUD-03 (bounded trailers on h1, h2 and
-h3), checks a reused backend socket for liveness at pool checkout and builds
-the `rules` fuzz target again. It follows v0.9.4, which normalized one URI and
-Host before rules and forwarding, fixed HTTP/1.0 framing and closed the
-CONNECT, upgrade-negotiation and proxy-credential residuals; v0.9.3 moved the
-published images to `ghcr.io/eqproxy/eqproxy`. On top of v0.8.5, it is a
+Current version: **v0.10.0** (2026-11-16), released and published on
+2026-11-17: annotated, SSH-signed tag `fb56e28…` over `bdf88bb`, release run
+44183459466 green, the scanned image index `sha256:f8eee767…` served
+identically by GHCR and Docker Hub behind `:0.10.0` and `:latest`, 0 critical /
+0 high on both architectures ([release record](docs/release-0.10.0.md)). It
+closes the six `EXT-H` findings of the external audit: the PROXY header is
+written before the backend TLS handshake (P0-12), gRPC runs the WASM filter and
+`max_body_bytes` (P0-11), `maxconn` is scoped to the accepting listener instead
+of one process-wide counter (P0-15), a compressed cache HIT cannot mix two
+representations (P0-10), nginx `proxy_pass https://` keeps TLS to the backend
+(P0-13) and the backend certificate is verified by its declared name (P0-14).
+M-01 (HTTP/1.0 framing) is re-verified, P0-8 (`hdr`/`hdr_dom` stay distinct),
+N-2 (a degraded conversion cannot be reported as converted) and P1-9 (the
+import report carries no credential) are closed too. The version step is 0.10.0
+rather than a 0.9.6 patch because of one major-class semver change. It follows
+v0.9.5 — cache, framing and trailer fixes: AUD-01…ADV-02 and the bounded
+trailers on h1, h2 and h3 — and v0.9.4, which normalized one URI and Host
+before rules and forwarding, fixed HTTP/1.0 framing and closed the CONNECT,
+upgrade-negotiation and proxy-credential residuals; v0.9.3 moved the published
+images to `ghcr.io/eqproxy/eqproxy`. On top of v0.8.5, it is a
 TCP/HTTP proxy — HTTP/1.1, HTTP/2
 and HTTP/3 — with TLS termination and verified backend TLS, typed routing rules
 per listener, weighted round-robin/leastconn/slow start, active health checks,
@@ -67,7 +74,7 @@ Multi-architecture (linux/amd64, linux/arm64) at `ghcr.io/eqproxy/eqproxy` and
 `exyonq/eqproxy`, with the same index digest in both:
 
 ```bash
-docker run --rm ghcr.io/eqproxy/eqproxy:0.9.5 --help
+docker run --rm ghcr.io/eqproxy/eqproxy:0.10.0 --help
 ```
 
 ## Audit limitations (v0.5 audit; applicability policy in ADR-0030)

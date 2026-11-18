@@ -1,4 +1,4 @@
-# Parity and evidence — what v0.9.5 ships and how it is proven
+# Parity and evidence — what v0.9.5 shipped and how it was proven
 
 Language: **English**.
 
@@ -7,6 +7,11 @@ used to open the README: what 0.9.5 fixes, what the earlier 0.9.x lines added,
 the measured performance including the losses, and the release gates. Moved
 from the README on 2026-11-01; only link targets were adjusted for this
 directory.
+
+> **Published release: v0.10.0 (2026-11-17).** This page keeps the v0.9.5
+> capability and evidence record it was written for. The 0.10.0 record is
+> [release-0.10.0.md](release-0.10.0.md) and the current verdict is
+> [production-verdict.md](production-verdict.md).
 
 > **TLS material (2026-11-04).** Test TLS and mTLS private keys are generated
 > at build time into `OUT_DIR/fixtures`; they are not committed. The
@@ -19,10 +24,11 @@ directory.
 > must not add `.pem`/`.key` private keys; CI rejects private keys with no
 > allowlist, and the release workflow scans the source tarball.
 
-## Release status
+## Release status (v0.9.5 — historical)
 
 **Status: v0.9.5 (2026-11-11) — released and published on 2026-11-12 (tag
-`v0.9.5`); artifact gate met.** 0.9.5 is a security and dataplane patch: a
+`v0.9.5`); artifact gate met. Superseded by v0.10.0, above.** 0.9.5 is a
+security and dataplane patch: a
 revalidating `304` can no longer pollute a shared cache entry (AUD-01), client
 `Cache-Control` directives are honored per request (AUD-02), a bodyless
 response cannot declare body framing (ADV-01/P0-3), h2/h3 strip
@@ -88,8 +94,8 @@ token and a write audit line, no JavaScript
 ([ADR-0029](adr/0029-panel-sessions-and-csrf.md)), with **799 tests
 passed, 0 failed (2 declared `#[ignore]` Docker harnesses) across 36 targets**
 (`cargo test --workspace --locked`, v0.9.5 tagged tree, 2026-11-11 — the
- published figure; the 0.10.0 tree runs **878 passed, 0 failed, 2 ignored
- across 41 result blocks**, 2026-11-16) plus two Docker-gated
+ published figure; the 0.10.0 tree runs **884 passed, 0 failed, 2 ignored
+ across 41 result blocks**, 2026-11-18) plus two Docker-gated
 harnesses: [differential corpus](differential-corpus.md) **31/31** cases
 against HAProxy 3.4.6, nginx, the ingress-nginx data plane and static
 Envoy v1.34.2 (full-corpus run 2026-11-04; the 2026-11-02

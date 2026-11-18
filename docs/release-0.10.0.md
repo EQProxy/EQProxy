@@ -17,7 +17,9 @@ produced them.
   gpg.ssh.allowedSignersFile=<file> tag -v v0.10.0` verifies it locally against
   `id_eqproxy.pub` (`Good "git" signature for toni with ED25519 key
   SHA256:CcbIhBxYmPf71LtEYCrMzAVOX/PtTdwwnvCTiTmR+WA`).
-- Current tree: `bdf88bb`, exactly the commit the tag points at.
+- Current tree: `8468162`, six commits after the tag target and one after the
+  remote tip `83011f9` — the fuzz-overflow fix, the documents that record it and
+  the trimmed QUIC journey. The **published** artifact is still `bdf88bb`.
 - Published releases: **`v0.10.0`** (2026-11-17T21:47:23Z; the
   [Publication](#publication--2026-11-18) section below) and, before it,
   **`v0.9.5`** (annotated tag `fd65bee` → commit `3451c19`, published
@@ -136,7 +138,8 @@ Run on the tip of `release/v0.9.5` after `P0-12`, `P0-11` and `P0-15`.
 |---|---|
 | `cargo fmt --all -- --check` | exit 0 |
 | `cargo clippy --workspace --all-targets -- -D warnings` | exit 0 |
-| `cargo test --workspace` | exit 0 — **883 passed, 0 failed, 2 ignored** across 41 result blocks |
+| `cargo test --workspace` (tag target `bdf88bb`, 2026-11-18) | exit 0 — **883 passed, 0 failed, 2 ignored** across 41 result blocks |
+| `cargo test --workspace` (branch tip `8468162`, 2026-11-18) | exit 0 — **884 passed, 0 failed, 2 ignored** across the same 41 result blocks, after the trimmed QUIC journey |
 | `cargo dylint --all` (`nightly-2026-05-28`) | exit 0 |
 | `cargo semver-checks --baseline-rev v0.9.1 --release-type major` | exit 0 — `no semver update required` for `eqproxy-net` (0 checks run, 254 skipped: a major step accepts the delta by construction) |
 | Release workflow version pin (`test "v$VER" = "$GITHUB_REF_NAME"`) | `VER=0.10.0`, exit 0 for a `v0.10.0` tag |
@@ -284,7 +287,8 @@ Verified against the real artifact and the real target:
 | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings` on `main` | exit 0 |
 
 The published `v0.10.0` assets and images were built from `bdf88bb` and still
-carry the defect; the fix sits in `main` for the next patch, which is not cut.
+carry the defect. The fix is on `main` (`513f6c9`) and cherry-picked onto this
+branch (`f55c432`), so the next patch carries it; no patch is cut yet.
 The release itself is published and its own gates are green, and the production
 verdict stays **NOT PRODUCTION READY** for the reasons on
 [production-verdict](production-verdict.md): P1-1…P1-10 are open, the published

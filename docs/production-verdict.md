@@ -11,13 +11,13 @@ declaration.
 
 | Item | State |
 |---|---|
-| Branch | `release/v0.9.5`, pushed; `HEAD` = `bdf88bb` = the commit `v0.10.0` points at |
+| Branch | `release/v0.9.5`; `HEAD` = `8468162`, six commits after the tag target (the remote tip is `83011f9`); `v0.10.0` points at `bdf88bb` |
 | Source revision | `bdf88bb` — the tag target. It contains the 0.10.0 preparation, the six `EXT-H` fixes, `N-2`, `P1-9`/`EXT-M-08`/`EXT-M-09`, and the two commits the failed release runs produced (`6de908c`, `bdf88bb`); `v0.9.5` was published from `3451c19` |
 | Version | `0.10.0` in `Cargo.toml`; `CHANGELOG.md` has `## [v0.10.0]` |
 | Tag | **`v0.10.0`**, annotated and SSH-signed, object `fb56e28` → `bdf88bb`, remote. GitHub shows `verified=false, reason=unknown_key` until that public key is registered on the account as a *Signing Key*; local `git tag -v` verifies it. `v0.9.5` is annotated `fd65bee` → `3451c19`, published 2026-11-12 |
 | Release claims | **M-01**, **P0-8**, the six `EXT-H` findings (**P0-10**…**P0-15**), **N-2** and **P1-9**/**EXT-M-08**/**EXT-M-09**, each with executed evidence in [release-0.10.0](release-0.10.0.md). **P0-7** is not green (below); P1-1…P1-10 remain open |
 | Published artifact | **`v0.10.0`**, GitHub release 2026-11-17T21:47:23Z from run [44183459466](https://github.com/EQProxy/EQProxy/actions/runs/44183459466) (`success`), plus the multi-arch image index `sha256:f8eee767f805c085bd624d847b6844aaa8d7436741354d9110b05d1a2013aea5` on `ghcr.io/eqproxy/eqproxy` and `exyonq/eqproxy` (`:0.10.0`, `:latest`) |
-| Final local suite | `cargo test --workspace` → **883 passed, 0 failed, 2 ignored** on `bdf88bb`, re-run 2026-11-18; fmt, clippy `-D warnings` and `cargo dylint --all` exit 0; `cargo semver-checks --baseline-rev v0.10.0 --release-type major` exit 0; see [release-0.10.0](release-0.10.0.md) |
+| Final local suite | `cargo test --workspace` → **884 passed, 0 failed, 2 ignored** on `HEAD` `8468162`, 2026-11-18 (after the trimmed QUIC journey; the tag target `bdf88bb` measured **883 passed, 0 failed, 2 ignored** the same day). fmt and clippy `-D warnings` exit 0 on `8468162`; `cargo dylint --all` and `cargo semver-checks --baseline-rev v0.10.0 --release-type major` exit 0 on `bdf88bb`; see [release-0.10.0](release-0.10.0.md) |
 
 ## What the evidence actually shows
 
@@ -66,9 +66,10 @@ declaration.
   (`fuzz-config_import-failure`, `crash-4e019cfb…`). Root cause: a 22-digit
   figure does not fit the millisecond total, the `as u64` cast saturates to
   `u64::MAX` and the next part overflows — a panic under overflow checks, a
-  wrapped duration without them. Fixed on `main` in `513f6c9` with a
-  regression test that reproduces that artifact. The published `v0.10.0` was
-  built from `bdf88bb`, before the fix, and still carries it.
+  wrapped duration without them. Fixed on `main` in `513f6c9` and cherry-picked
+  onto this branch in `f55c432`, each with a regression test that reproduces
+  that artifact. The published `v0.10.0` was built from `bdf88bb`, before the
+  fix, and still carries it.
 - **P1-1 / architectures:** no native `linux/amd64` journey on `netcup-bench`
   and no native `linux/arm64` journey on `oracle-quasar` for this tree. The
   container journeys the release workflow runs on both architectures are

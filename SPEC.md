@@ -2,11 +2,12 @@
 
 Language: **English**.
 
-- Document version: 0.2 — state refreshed after v0.8.0
+- Document version: 0.3 — state refreshed after v0.10.0
 - Date: 2026-10-12 (created)
-- Project state: **v0.8.0 published (2026-10-27); not declared production
+- Project state: **v0.10.0 published (2026-11-17); not declared production
   ready (the Phase 9 hardening gate is pending).** §14 carries the per-area
-  state and its evidence.
+  state and its evidence; the per-release reasoning is in
+  [docs/release-0.10.0.md](docs/release-0.10.0.md).
 
 ## 1. Purpose
 

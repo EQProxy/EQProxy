@@ -5,24 +5,39 @@ Fixed); versions are `vMAJOR.MINOR.PATCH` git tags.
 
 ## [Unreleased]
 
-### Changed
+### Fixed
 
-- **`SHA256SUMS.txt` covers every published asset.** The release job now
-  assembles a flat `dist/` — both Linux binaries, the source tarball, one
-  CycloneDX SBOM per crate and both Docker Scout reports — and writes one
-  checksum line per asset after the three lines earlier releases shipped, so
-  those keep their byte-identical form and the existing install instructions
-  still work. The release fails before it is created when a crate SBOM or an
-  architecture's Scout report is missing, and the checksum step exits non-zero
-  when the file covers fewer assets than are published
-  (`SHA256SUMS.txt covers N of M published assets`). Applies from the next
-  release: the `v0.9.5` artifacts are unchanged and its `SHA256SUMS.txt` still
-  lists only the two binaries and the source tarball.
+- **`config_import`: a duration that cannot fit is reviewed, not wrapped.** The
+  scheduled `Fuzz` run of 2026-11-18 found `attempt to add with overflow` in
+  `convert_duration` (`eqproxy-config/src/import/mod.rs`): `1e400` parses to
+  `f64::INFINITY`, the `as u64` cast saturates to `u64::MAX` and the next part
+  of the same duration overflows. A release build wraps the total — a wrong
+  duration, not a crash — while any overflow-checked build aborts. The
+  accumulator now rejects a part that is not finite or does not fit
+  (`checked_add`) and the existing «duración no reconocida» review classifies
+  the directive. Regression: `a_duration_that_cannot_fit_is_reviewed_not_wrapped`.
+  Landed on `main` in `513f6c9` and on this branch in `f55c432`; the `Fuzz` run
+  on `main` after the fix
+  ([44324110633](https://github.com/EQProxy/EQProxy/actions/runs/44324110633))
+  is green. Details:
+  [docs/release-0.10.0.md](docs/release-0.10.0.md#post-tag-finding-fuzz-overflow-in-convert_duration).
 
 ## [v0.10.0] — 2026-11-16
 
 ### Changed
 
+- **`SHA256SUMS.txt` covers every published asset from this release on.** The
+  release job assembles a flat `dist/` — both Linux binaries, the source
+  tarball, one CycloneDX SBOM per crate and both Docker Scout reports — and
+  writes one checksum line per asset after the three lines earlier releases
+  shipped, so those keep their byte-identical form and the existing install
+  instructions still work. The release fails before it is created when a crate
+  SBOM or an architecture's Scout report is missing, and the checksum step
+  exits non-zero when the file covers fewer assets than are published
+  (`SHA256SUMS.txt covers N of M published assets`). The `v0.10.0` release
+  carries nine lines for ten assets and verifies `9/9 OK`; the `v0.9.5`
+  artifacts are unchanged and their file still lists only the two binaries and
+  the source tarball.
 - **The release is `0.10.0`, not the `0.9.6` patch it started as.** On the
   prepared tree `cargo-semver-checks` against `v0.9.1` reports one major-class
   change — the new `ListenerConfig.redirect` field breaks exhaustive struct
@@ -87,10 +102,12 @@ Fixed); versions are `vMAJOR.MINOR.PATCH` git tags.
   from being admitted, a third handshake is refused with the QUIC
   `CONNECTION_REFUSED` close code (asserted on the code, not an error string),
   and the admitted TCP connection keeps answering `200` while the QUIC listener
-  is full. The public `eqproxy_connections_active` reads `3` — the sum — after
-  those admissions; no gauge is polled and no idle timeout is relied on. Against
-  the process-wide counter the same journey is red (`CONNECTION_REFUSED` on the
-  QUIC handshake, caused by the TCP listener's connection).
+  is full. The journey reads no gauge at all: the sum the public
+  `eqproxy_connections_active` exports is proved by
+  `maxconn_is_scoped_to_each_listener` in `eqproxy-core`, so the E2E asserts
+  only what each listener grants, with no poll and no idle timeout. Against the
+  process-wide counter the same journey is red (`CONNECTION_REFUSED` on the
+  QUIC handshake, caused by the TCP listener's connection), not on a timeout.
 - **N-2: a degraded conversion can no longer be reported as `convertido`.**
   `Severity::Degraded` carries a mandatory, typed `Degradation` reason and is
   counted in the report's «revisar» column with its own section.
@@ -120,9 +137,13 @@ interface, not with in-process doubles alone.
 
 ### Pending
 
-- **P0-7 is not closed.** `.github/workflows/fuzz.yml` is committed, but it
-  has not run in GitHub Actions; there is no remote run, log or artifact. This
-  release does not claim P0-7 as verified.
+- **P0-7 is green for `main`, not for the published tag.**
+  `.github/workflows/fuzz.yml` ran green on `main` (`44124253752`) and on this
+  branch (`44119523205`) before the tag; the scheduled run of 2026-11-18 then
+  found the `convert_duration` overflow, fixed on `main` in `513f6c9` (run
+  `44324110633` green) and on this branch in `f55c432`. The tagged `v0.10.0`
+  still carries that defect, so this release does not claim P0-7 as verified
+  for the published artifact.
 - **P1 is not closed.** P1-9 is fixed in this tree; the rest of the group
   (P1-1, P1-2 and P1-10, with the remote journeys and supply-chain artifacts)
   remains open in the roadmap and the production verdict.

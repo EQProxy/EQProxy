@@ -1,7 +1,7 @@
 # Contributing to EQProxy
 
-EQProxy is a reverse proxy and load balancer in Rust. It is pre-1.0: v0.9.5 is
-the latest published release (2026-11-12). Issues and pull requests are
+EQProxy is a reverse proxy and load balancer in Rust. It is pre-1.0: v0.10.0 is
+the latest published release (2026-11-17). Issues and pull requests are
 welcome; for a change that touches behaviour, configuration or the wire
 protocol, open an issue first so the scope can be agreed before code is
 written.
@@ -177,33 +177,38 @@ git log origin/main..HEAD --format=%b | grep -iE '^co-authored-by:'
 
 ## Releases
 
-### Latest published release — v0.9.5
+### Latest published release — v0.10.0
 
-`v0.9.5` was published `2026-11-12T17:08:38Z` from the annotated tag `v0.9.5`
-(`fd65bee0b62055e427afa4360560fca76d400813`) over commit
-`3451c190362147a95e44eb1f08f306a39ec73125` (`fix(release): refresh Wolfi base
-for v0.9.5`, which is `a76f017` plus a one-line `docker/Dockerfile` change).
-The tag run
-[43232479817](https://github.com/EQProxy/EQProxy/actions/runs/43232479817)
-finished `success`, and its `release` job produced the ten assets: two Linux
+`v0.10.0` was published `2026-11-17T21:47:23Z` from the annotated, SSH-signed
+tag `v0.10.0` (`fb56e28…`, object) over commit `bdf88bb`. The tag run
+[44183459466](https://github.com/EQProxy/EQProxy/actions/runs/44183459466)
+finished `success`, after two earlier tag runs failed and each produced one of
+the commits the tag points at: `6de908c` repins the Wolfi base for
+`CVE-2026-84243`, and `bdf88bb` drops a semver-contract exception that no
+longer matched. Its `release` job produced the ten assets — two Linux
 binaries, the source tarball, four CycloneDX SBOMs, the two Scout reports and
-`SHA256SUMS.txt`. Its image job built and scanned the `0.9.5-candidate` index
-and promoted that exact digest.
+`SHA256SUMS.txt` — and its image job built and scanned the
+`0.10.0-candidate` index and promoted that exact digest.
 
 | Release asset | SHA-256 |
 |---|---|
-| `eqproxy-linux-amd64` | `f5788affe6794bd2dcbb778e2d64ed556243daf7032e7a6d873f74f0fb481bc4` |
-| `eqproxy-linux-arm64` | `0d7d3e71fcf97b4eb804fdb386f391b9e86f664bc360233ec481395e5bfba606` |
-| `eqproxy-0.9.5-src.tar.gz` | `27a5b25298a854af6780becc8f3297afdfcda4cebd97f7e7aa35186f6cb1861a` |
-| `SHA256SUMS.txt` (the file itself) | `b07ff56c404ddd15992b94b9efd0f1fcf0cf0e843381f63de9d19a1c076707d0` |
+| `eqproxy-linux-amd64` | `f59b512e4f44a93f26d914ff613206c8c3259ac3ec2ad1dec1e2d087c409c658` |
+| `eqproxy-linux-arm64` | `ab02916787b11e6d63745ec42167950f4772a0dd9236ea34ce2da29f11d96bce` |
+| `eqproxy-0.10.0-src.tar.gz` | `46b07a1b6cf85cd4c2a57f3ea0b9523d0e57d384a29a25d8325841a050711775` |
+| `eqproxy-core.cdx.json` | `3abd2e610aabaad07fe2f447fb39af37bdeaba5e4638420163dbe4628e49eca8` |
+| `eqproxy-config.cdx.json` | `2f2460d6d0d734b449c6d8957a663fe45bffddc761aeaddfcffb20c50235cf12` |
+| `eqproxy-net.cdx.json` | `d222de4bfd77e35aee38a59f0d9d39aad1fddf3e7962d304797d57aaf1178e0f` |
+| `eqproxy-cli.cdx.json` | `45736cf1697e032e1ce9c48f5b5bef2766c5c6899c047cf09d33ecb1eeaa3159` |
+| `SCOUT-0.10.0-linux-amd64.md` | `566b60307ca616eb80b164929552cbc73342f919ec1d0ef992e602d156eca093` |
+| `SCOUT-0.10.0-linux-arm64.md` | `dc0bfff8432e45332a20185df8b51dc3d9add1b6bbfc067c89d1acff72a44259` |
 
-Those three lines are exactly what `SHA256SUMS.txt` checks in this release; the
-SBOMs and the Scout reports are not listed in it.
-
-**From the next release the file covers every attached asset.** The `release`
-job assembles a flat `dist/` (both binaries, the source tarball, one SBOM per
-workspace member and both Scout reports) and its checksum step refuses to
-continue unless `SHA256SUMS.txt` holds one line per published asset —
+Those nine lines are exactly what `SHA256SUMS.txt` checks in this release —
+`shasum -a 256 -c SHA256SUMS.txt` reads `9/9 OK` from this checkout — and the
+checksum file itself, being an attached asset, is not listed in it. From
+v0.10.0 the file covers every attached asset: the `release` job assembles a
+flat `dist/` (both binaries, the source tarball, one SBOM per workspace member
+and both Scout reports) and its checksum step refuses to continue unless
+`SHA256SUMS.txt` holds one line per published asset —
 `SHA256SUMS.txt covers 9 of 10 published assets` is the failure a stray or
 unhashed file produces. A missing crate SBOM or a missing architecture report
 fails the release before it is created, so a single `sha256sum -c` verifies the
@@ -211,17 +216,14 @@ whole download. The two Linux lines keep their original form at the top of the
 file, which is why the v0.6.x instructions still work unchanged.
 
 Both registries serve one OCI index, promoted by digest after the Scout scan:
-`sha256:ec3413b8a2d871ae810e6cd81f6fbda679fc352a4b3659914a1977ecf5440bc0`
-for `ghcr.io/eqproxy/eqproxy:0.9.5`, `ghcr.io/eqproxy/eqproxy:latest`,
-`exyonq/eqproxy:0.9.5` and `exyonq/eqproxy:latest`. Its platform manifests are
-`sha256:332529054b914196861983628fea0a19e0b1b03487fa210b77607e3a24d1480e`
-(`linux/amd64`) and
-`sha256:fcde9203219b1bdd411f615732df4cc2628bc33c52632be79ea00a162433e7d7`
-(`linux/arm64`), each reported **0 critical / 0 high** by Docker Scout. The
-release workflow re-pulled the published tags and replayed the journeys
-(`--version`, configuration and live proxied traffic) on both architectures
-before finishing `success`. There is no Darwin asset: the release is
-Linux-only.
+`sha256:f8eee767f805c085bd624d847b6844aaa8d7436741354d9110b05d1a2013aea5`
+for `ghcr.io/eqproxy/eqproxy:0.10.0`, `ghcr.io/eqproxy/eqproxy:latest`,
+`exyonq/eqproxy:0.10.0` and `exyonq/eqproxy:latest`. Its platform manifests are
+`sha256:a3f30263…` (`linux/amd64`) and `sha256:356e47f5…` (`linux/arm64`),
+each reported **0 critical / 0 high** by Docker Scout. The release workflow
+re-pulled the published tags and replayed the journeys (`--version`,
+configuration and live proxied traffic) on both architectures before finishing
+`success`. There is no Darwin asset: the release is Linux-only.
 
 Only a `v*` tag publishes. The release workflow needs two repository secrets
 (Settings → Secrets and variables → Actions); neither belongs in the tree:

@@ -2,10 +2,12 @@
 
 Language: **English**.
 
-**What this page answers:** what the published v0.9.5 does not do, or does not
+**What this page answers:** what the published v0.10.0 does not do, or does not
 prove yet, so a trial on a staging config starts from an honest list. It is not
 a roadmap; the reasons and the rejected alternatives are in the linked ADRs.
-Last reviewed 2026-11-12 against the published v0.9.5 tree.
+Last reviewed 2026-11-18 against the `release/v0.9.5` tree at `8468162`; the
+published `v0.10.0` was cut from `bdf88bb` on 2026-11-17
+([release record](docs/release-0.10.0.md)).
 
 ## Out of scope by decision
 
@@ -42,9 +44,17 @@ Last reviewed 2026-11-12 against the published v0.9.5 tree.
   `0.10.8`.** `eqproxy config import` replaces it; the script is
   maintainer-local (`ROADMAP EQPROXY/`, in `.git/info/exclude`) and is not part
   of any release artifact.
-- **No users outside the author yet.** v0.9.5 is not declared production ready;
-  the Phase 9 gate is pending.
-- **The v0.9.5 release is Linux-only:** no Darwin binary is published, so macOS
+- **The published v0.10.0 carries one open defect.** The `config_import` fuzz
+  target found an overflow in `convert_duration`
+  (`eqproxy-config/src/import/mod.rs`): a hostile duration such as `1e400`
+  saturates one part to `u64::MAX` and the next part wraps. A release build
+  wraps the total — a wrong duration, not a crash — while any overflow-checked
+  build aborts. The checked accumulation is on `main` (`513f6c9`) and on this
+  branch (`f55c432`), not in the tagged artifact; the next patch carries it
+  ([finding and evidence](docs/release-0.10.0.md#post-tag-finding-fuzz-overflow-in-convert_duration)).
+- **No users outside the author yet.** v0.10.0 is not declared production
+  ready; the Phase 9 gate is pending.
+- **The v0.10.0 release is Linux-only:** no Darwin binary is published, so macOS
   users build from source. The macOS binaries verified locally during
   preparation were never shipped.
 

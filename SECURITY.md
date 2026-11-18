@@ -9,8 +9,8 @@ table, residual risk).
 
 | Version | Security fixes |
 |---|---|
-| `0.9.x` — latest patch of the current minor | Yes |
-| `0.8.x` and earlier | No (upgrade to `0.9.x`) |
+| `0.10.x` — latest patch of the current minor | Yes |
+| `0.9.x` and earlier | No (upgrade to `0.10.x`) |
 
 EQProxy is pre-1.0: fixes land in the current minor line and are released as a
 new patch, never back-ported. The list of fixes of each release is in
@@ -129,10 +129,14 @@ These are enforced in code or configuration, so a report can name them:
 - **Cache**: only `GET` without `Set-Cookie` is stored and the key never
   includes `Cookie` or `Authorization` (see `CacheConfig` in
   [eqproxy-config/src/schema.rs](eqproxy-config/src/schema.rs)).
-- **Blast-radius limits**: per-listener `maxconn` and, since v0.8.5, per-server
-  `maxconn` (`{ addr = "…", maxconn = 50 }`) stop a saturated backend from
-  being oversubscribed; the excess fails explicitly with 503, or waits in the
-  backend's bounded queue when one is configured (`maxqueue > 0`).
+- **Blast-radius limits**: `maxconn` is scoped to the accepting listener since
+  v0.10.0 — each listener keeps its own slot counter, so a saturated listener
+  cannot spend another one's budget, and the public
+  `eqproxy_connections_active` gauge stays their sum. Per-server `maxconn`
+  (`{ addr = "…", maxconn = 50 }`), available since v0.8.5, stops a saturated
+  backend from being oversubscribed; the excess fails explicitly with 503, or
+  waits in the backend's bounded queue when one is configured
+  (`maxqueue > 0`).
 - **Configuration import is static**: `eqproxy config import` parses nginx,
   HAProxy, ingress-nginx and Envoy files and never executes them; the output
   is parsed and validated with the product's own parser before it is written.

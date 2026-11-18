@@ -544,6 +544,9 @@ fn convert_duration(
     directive: &str,
     context: &str,
 ) -> Option<String> {
+    // 2^64, the first value a `u64` millisecond total cannot hold (exactly
+    // representable in `f64`). A figure at or past it is not a duration.
+    const MAX_MS: f64 = 18_446_744_073_709_551_616.0;
     let raw = raw.trim();
     let mut total_ms: u64 = 0;
     let mut rest = raw;
@@ -581,7 +584,23 @@ fn convert_duration(
             "d" => 86_400_000,
             _ => 1,
         };
-        total_ms += (value * factor as f64) as u64;
+        // `value` is a non-negative figure parsed from the directive and the
+        // caller range-checks the total; truncating to whole milliseconds is
+        // the intended rounding. A figure that does not fit the total is not
+        // truncated into a wrong duration: the loop leaves `rest` unconsumed
+        // and the existing «no reconocida» review below rejects it (fuzz run
+        // 44235938866, artifact `crash-4e019cfb…`, where the cast saturated to
+        // `u64::MAX` and the next addition overflowed).
+        let millis = value * factor as f64;
+        if !millis.is_finite() || millis >= MAX_MS {
+            break;
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let part = millis as u64;
+        let Some(total) = total_ms.checked_add(part) else {
+            break;
+        };
+        total_ms = total;
         rest = &after[consumed..];
         parts += 1;
     }
@@ -887,6 +906,30 @@ mod tests {
         assert_eq!(
             convert_duration(&mut conv, "soon", "ms", "timeout", "x"),
             None
+        );
+        assert_eq!(conv.notes.len(), 1);
+        assert!(matches!(conv.notes[0].severity, Severity::Review));
+        assert!(conv.notes[0].message.contains("no reconocida"));
+    }
+
+    #[test]
+    fn a_duration_that_cannot_fit_is_reviewed_not_wrapped() {
+        // Fuzz run 44235938866 (`config_import`, artifact `crash-4e019cfb…`)
+        // fed `timeout connect 5s` followed by a 22-digit figure. That figure
+        // does not fit the millisecond total, the cast saturated to
+        // `u64::MAX` and the addition overflowed: a panic under overflow
+        // checks, a wrapped duration without them.
+        let mut conv = Conv::new();
+        assert_eq!(
+            convert_duration(
+                &mut conv,
+                "5s6666666666666666666666ver",
+                "ms",
+                "timeout",
+                "x"
+            ),
+            None,
+            "a duration that does not fit is not a converted duration"
         );
         assert_eq!(conv.notes.len(), 1);
         assert!(matches!(conv.notes[0].severity, Severity::Review));

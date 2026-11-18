@@ -253,16 +253,16 @@ It does **not** show up in the tagged release's gates: no `[profile]` in
 `Cargo.toml` turns `overflow-checks` on, so the shipped 0.10.0 binary wraps the
 total instead of panicking — a wrong duration, not a crash. Any
 overflow-checked build (the fuzz target, `cargo test`, a debug build) panics.
-The fix is a checked or saturating accumulation that turns the overflow into
-the existing «duración no reconocida» review note; it is **not** in `v0.10.0`
-and is the first item of the next patch release. Until it lands, the fuzz leg
-on the default branch stays red and P0-7 is not green.
+The fix is a checked accumulation that turns the overflow into the existing
+«duración no reconocida» review note. It is **not** in `v0.10.0`: it landed on
+`main` and is recorded under Resolution below.
 
 ### Resolution — fixed on `main` in `513f6c9`
 
 `513f6c9` (`fix(import): reject a duration that does not fit instead of
-overflowing`) adds the regression test `a_duration_that_cannot_fit_is_
-reviewed_not_wrapped`, which panicked at `eqproxy-config/src/import/mod.rs:584`
+overflowing`) adds the regression test
+`a_duration_that_cannot_fit_is_reviewed_not_wrapped`, which panicked at
+`eqproxy-config/src/import/mod.rs:584`
 — the line of the run's log — before the fix and passes after it. The
 accumulator now rejects a part that is not finite or does not fit the
 remaining total (`checked_add`), leaves `rest` unconsumed, and the existing

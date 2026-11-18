@@ -10,8 +10,8 @@ produced them.
 
 - Version: **0.10.0**, from `[workspace.package] version` in `Cargo.toml`.
 - Tag: **`v0.10.0`**, annotated and SSH-signed, object `fb56e28` → commit
-  `bdf88bb` on `release/v0.9.5`, pushed to origin and the tree the release run
-  built. GitHub reports that signature as `verified=false,
+  `bdf88bb` on `release/v0.9.5`, pushed to origin; it is the tree the release
+  run built. GitHub reports that signature as `verified=false,
   reason=unknown_key` because the signing public key is not registered on the
   account as a *Signing Key*; `git -c
   gpg.ssh.allowedSignersFile=<file> tag -v v0.10.0` verifies it locally against
@@ -236,8 +236,9 @@ The scheduled `Fuzz` run on the default branch
 ([44235938866](https://github.com/EQProxy/EQProxy/actions/runs/44235938866),
 2026-11-18T04:14Z) failed. `framing` and `rules` passed; `config_import`
 aborted with `attempt to add with overflow` at
-`eqproxy-config/src/import/mod.rs:752` — `total_ms += (value * f64::from(factor))
-as u64;` — from a hostile duration in the source configuration. `value` comes
+`eqproxy-config/src/import/mod.rs:752` — the `total_ms +=` in
+`convert_duration` — from a hostile duration in the source configuration.
+`value` comes
 from `digits.parse::<f64>()`, so a figure such as `1e400` is `f64::INFINITY`,
 the `as u64` cast saturates to `u64::MAX`, and the next part of the same
 duration overflows. This breaks the fuzz target's own oracle (`convert` never
